@@ -104,7 +104,7 @@ T.describe("matching the shape of a screenful", function()
             name = "Kindle-D2", file_manager = true,
             path = "/books", items = books(24), perpage = 6,
         }
-        local chooser = device.ui.file_chooser:asCoverBrowser("list", 10)
+        local chooser = device.ui.file_chooser:asCoverBrowser("list", { files_per_page = 10 })
         T.assertEquals(chooser.page_num, 3) -- 24 books, 10 to a screen
 
         T.assertTrue(Browser.setPerPage(device.ui, 8))
@@ -115,14 +115,43 @@ T.describe("matching the shape of a screenful", function()
         T.assertEquals(G_reader_settings:readSetting("items_per_page"), nil)
     end)
 
-    T.it("leaves a grid of covers alone", function()
+    T.it("takes a grid of covers from another grid, shape and all", function()
         local device = Instance.new{
             name = "Kindle-D3", file_manager = true,
             path = "/books", items = books(24), perpage = 6,
         }
-        local chooser = device.ui.file_chooser:asCoverBrowser("mosaic", 9)
+        local chooser = device.ui.file_chooser:asCoverBrowser("mosaic", { cols = 2, rows = 3 })
+        T.assertEquals(chooser.perpage, 6)
+
+        T.assertTrue(Browser.setPerPage(device.ui, 12, 3, 4))
+        T.assertEquals(chooser.nb_cols, 3)
+        T.assertEquals(chooser.nb_rows, 4)
+        T.assertEquals(chooser.perpage, 12, "three across and four down is twelve")
+        T.assertEquals(chooser.page_num, 2)
+    end)
+
+    T.it("keeps the grid to the orientation it is in", function()
+        local device = Instance.new{
+            name = "Kindle-D4", file_manager = true,
+            path = "/books", items = books(24), perpage = 6,
+        }
+        local chooser = device.ui.file_chooser:asCoverBrowser("mosaic",
+            { cols = 2, rows = 3, portrait = false })
+        T.assertTrue(Browser.setPerPage(device.ui, 12, 3, 4))
+        T.assertEquals(chooser.nb_cols_landscape, 3)
+        T.assertEquals(chooser.nb_rows_landscape, 4)
+        T.assertEquals(chooser.nb_cols_portrait, nil,
+            "the other orientation's grid is not this one's to change")
+    end)
+
+    T.it("leaves a grid alone when told only a total", function()
+        local device = Instance.new{
+            name = "Kindle-D5", file_manager = true,
+            path = "/books", items = books(24), perpage = 6,
+        }
+        local chooser = device.ui.file_chooser:asCoverBrowser("mosaic", { cols = 3, rows = 3 })
         T.assertTrue(not Browser.setPerPage(device.ui, 8),
-            "a page of a grid is its rows times its columns, not ours to set")
+            "eight could be two by four or one by eight; guessing would rearrange the screen")
         T.assertEquals(chooser.perpage, 9)
     end)
 end)

@@ -770,6 +770,10 @@ function Core:sendBrowserTo(link)
         master_page = state.page,
         pages = state.pages,
         perpage = state.perpage,
+        -- Only set when this device is showing a grid of covers, so the
+        -- other one can take the same shape rather than a bare total.
+        cols = state.cols,
+        rows = state.rows,
         count = state.count,
         sig = state.signature or "",
     })
@@ -803,7 +807,8 @@ function Core:applyBrowser(msg)
     if self:get("match_typography") then
         -- Items per page decides where one screenful ends and the next
         -- begins, so it belongs with the rest of the layout matching.
-        self.browser.setPerPage(Protocol.num(msg, "perpage"))
+        self.browser.setPerPage(Protocol.num(msg, "perpage"),
+            Protocol.num(msg, "cols"), Protocol.num(msg, "rows"))
     end
     self.browser.goToPage(Protocol.num(msg, "page", 1))
     self.applying_remote = false
@@ -856,14 +861,15 @@ function Core:checkListing(msg)
         self:alert("Both devices show the same number of books but not the same ones, so the two halves of the list will not line up.")
         return
     end
-    -- The same books, but cut into different sized screenfuls. Duo matches
-    -- this by itself where KOReader lets it, so reaching here means the
-    -- cover browser is showing a grid on at least one of the devices.
+    -- The same books, but cut into different sized screenfuls. Duo evens
+    -- this out by itself wherever KOReader lets it, so reaching here means
+    -- it could not: one device is showing a grid of covers and the other a
+    -- list, and a total gives no way to know what shape the grid should be.
     local their_perpage = Protocol.num(msg, "perpage")
     if their_perpage and their_perpage > 0 and (state.perpage or 0) > 0
             and their_perpage ~= state.perpage then
         self.warned_listing = true
-        self:alert(("This device fits %d books on a screen and the other one %d, so the two halves of the list will not line up.\n\nSetting both to the same number puts it right."):format(
+        self:alert(("This device fits %d books on a screen and the other one %d, so the two halves of the list will not line up.\n\nThe two are showing the list differently. Putting both on the same display mode lets Duo even them up by itself."):format(
             state.perpage, their_perpage))
     end
 end

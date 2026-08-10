@@ -379,14 +379,38 @@ T.describe("one book list across two screens", function()
         T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
     end)
 
-    T.it("says so when it cannot fix the screenful size itself", function()
-        -- KOReader's cover browser can draw the list as a grid of covers,
-        -- and then a screenful is the grid's rows times its columns rather
-        -- than a number Duo is free to set. The user has to even it up.
+    T.it("spreads a grid of covers across the two screens", function()
+        -- KOReader's cover browser can draw the list as a grid, where a
+        -- screenful is its columns times its rows. Two grids can be evened
+        -- up exactly, because the shape travels with the page.
         browseTogether{ count = 24, perpage = 6 }
+        callMaster("UI.file_chooser:asCoverBrowser('mosaic', { cols = 3, rows = 2 })")
+        callSlave("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 2 })")
         callSlave("UIManager.shown_log = {}")
         callSlave("Core.warned_listing = false")
-        callSlave("UI.file_chooser:asCoverBrowser('mosaic', 9)")
+        callMaster("Core:broadcastBrowser()")
+
+        controller:assertEventually(slave, "UI.file_chooser.perpage", 6,
+            "the slave kept its own grid, so the halves cannot line up")
+        T.assertEquals(controller:number(slave, "UI.file_chooser.nb_cols"), 3,
+            "the shape should have come over, not just the total")
+        T.assertEquals(controller:number(slave, "UI.file_chooser.nb_rows"), 2)
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        T.assertEquals(visible(master), "book01.epub,book02.epub,book03.epub,book04.epub,book05.epub,book06.epub")
+        T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
+        T.assertEquals(callSlave(
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('on a screen') then return true end end return false end)()"),
+            "false", "it warned about a difference it had just evened out")
+    end)
+
+    T.it("says so when one device is a grid and the other a list", function()
+        -- Here the shape cannot be worked out: told only that the other
+        -- device fits eight, a grid has no way to know whether that is two
+        -- by four or one by eight, and guessing would rearrange the screen.
+        browseTogether{ count = 24, perpage = 8 }
+        callSlave("UIManager.shown_log = {}")
+        callSlave("Core.warned_listing = false")
+        callSlave("UI.file_chooser:asCoverBrowser('mosaic', { cols = 3, rows = 3 })")
         callMaster("Core:broadcastBrowser()")
         controller:assertEventually(slave,
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('on a screen') then return true end end return false end)()",

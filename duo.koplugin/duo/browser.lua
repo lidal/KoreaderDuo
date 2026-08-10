@@ -101,16 +101,24 @@ function Browser.refresh(ui)
 end
 
 --- Everything the other devices need to show their part of the listing.
+-- `cols` and `rows` are only there when the cover browser is drawing the
+-- listing as a grid, where a screenful is their product rather than a
+-- number in its own right.
 function Browser.snapshot(ui)
     if not Browser.isAvailable(ui) then return nil end
     local chooser = ui.file_chooser
-    return {
+    local state = {
         path = tostring(chooser.path or ""),
         page = chooser.page or 1,
         pages = chooser.page_num or 1,
         perpage = chooser.perpage or 0,
         count = #(chooser.item_table or {}),
     }
+    if chooser.display_mode_type == "mosaic" then
+        state.cols = chooser.nb_cols
+        state.rows = chooser.nb_rows
+    end
+    return state
 end
 
 --- Moves this device's listing to a page.
@@ -144,27 +152,51 @@ Makes this device fit the same number of items on a screen.
 Without this the offset means nothing — device two would start its page
 somewhere in the middle of device one's.
 
-Two different widgets can be drawing that list, and they disagree about
+Three different widgets can be drawing that list, and they disagree about
 where the number comes from. The plain file browser reads `items_per_page`
-out of the global settings; the cover browser, in its list mode, works out
-a `files_per_page` from the screen height and ignores the global entirely.
-Whichever is actually in charge is the one told, each the way its own
-settings screen does it.
+out of the global settings. The cover browser's list mode works out a
+`files_per_page` from the screen height and ignores that global entirely.
+Its mosaic mode has no such number at all: a screenful there is a grid, and
+the count is its columns times its rows. Whichever is actually in charge is
+the one told, each the way its own settings screen does it.
 
-Mosaic mode is left alone on purpose: there the page is a grid, and the
-count is the product of its rows and columns rather than a number anyone
-can just set.
+A grid can therefore only be matched against another grid, where the shape
+comes over as it is rather than being guessed back out of the total — nine
+could be three by three or one by nine, and picking wrong would rearrange
+somebody's screen. Told a bare number, a grid is left as it is and the
+caller warns instead.
 
+The new shape is applied but not saved: Duo sets it again on every
+connection, and quietly rewriting the cover browser's stored settings would
+outlive the pairing that wanted it.
+
+@int perpage    items the other device fits on a screen
+@int[opt] cols  columns, when the other device is showing a grid
+@int[opt] rows  rows, likewise
 @treturn boolean true when the listing was changed
 --]]--
-function Browser.setPerPage(ui, perpage)
+function Browser.setPerPage(ui, perpage, cols, rows)
     if not Browser.isAvailable(ui) then return false end
     perpage = tonumber(perpage)
     if not perpage or perpage < 1 then return false end
     local chooser = ui.file_chooser
     if (chooser.perpage or 0) == perpage then return false end
 
-    if chooser.display_mode_type == "mosaic" then return false end
+    if chooser.display_mode_type == "mosaic" then
+        cols, rows = tonumber(cols), tonumber(rows)
+        if not cols or not rows or cols < 1 or rows < 1 then return false end
+        -- The grid is kept per orientation, and only the one in use now
+        -- decides what is on the screen.
+        if chooser.portrait_mode == false then
+            chooser.nb_cols_landscape, chooser.nb_rows_landscape = cols, rows
+        else
+            chooser.nb_cols_portrait, chooser.nb_rows_portrait = cols, rows
+        end
+        chooser.no_refresh_covers = nil
+        chooser:updateItems()
+        return true
+    end
+
     if chooser.display_mode_type == "list" then
         chooser.files_per_page = perpage
         chooser.no_refresh_covers = nil

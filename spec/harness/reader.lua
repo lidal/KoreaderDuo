@@ -302,27 +302,45 @@ end
 --[[--
 Turns this chooser into the one KOReader's cover browser plugin installs.
 
-That plugin takes the listing over and paginates it its own way: in list
-mode a `files_per_page` of its own choosing decides the screenful and
-`updateItems` redraws, while `items_per_page` and the global setting are
-ignored entirely; in mosaic mode the page is a grid instead. Duo has to
-notice which is in charge, so the harness can be either.
+That plugin takes the listing over and paginates it its own way, and the
+two modes do it differently. In list mode a `files_per_page` of its own
+choosing decides the screenful, and `items_per_page` and the global setting
+are ignored entirely. In mosaic mode there is no such number: the screenful
+is a grid, `nb_cols` by `nb_rows`, kept separately for each orientation.
+Either way `updateItems` is the redraw that applies a change. Duo has to
+notice which of the three is in charge, so the harness can be any of them.
 
-@string mode         "list" or "mosaic"
-@int files_per_page  the screenful it settled on
+@string mode  "list" or "mosaic"
+@tparam table shape  { files_per_page = } for a list, { cols =, rows = } for
+    a grid, plus an optional `portrait` (default true)
 --]]--
-function FileChooser:asCoverBrowser(mode, files_per_page)
+function FileChooser:asCoverBrowser(mode, shape)
     self.display_mode_type = mode
-    self.files_per_page = files_per_page
-    self.perpage = files_per_page
-    self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
+    if mode == "mosaic" then
+        self.portrait_mode = shape.portrait ~= false
+        if self.portrait_mode then
+            self.nb_cols_portrait, self.nb_rows_portrait = shape.cols, shape.rows
+        else
+            self.nb_cols_landscape, self.nb_rows_landscape = shape.cols, shape.rows
+        end
+    else
+        self.files_per_page = shape.files_per_page
+    end
+    self:updateItems()
     return self
 end
 
---- The cover browser's redraw, which is what applies a new files_per_page.
+--- The cover browser's redraw, which is what applies a change of shape.
 function FileChooser:updateItems()
     if self.display_mode_type == "list" then
         self.perpage = self.files_per_page or self.perpage
+    elseif self.display_mode_type == "mosaic" then
+        if self.portrait_mode == false then
+            self.nb_cols, self.nb_rows = self.nb_cols_landscape, self.nb_rows_landscape
+        else
+            self.nb_cols, self.nb_rows = self.nb_cols_portrait, self.nb_rows_portrait
+        end
+        self.perpage = self.nb_cols * self.nb_rows
     end
     self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
     if self.page > self.page_num then self.page = self.page_num end

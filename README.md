@@ -175,14 +175,25 @@ path is rebuilt from the shared folder, so nothing outside it can be asked
 for however the name is spelled.
 
 Items per page is matched along with the typography, since that is what
-decides where one screenful ends and the next begins. Two widgets can be
-drawing that list and they disagree about where the number comes from: the
-plain file browser reads it from KOReader's settings, while the cover
-browser works out its own from the screen and ignores that setting
-entirely. Duo tells whichever one is actually in charge. Mosaic mode is the
-exception — there a screenful is a grid of rows and columns rather than a
-number anyone can set, so Duo leaves it alone and says the halves will not
-line up until you even them out yourself.
+decides where one screenful ends and the next begins. Three widgets can be
+drawing that list and they disagree about where the number comes from — the
+plain file browser reads it from KOReader's settings, the cover browser's
+list mode works out its own and ignores that setting, and its mosaic mode
+has no such number at all, only a grid. Duo tells whichever one is actually
+in charge, in its own terms.
+
+**Mosaic (the cover grid) works too**, including the spread: the shape
+travels with the page, so a device showing 2 × 3 covers puts the other one
+on the same grid and takes the next six books.
+
+![Two cover grids, the master showing the first six books and the slave the next](screenshots/mosaic-spread.png)
+
+A grid can only be matched
+against another grid, though. Told only that the other device fits eight,
+there is no way to know whether that means two by four or one by eight, and
+guessing would rearrange your screen — so if one device is on a grid and
+the other on a list, Duo leaves both alone and says the halves will not line
+up until you put them on the same display mode.
 
 Unlike KOReader's own paging, the shared list stops at the last screenful
 rather than wrapping round to the first — wrapping would put the devices on
@@ -309,18 +320,18 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-175 tests, no mocking of the interesting parts:
+178 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 44 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `integration_spec` | 45 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 9 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
-| `browser_spec` | 13 | Reading and paging the book list, the listing hash, matching items-per-page through both the plain browser and the cover browser, and refusing a folder the device does not have |
+| `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
 | `booktransfer_spec` | 13 | Base64 against the published vectors, every byte value round-tripped, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
@@ -368,13 +379,14 @@ Both of the features above were checked there too, not only in the suite:
   screenful without being told — the master showing books 1–9 and the slave
   book 10. It said nothing about the mismatch on the way, which is the
   point: the warning is for a difference nothing is going to fix.
-- **Matching the screenful.** Checked against both of the widgets that draw
-  the list. With the plain browser the slave went from 6 items a screen to
-  the master's 10; with the cover browser in list mode, where the global
+- **Matching the screenful.** Checked against all three of the widgets that
+  draw the list. With the plain browser the slave went from 6 items a screen
+  to the master's 10; with the cover browser in list mode, where the global
   setting does nothing, it went from 6 to 10 through that plugin's own
-  `files_per_page`. Given a screen too short to fit ten rows the widget
-  overrode it back to nine, and Duo said so rather than pretending the
-  halves lined up.
+  `files_per_page`; in mosaic mode it went from a 2 × 2 grid to the master's
+  2 × 3 and took books 6–10 while the master showed 1–5. Given a screen too
+  short to fit ten rows the widget overrode the count back to nine, and Duo
+  said so rather than pretending the halves lined up.
 
 To repeat it on a desktop:
 

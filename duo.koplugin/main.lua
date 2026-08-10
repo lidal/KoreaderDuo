@@ -263,7 +263,9 @@ function Duo:bindBrowser()
         getFiles = function() return Browser.fileEntries(ui) end,
         refresh = function() return Browser.refresh(ui) end,
         changeDir = function(path) return Browser.changeDir(ui, path) end,
-        setPerPage = function(perpage) return Browser.setPerPage(ui, perpage) end,
+        setPerPage = function(perpage, cols, rows)
+            return Browser.setPerPage(ui, perpage, cols, rows)
+        end,
     }
     Core:attachBrowser(self.browser_binding)
 end
