@@ -48,7 +48,9 @@ function Instance.new(options)
         name = options.name or "TestReader",
     }, Instance)
 
-    if not options.no_document then
+    if options.file_manager then
+        self:openFileManager(options)
+    elseif not options.no_document then
         self:openDocument(options)
     else
         self.plugin = Duo:new{ ui = { menu = { registerToMainMenu = function() end } } }
@@ -90,6 +92,31 @@ function Instance:openDocument(options)
     self.ui:registerPlugin(self.plugin)
     self.plugin:onReaderReady()
     return self
+end
+
+--- Closes any document and shows the file browser, as KOReader does when
+-- you leave a book.
+function Instance:openFileManager(options)
+    options = options or {}
+    if self.plugin then
+        self.plugin:onCloseWidget()
+    end
+    self.ui = Reader.newFileManager{
+        Event = self.Event,
+        path = options.path,
+        items = options.items,
+        folders = options.folders,
+        perpage = options.perpage,
+    }
+    self.plugin = self.Duo:new{ ui = self.ui }
+    self.ui:registerPlugin(self.plugin)
+    return self
+end
+
+--- What the file browser is showing on this screen.
+function Instance:visibleBooks()
+    if not self.ui.file_chooser then return {} end
+    return self.ui.file_chooser:visibleNames()
 end
 
 --- Runs the UI loop for `seconds`, or until `condition` becomes true.

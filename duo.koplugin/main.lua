@@ -33,6 +33,7 @@ local T = require("ffi/util").template
 
 local Core = require("duo/core")
 local NetUtil = require("duo/netutil")
+local Browser = require("duo/browser")
 local Spread = require("duo/spread")
 local Typography = require("duo/typography")
 local Util = require("duo/util")
@@ -90,6 +91,8 @@ function Duo:init()
 
     if self.ui and self.ui.document then
         self:bindDocument()
+    elseif Browser.isAvailable(self.ui) then
+        self:bindBrowser()
     end
 
     -- Only on a real KOReader start, not on every document switch.
@@ -140,7 +143,9 @@ end
 
 function Duo:onCloseWidget()
     self:unwrapPageTurns()
+    self:unwrapBrowserTurns()
     Core:detachReader(self.reader_binding)
+    Core:detachBrowser(self.browser_binding)
 end
 
 function Duo:onCloseDocument()
@@ -226,6 +231,94 @@ end
 
 function Duo:onReaderReady()
     self:bindDocument()
+end
+
+--------------------------------------------------------------------------
+-- The book list
+--------------------------------------------------------------------------
+
+--[[--
+Hands the file browser to the engine, so the listing can be spread too.
+
+Only exists in the file manager; KOReader replaces the whole thing with a
+ReaderUI when a book is opened, which is why this is attached and detached
+just like the reader binding.
+--]]--
+function Duo:bindBrowser()
+    local ui = self.ui
+    if not Browser.isAvailable(ui) then return end
+    -- Already bound to this very browser: nothing to redo.
+    if self.browser_binding and self.wrapped_chooser == ui.file_chooser then return end
+    self:wrapBrowserTurns()
+
+    self.browser_binding = {
+        getState = function()
+            local state = Browser.snapshot(ui)
+            if state then
+                state.signature = Browser.signature(ui)
+            end
+            return state
+        end,
+        goToPage = function(page) return Browser.goToPage(ui, page) end,
+        changeDir = function(path) return Browser.changeDir(ui, path) end,
+        setPerPage = function(perpage) return Browser.setPerPage(ui, perpage) end,
+    }
+    Core:attachBrowser(self.browser_binding)
+end
+
+--[[--
+Wraps the browser's page turns, the same trick as in the reader.
+
+`onNextPage` and `onPrevPage` are where every swipe and button press in the
+file list ends up, so wrapping them catches the lot. They are left alone
+when Duo is not sharing the listing.
+--]]--
+function Duo:wrapBrowserTurns()
+    local chooser = self.ui and self.ui.file_chooser
+    if not chooser or chooser.duo_wrapped then return end
+
+    local original_next = chooser.onNextPage
+    local original_prev = chooser.onPrevPage
+    if not original_next or not original_prev then return end
+    self.wrapped_chooser = chooser
+    self.original_browser_turns = { next = original_next, prev = original_prev }
+    chooser.duo_wrapped = true
+
+    chooser.onNextPage = function(menu, ...)
+        if Core:handleBrowserTurn(1) then return true end
+        return original_next(menu, ...)
+    end
+    chooser.onPrevPage = function(menu, ...)
+        if Core:handleBrowserTurn(-1) then return true end
+        return original_prev(menu, ...)
+    end
+end
+
+function Duo:unwrapBrowserTurns()
+    local chooser = self.wrapped_chooser
+    if chooser then
+        chooser.onNextPage = nil -- unshadow the class methods
+        chooser.onPrevPage = nil
+        chooser.duo_wrapped = nil
+    end
+    self.wrapped_chooser = nil
+    self.original_browser_turns = nil
+end
+
+--[[--
+The file manager announces its folder, and the spread follows.
+
+This is also where the browser first gets bound. KOReader builds the file
+chooser in `setupLayout()`, which runs *after* the plugins are created, so
+there is nothing to bind to at init time — but `PathChanged` is dispatched
+immediately afterwards, and again on every folder change, which makes it
+exactly the right moment.
+--]]--
+function Duo:onPathChanged()
+    self:bindBrowser()
+    if Core:isMaster() then
+        Core:broadcastBrowser()
+    end
 end
 
 --------------------------------------------------------------------------
@@ -865,6 +958,15 @@ When you connect, the master's settings win. Change anything afterwards, on eith
             help_text = _("When the master opens a book, open the same one here."),
             checked_func = function() return Core:get("follow_document") end,
             callback = function() Core:set("follow_document", not Core:get("follow_document")) end,
+        },
+        {
+            text = _("Share the book list too"),
+            help_text = _("Spread the file browser across the devices as well: the first screenful of books here, the next one there. Both devices need the same books in the same folder for the halves to line up."),
+            checked_func = function() return Core:get("share_browser") end,
+            callback = function()
+                Core:set("share_browser", not Core:get("share_browser"))
+                if Core:get("share_browser") then Core:broadcastBrowser() end
+            end,
         },
         {
             text = _("Send the book if the other device lacks it"),

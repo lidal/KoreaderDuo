@@ -206,6 +206,85 @@ function Paging:gotoPageInternal(page)
 end
 
 --------------------------------------------------------------------------
+-- The file browser
+--------------------------------------------------------------------------
+
+--[[--
+A stand-in for KOReader's FileChooser, which is a paginated Menu.
+
+The parts Duo touches are the paging ones, and they behave as the real
+Menu does: `page`, `perpage`, `page_num`, and an `onGotoPage` that both
+`onNextPage` and `onPrevPage` funnel into. The real ones cycle round at
+the ends, which is reproduced here so the clamping in the engine is
+actually exercised.
+--]]--
+local FileChooser = {}
+FileChooser.__index = FileChooser
+
+function Reader.newFileChooser(options)
+    options = options or {}
+    local chooser = setmetatable({
+        path = options.path or "/books",
+        perpage = options.perpage or 6,
+        page = 1,
+        item_table = {},
+        folders = options.folders or {},
+    }, FileChooser)
+    chooser:setItems(options.items or {})
+    return chooser
+end
+
+function FileChooser:setItems(names)
+    self.item_table = {}
+    for index, name in ipairs(names) do
+        self.item_table[index] = { text = name, path = self.path .. "/" .. name }
+    end
+    self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
+    if self.page > self.page_num then self.page = self.page_num end
+end
+
+function FileChooser:onGotoPage(page)
+    self.page = page
+    self.updates = (self.updates or 0) + 1
+    return true
+end
+
+function FileChooser:onNextPage()
+    local page = self.page < self.page_num and self.page + 1 or 1 -- cycles, as KOReader's does
+    return self:onGotoPage(page)
+end
+
+function FileChooser:onPrevPage()
+    local page = self.page > 1 and self.page - 1 or self.page_num
+    return self:onGotoPage(page)
+end
+
+function FileChooser:changeToPath(path)
+    self.path = path
+    self.page = 1
+    self:setItems(self.folders[path] or {})
+    return true
+end
+
+function FileChooser:refreshPath()
+    -- Recomputes the layout, which is what a change of items-per-page needs.
+    self.perpage = self.items_per_page or self.perpage
+    self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
+    if self.page > self.page_num then self.page = self.page_num end
+    return true
+end
+
+--- The names on the current screen, for asserting what the user can see.
+function FileChooser:visibleNames()
+    local names = {}
+    local first = (self.page - 1) * self.perpage + 1
+    for index = first, math.min(first + self.perpage - 1, #self.item_table) do
+        names[#names+1] = self.item_table[index].text
+    end
+    return names
+end
+
+--------------------------------------------------------------------------
 -- ReaderUI
 --------------------------------------------------------------------------
 
@@ -255,6 +334,38 @@ function Reader.newUI(options)
     ui.font = Reader.newFont(ui, options.font_face)
     table.insert(ui.modules, ui.typeset)
     table.insert(ui.modules, ui.font)
+    return ui
+end
+
+--[[--
+A stand-in FileManager: the file browser with no document open.
+
+KOReader replaces the whole UI with a ReaderUI when a book is opened, so
+these really are two different things, which is why the plugin binds and
+releases each of them separately.
+--]]--
+function Reader.newFileManager(options)
+    options = options or {}
+    local ui = setmetatable({
+        Event = options.Event,
+        modules = {},
+        registered_menus = {},
+    }, ReaderUI)
+    ui.file_chooser = Reader.newFileChooser(options)
+    -- Tell the stubbed lfs which folders this device has, so the browser's
+    -- "do I have that folder?" check has something true to say.
+    local lfs = package.loaded["libs/libkoreader-lfs"]
+    if lfs and lfs.directories then
+        lfs.directories[ui.file_chooser.path] = true
+        for path in pairs(options.folders or {}) do
+            lfs.directories[path] = true
+        end
+    end
+    ui.menu = {
+        registerToMainMenu = function(_self, plugin)
+            table.insert(ui.registered_menus, plugin)
+        end,
+    }
     return ui
 end
 

@@ -216,6 +216,22 @@ Installs the stub modules.
 --]]--
 function Env.install(options)
     options = options or {}
+
+    -- The file browser asks whether a path is a directory, so the stub has
+    -- to be able to say yes. `directories` is the set this fake device has;
+    -- everything else falls back to looking on the real disk.
+    local lfs_stub = { directories = {} }
+    function lfs_stub.attributes(path, what)
+        if lfs_stub.directories[path] then
+            if what == "mode" then return "directory" end
+            return { mode = "directory" }
+        end
+        local handle = io.open(path, "r")
+        if not handle then return nil end
+        handle:close()
+        if what == "mode" then return "file" end
+        return { mode = "file" }
+    end
     local clock = options.clock or require("socket").gettime
 
     local UIManager = makeUIManager(clock)
@@ -283,15 +299,7 @@ function Env.install(options)
                 return directory, name
             end,
         },
-        ["libs/libkoreader-lfs"] = {
-            attributes = function(path, what)
-                local handle = io.open(path, "r")
-                if not handle then return nil end
-                handle:close()
-                if what == "mode" then return "file" end
-                return { mode = "file" }
-            end,
-        },
+        ["libs/libkoreader-lfs"] = lfs_stub,
         ["readhistory"] = { hist = {} },
         ["apps/reader/readerui"] = {
             showReader = function(_self, file)
@@ -303,6 +311,10 @@ function Env.install(options)
     for name, module in pairs(modules) do
         package.loaded[name] = module
     end
+
+    -- KOReader hangs its global settings off _G, and plugins are entitled to
+    -- expect it: the file browser's items-per-page lives there.
+    G_reader_settings = modules["luasettings"]:open("/tmp/duo-global-settings.lua")
 
     return {
         UIManager = UIManager,

@@ -71,6 +71,7 @@ local DEFAULTS = {
     slave_can_turn = true,
     follow_document = true,
     match_typography = true,
+    share_browser = true,
     sync_books = true,
     max_book_mb = 64,
     device_name = "",
@@ -536,6 +537,7 @@ function Core:poll()
     -- user can reach these from the config dialog, a gesture, a profile or
     -- another plugin, and a poll every second and a half catches all of it.
     self:checkTypography()
+    self:checkBrowser()
     self:pumpBookSender()
 end
 
@@ -583,6 +585,7 @@ function Core:onLinkReady(link)
         -- even mean, so sending the page first would only move it twice.
         self:sendTypographyTo(link)
         self:sendStateTo(link)
+        self:broadcastBrowser()
     end
     self:changed()
 end
@@ -709,6 +712,165 @@ function Core:applyRemotePage(page)
         self:log("could not go to page", page, err)
     end
     self:changed()
+end
+
+--------------------------------------------------------------------------
+-- The book list
+--------------------------------------------------------------------------
+
+--[[--
+Attaches the file browser, when this device is showing one.
+
+KOReader's file manager and its reader are separate worlds and only one
+exists at a time, so this comes and goes exactly as the reader binding
+does. The engine outlives both.
+--]]--
+function Core:attachBrowser(binding)
+    self:log("browser attached")
+    self.browser = binding
+    self.browser_state = nil
+    self.warned_listing = false
+    self:changed()
+    if self:isActive() and self:isMaster() then
+        self:broadcastBrowser()
+    end
+end
+
+function Core:detachBrowser(binding)
+    if binding and self.browser and self.browser ~= binding then return end
+    self.browser = nil
+    self.browser_state = nil
+    self:changed()
+end
+
+function Core:browsingTogether()
+    return self:get("share_browser") and self.browser ~= nil and self:isConnected()
+end
+
+--- Sends each device the page of the listing it should be showing.
+function Core:broadcastBrowser()
+    if not self:isMaster() or not self.browser then return end
+    if not self:get("share_browser") then return end
+    local state = self.browser.getState()
+    if not state then return end
+    self.browser_state = state
+
+    local options = {
+        mode = self:get("mode"),
+        reverse = self:get("reverse"),
+        page_count = state.pages,
+    }
+    for _, link in ipairs(self:getReadyLinks()) do
+        local page = Spread.pageForSlot(state.page, link.slot, options)
+        link:send(Protocol.BROWSE, {
+            path = state.path,
+            page = page,
+            master_page = state.page,
+            pages = state.pages,
+            perpage = state.perpage,
+            count = state.count,
+            sig = state.signature or "",
+        })
+    end
+    self:changed()
+end
+
+--- Shows the part of the listing the master allotted to this device.
+function Core:applyBrowser(msg)
+    if not self.browser or not self:get("share_browser") then return end
+    if self:isMaster() then return end
+
+    self.applying_remote = true
+    -- Same folder first: a page number means nothing until the two devices
+    -- are looking at the same list.
+    local path = msg.path
+    if path and path ~= "" and not self.browser.changeDir(path) then
+        self.applying_remote = false
+        if not self.warned_listing then
+            self.warned_listing = true
+            self:alert(("The other device is browsing a folder this one does not have:\n\n%s"):format(path))
+        end
+        return
+    end
+    if self:get("match_typography") then
+        -- Items per page decides where one screenful ends and the next
+        -- begins, so it belongs with the rest of the layout matching.
+        self.browser.setPerPage(Protocol.num(msg, "perpage"))
+    end
+    self.browser.goToPage(Protocol.num(msg, "page", 1))
+    self.applying_remote = false
+
+    self:checkListing(msg)
+    self:changed()
+end
+
+--- Warns once when the two devices are not looking at the same list.
+function Core:checkListing(msg)
+    if self.warned_listing or not self.browser then return end
+    local state = self.browser.getState()
+    if not state then return end
+
+    local their_count = Protocol.num(msg, "count")
+    local their_signature = msg.sig
+    if their_count and their_count ~= state.count then
+        self.warned_listing = true
+        self:alert(("This folder holds %d items here and %d on the other device, so the two halves of the list will not line up.\n\nThe same books have to be on both."):format(
+            state.count, their_count))
+        return
+    end
+    if their_signature and their_signature ~= "" and state.signature
+            and their_signature ~= state.signature then
+        self.warned_listing = true
+        self:alert("Both devices show the same number of books but not the same ones, so the two halves of the list will not line up.")
+    end
+end
+
+--[[--
+Handles a swipe through the listing.
+
+The master steps by as many screenfuls as there are devices; a slave asks
+the master to do it, exactly as with a page turn in a book.
+
+@treturn boolean true when Duo handled it and the browser should not
+--]]--
+function Core:handleBrowserTurn(diff)
+    if not self:browsingTogether() then return false end
+    if self:isMaster() then
+        self:applyBrowserTurn(diff)
+        return true
+    end
+    if not self:get("slave_can_turn") then return true end
+    local link = self:getReadyLinks()[1]
+    if not link then return false end
+    link:send(Protocol.BTURN, { dir = diff })
+    return true
+end
+
+function Core:applyBrowserTurn(diff)
+    if not self.browser then return end
+    local state = self.browser.getState()
+    if not state then return end
+    local step = Spread.stepFor(self:get("mode"), self:slaveCount())
+    -- Clamped rather than wrapped: cycling round to the first page would
+    -- put the devices on unrelated parts of the list.
+    local target = Util.clamp(state.page + diff * step, 1, state.pages)
+    self.browser.goToPage(target)
+    self:broadcastBrowser()
+end
+
+--- Notices the master moving through the listing by any other route.
+function Core:checkBrowser()
+    if not self:isMaster() or not self.browser then return end
+    if not self:get("share_browser") or not self:isConnected() then return end
+    if self.applying_remote then return end
+    local state = self.browser.getState()
+    if not state then return end
+    local previous = self.browser_state
+    if previous and previous.page == state.page and previous.path == state.path
+            and previous.count == state.count then
+        return
+    end
+    self:broadcastBrowser()
 end
 
 --------------------------------------------------------------------------
@@ -1071,6 +1233,12 @@ function Core:handleMessage(link, msg)
         self:sendStateTo(link)
     elseif msg.type == Protocol.TYPO then
         self:applyTypography(msg, link)
+    elseif msg.type == Protocol.BROWSE then
+        self:applyBrowser(msg)
+    elseif msg.type == Protocol.BTURN then
+        if self:isMaster() and self:get("slave_can_turn") then
+            self:applyBrowserTurn(Protocol.num(msg, "dir", 1))
+        end
     elseif msg.type == Protocol.BOOK_REQ then
         self:handleBookRequest(link, msg)
     elseif msg.type == Protocol.BOOK_HEAD then

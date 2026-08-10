@@ -48,6 +48,10 @@ local function connectPair(options)
     callSlave(("Core.settings.token = %q"):format(options.slave_token or "K7F2QX"))
     callSlave(("Core.settings.peer_port = %d"):format(DUO_PORT))
     callSlave("Core.settings.discovery_port = 19971")
+    -- Set on both sides: the slave consults its own copy when deciding
+    -- whether to forward a turn, and a test that switched it off would
+    -- otherwise leak into every test after it.
+    callSlave(("Core.settings.slave_can_turn = %s"):format(tostring(options.slave_can_turn ~= false)))
 
     callMaster("Core:start('master')")
     callSlave(("Core:start('slave', { host = '127.0.0.1', port = %d })"):format(DUO_PORT))
@@ -286,6 +290,128 @@ T.describe("matching typography", function()
         T.assertEquals(callSlave("Core:restoreTypography()"), "true")
         T.assertEquals(fontSize(slave), 30, "the slave's own size did not come back")
         T.assertEquals(callSlave("Core:hasTypographyBackup()"), "false")
+    end)
+end)
+
+T.describe("one book list across two screens", function()
+    -- The same spread idea, one level up: the first screenful of the folder
+    -- here, the next screenful there.
+    local function browseTogether(options)
+        options = options or {}
+        local items = {}
+        for index = 1, (options.count or 20) do
+            items[index] = ("book%02d.epub"):format(index)
+        end
+        local setup = ("D:openFileManager{ path = '/books', perpage = %d, items = %s }")
+            :format(options.perpage or 6, "{'" .. table.concat(items, "','") .. "'}")
+
+        callMaster("Core:stop('reset')")
+        callSlave("Core:stop('reset')")
+        callMaster(setup)
+        callSlave(options.slave_setup or setup)
+        connectPair()
+        callMaster("Core.settings.share_browser = true")
+        callSlave("Core.settings.share_browser = true")
+        callMaster("Core:broadcastBrowser()")
+    end
+
+    local function visible(device)
+        return controller:call(device, "table.concat(D:visibleBooks(), ',')")
+    end
+
+    T.it("shows the next screenful of books on the second device", function()
+        browseTogether{ count = 20, perpage = 6 }
+        controller:assertEventually(slave, "UI.file_chooser.page", 2,
+            "the slave is not on the second screenful")
+        T.assertEquals(visible(master), "book01.epub,book02.epub,book03.epub,book04.epub,book05.epub,book06.epub")
+        T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
+    end)
+
+    T.it("moves the whole row by two screenfuls at a time", function()
+        browseTogether{ count = 40, perpage = 6 }
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+
+        -- A swipe on the master: it takes screen 3, the slave takes screen 4.
+        callMaster("UI.file_chooser:onNextPage()")
+        controller:assertEventually(master, "UI.file_chooser.page", 3,
+            "the master must skip the screenful the slave was showing")
+        controller:assertEventually(slave, "UI.file_chooser.page", 4)
+        T.assertEquals(visible(master), "book13.epub,book14.epub,book15.epub,book16.epub,book17.epub,book18.epub")
+        T.assertEquals(visible(slave), "book19.epub,book20.epub,book21.epub,book22.epub,book23.epub,book24.epub")
+
+        callMaster("UI.file_chooser:onPrevPage()")
+        controller:assertEventually(master, "UI.file_chooser.page", 1)
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+    end)
+
+    T.it("lets a swipe on the slave move the row", function()
+        browseTogether{ count = 40, perpage = 6 }
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        callSlave("UI.file_chooser:onNextPage()")
+        controller:assertEventually(master, "UI.file_chooser.page", 3,
+            "the slave's swipe did not reach the master")
+        controller:assertEventually(slave, "UI.file_chooser.page", 4)
+    end)
+
+    T.it("stops at the end of the list instead of wrapping round", function()
+        -- KOReader's own paging cycles back to the first page at the end,
+        -- which would put the two devices on unrelated parts of the list.
+        browseTogether{ count = 20, perpage = 6 } -- four screenfuls
+        callMaster("UI.file_chooser:onNextPage()")
+        controller:assertEventually(master, "UI.file_chooser.page", 3)
+        callMaster("UI.file_chooser:onNextPage()")
+        socket.sleep(0.6)
+        T.assertEquals(controller:number(master, "UI.file_chooser.page"), 4,
+            "the master should stop at the last screenful")
+        T.assertEquals(controller:number(slave, "UI.file_chooser.page"), 4)
+    end)
+
+    T.it("makes both devices fit the same number of books on a screen", function()
+        browseTogether{ count = 24, perpage = 6, slave_setup =
+            "D:openFileManager{ path = '/books', perpage = 4, items = " ..
+            "{'book01.epub','book02.epub','book03.epub','book04.epub','book05.epub','book06.epub'," ..
+            "'book07.epub','book08.epub','book09.epub','book10.epub','book11.epub','book12.epub'," ..
+            "'book13.epub','book14.epub','book15.epub','book16.epub','book17.epub','book18.epub'," ..
+            "'book19.epub','book20.epub','book21.epub','book22.epub','book23.epub','book24.epub'} }" }
+        controller:assertEventually(slave, "UI.file_chooser.perpage", 6,
+            "the slave kept its own screenful size, so the halves cannot line up")
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
+    end)
+
+    T.it("says so when the two devices hold different books", function()
+        browseTogether{ count = 20, perpage = 6, slave_setup =
+            "D:openFileManager{ path = '/books', perpage = 6, items = {'other01.epub','other02.epub'} }" }
+        controller:assertEventually(slave,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('not line up') then return true end end return false end)()",
+            true, "no warning about the two libraries differing")
+    end)
+
+    T.it("leaves the browser alone when switched off", function()
+        browseTogether{ count = 20, perpage = 6 }
+        callSlave("Core.settings.share_browser = false")
+        callSlave("UI.file_chooser:onGotoPage(1)")
+        callMaster("UI.file_chooser:onNextPage()")
+        socket.sleep(1)
+        T.assertEquals(controller:number(slave, "UI.file_chooser.page"), 1,
+            "the slave moved with sharing switched off")
+        callSlave("Core.settings.share_browser = true")
+    end)
+
+    T.it("keeps the link when a book is opened from the list", function()
+        browseTogether{ count = 20, perpage = 6 }
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+
+        -- KOReader throws the whole file manager away and builds a ReaderUI,
+        -- which is the moment a connection owned by the UI would die.
+        callMaster("D:openDocument{ page_count = 300 }")
+        callSlave("D:openDocument{ page_count = 300 }")
+
+        T.assertEquals(callMaster("Core:isConnected()"), "true",
+            "the link died on the way from the list into a book")
+        setMasterPage(12)
+        controller:assertEventually(slave, "D:getPage()", 13,
+            "the spread did not resume in the book")
     end)
 end)
 

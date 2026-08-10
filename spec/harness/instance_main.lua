@@ -28,14 +28,21 @@ local device = Instance.new{
     debug = os.getenv("DUO_DEBUG") == "1",
 }
 
--- The snippets from the controller run with the device in scope.
+-- The snippets from the controller run with the device in scope. `UI` is
+-- resolved on every lookup rather than captured: opening a book or going
+-- back to the file browser replaces it, exactly as in KOReader, and a
+-- captured reference would quietly go stale.
 local sandbox = setmetatable({
     D = device,
     Core = device.Core,
-    UI = device.ui,
     UIManager = device.UIManager,
     Protocol = Protocol,
-}, { __index = _G })
+}, {
+    __index = function(_, key)
+        if key == "UI" then return device.ui end
+        return _G[key]
+    end,
+})
 
 -- The controller may be on the other side of a network namespace boundary
 -- when the direct-link tests are running.

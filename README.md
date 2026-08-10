@@ -134,6 +134,7 @@ the pages currently on show.
 | **Layout → This device holds the right-hand page** | Swaps the sides: the slave shows the *earlier* page. |
 | **Link** | Wi-Fi (any IP network, including Bluetooth PAN), a direct router-free link, or a Bluetooth/serial device. |
 | **Match typography** | Keep both devices laying the book out identically. On by default. |
+| **Share the book list too** | Spread the file browser across the devices as well. On by default. |
 | **Page turns from the other device** | Off makes the slave a display only. |
 | **Follow the master's book** | When the master opens a book, open it here too. |
 | **Send the book if the other device lacks it** | Hand the file over the same link when the other device does not have it. On by default. |
@@ -144,6 +145,30 @@ the pages currently on show.
 
 Duo also registers two actions for gestures and hardware keys, under
 Dispatcher: **Duo: start/stop** and **Duo: resync now**.
+
+## The book list, spread too
+
+The same idea one level up: the master shows the first screenful of the
+folder, the next device shows the screenful after that, and one swipe moves
+the whole row along. Twice the library in view, and opening a book on either
+device opens it on both.
+
+![One book list across two screens](screenshots/library-spread.png)
+
+Both devices need the same books in the same folder for the halves to line
+up, which is what **Send the book if the other device lacks it** is for.
+Duo checks rather than assumes: it compares how many items each device is
+showing and a hash of their names, and says so plainly if the two libraries
+differ instead of showing you a jumbled row.
+
+Items per page is matched along with the typography, since that is what
+decides where one screenful ends and the next begins. Unlike KOReader's own
+paging, the shared list stops at the last screenful rather than wrapping
+round to the first — wrapping would put the devices on unrelated parts of
+the list.
+
+Switch it off with **Share the book list too** if you would rather browse
+independently and only share the reading.
 
 ## Sending the book
 
@@ -263,16 +288,17 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-143 tests, no mocking of the interesting parts:
+162 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 34 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, and a book sent between devices |
+| `integration_spec` | 42 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
+| `browser_spec` | 11 | Reading and paging the book list, the listing hash, matching items-per-page, and refusing a folder the device does not have |
 | `booktransfer_spec` | 13 | Base64 against the published vectors, every byte value round-tripped, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
@@ -343,6 +369,7 @@ duo.koplugin/
     core.lua                the engine: roles, links, who shows which page
     spread.lua              spread arithmetic, kept dependency-free
     typography.lua          keeping both devices laying the book out alike
+    browser.lua             the book list, spread across the devices
     booktransfer.lua        sending the book file itself, a chunk at a time
     base64.lua              so a book fits down a line-based link
     link.lua                one authenticated connection: handshake, heartbeat
