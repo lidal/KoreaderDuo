@@ -289,6 +289,86 @@ T.describe("matching typography", function()
     end)
 end)
 
+T.describe("sending the book itself", function()
+    -- Following someone else's reading is not much use if you cannot open
+    -- what they are reading.
+    local BOOK_DIR = LOG_DIR .. "/duo-book-src"
+
+    local function makeBook(name, size)
+        os.execute("mkdir -p " .. BOOK_DIR)
+        local path = ("%s/%s"):format(BOOK_DIR, name)
+        local file = assert(io.open(path, "wb"))
+        -- Every byte value, so nothing can quietly mangle it in transit.
+        local parts = {}
+        for index = 1, size do parts[index] = string.char((index * 13) % 256) end
+        file:write(table.concat(parts))
+        file:close()
+        return path
+    end
+
+    local function readFile(path)
+        local file = io.open(path, "rb")
+        if not file then return nil end
+        local contents = file:read("*a")
+        file:close()
+        return contents
+    end
+
+    T.it("sends a book the slave does not have, and opens it there", function()
+        local path = makeBook("sent-book.epub", 40000)
+        connectPair()
+        callSlave("Core.settings.sync_books = true")
+        callMaster("Core.settings.sync_books = true")
+        callSlave("UIManager.shown_log = {}")
+
+        -- The master opens a book that exists only on its side.
+        callMaster(("UI.document.file = %q"):format(path))
+        callMaster("UI.digest = 'digest-sent-book'")
+        callMaster("Core:broadcastDocument()")
+
+        -- The slave asks for it, receives it, and opens what arrived.
+        controller:assertEventually(slave,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return true end end return false end)()",
+            true, "the slave never opened the book it was sent", 25)
+
+        local landed = controller:call(slave,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return m.text end end return '' end)()")
+        T.assertMatch(landed, "sent%-book%.epub")
+        T.assertEquals(readFile(landed), readFile(path),
+            "the book that arrived is not the book that was sent")
+        os.remove(landed)
+    end)
+
+    T.it("will not hand over a book it does not have open", function()
+        connectPair()
+        callSlave("Core.settings.sync_books = true")
+        callSlave("UIManager.shown_log = {}")
+        -- A peer asking for an arbitrary path gets nothing.
+        callSlave("Core.book_request = { file = '/etc/passwd' }")
+        callSlave("Core:getReadyLinks()[1]:send('BOOK_REQ', { file = '/etc/passwd' })")
+        controller:assertEventually(slave,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('not the book') then return true end end return false end)()",
+            true, "the master should refuse a book it does not have open")
+        callSlave("Core.book_request = nil")
+    end)
+
+    T.it("says nothing and sends nothing when switched off", function()
+        local path = makeBook("unsent-book.epub", 4000)
+        callSlave("Core:stop('reset')")
+        connectPair()
+        callSlave("Core.settings.sync_books = false")
+        callSlave("UIManager.shown_log = {}")
+        callMaster(("UI.document.file = %q"):format(path))
+        callMaster("UI.digest = 'digest-unsent'")
+        callMaster("Core:broadcastDocument()")
+        socket.sleep(2)
+        T.assertEquals(callSlave("tostring(Core.book_receiver)"), "nil",
+            "a book was fetched with sending switched off")
+        callSlave("Core.settings.sync_books = true")
+        os.execute("rm -rf " .. BOOK_DIR)
+    end)
+end)
+
 T.describe("three devices", function()
     -- Nothing in the design caps this at two: each device gets a slot and
     -- shows the master's page plus its slot number, and a turn moves the

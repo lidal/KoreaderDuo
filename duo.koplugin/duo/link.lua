@@ -136,6 +136,12 @@ function Link:close(reason, polite)
     end
 end
 
+--- Bytes still queued on the transport, for flow control when sending a book.
+function Link:pending()
+    if self.stream.pending then return self.stream:pending() end
+    return 0
+end
+
 function Link:describe()
     return (self.peer_name or "peer") .. " (" .. self.stream:getPeerName() .. ")"
 end

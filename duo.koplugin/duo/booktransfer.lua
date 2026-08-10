@@ -1,0 +1,188 @@
+--[[--
+Sending the book itself.
+
+"Follow the master's book" is only useful if the other device has the book.
+When it does not, the file goes down the same link the page numbers do,
+which means a slave can be handed a book it has never seen and be reading
+the right page of it a moment later.
+
+Reading and writing happen a chunk at a time, driven from the poll loop, so
+a 4 MB EPUB never blocks the reader. The sender stops pushing when the
+transport's outgoing buffer fills, which is what keeps a slow serial link
+from swallowing memory.
+
+@module duo.booktransfer
+--]]--
+
+local Base64 = require("duo/base64")
+
+local BookTransfer = {}
+
+--- Bytes per message. Encoded this is 3840 characters, comfortably inside
+--- the protocol's line limit.
+BookTransfer.CHUNK = 2880
+
+--- Stop pushing when this much is already queued on the transport.
+BookTransfer.HIGH_WATER = 48 * 1024
+
+--- Refuse anything larger than this by default (bytes).
+BookTransfer.DEFAULT_MAX = 64 * 1024 * 1024
+
+--- Strips any directory part, so a peer cannot choose where a file lands.
+function BookTransfer.safeName(name)
+    name = tostring(name or ""):gsub("^.*[/\\]", "")
+    name = name:gsub("%c", "")
+    if name == "" or name == "." or name == ".." then
+        return nil
+    end
+    return name
+end
+
+--------------------------------------------------------------------------
+-- Sender
+--------------------------------------------------------------------------
+
+local Sender = {}
+Sender.__index = Sender
+
+--- Opens a file for sending.
+-- @treturn table a Sender, or nil plus an error message
+function BookTransfer.newSender(path, options)
+    options = options or {}
+    local file, err = io.open(path, "rb")
+    if not file then
+        return nil, err or ("cannot read " .. tostring(path))
+    end
+    local size = file:seek("end")
+    file:seek("set")
+    return setmetatable({
+        file = file,
+        path = path,
+        size = size,
+        sent = 0,
+        chunk_size = options.chunk_size or BookTransfer.CHUNK,
+        done = false,
+    }, Sender)
+end
+
+--- The next chunk, already encoded, or nil at the end of the file.
+function Sender:next()
+    if self.done or not self.file then return nil end
+    local data = self.file:read(self.chunk_size)
+    if not data or #data == 0 then
+        self.done = true
+        return nil
+    end
+    self.sent = self.sent + #data
+    return Base64.encode(data)
+end
+
+function Sender:progress()
+    if not self.size or self.size == 0 then return 1 end
+    return self.sent / self.size
+end
+
+function Sender:close()
+    if self.file then
+        self.file:close()
+        self.file = nil
+    end
+    self.done = true
+end
+
+--------------------------------------------------------------------------
+-- Receiver
+--------------------------------------------------------------------------
+
+local Receiver = {}
+Receiver.__index = Receiver
+
+--[[--
+Opens somewhere to put an incoming book.
+
+Written to a part-file first and only moved into place once the whole thing
+has arrived, so an interrupted transfer never leaves something that looks
+like a readable book.
+
+@tparam table options directory, name, size, max_bytes
+--]]--
+function BookTransfer.newReceiver(options)
+    local name = BookTransfer.safeName(options.name)
+    if not name then
+        return nil, "that is not a file name"
+    end
+    local size = tonumber(options.size) or 0
+    local limit = options.max_bytes or BookTransfer.DEFAULT_MAX
+    if size > limit then
+        return nil, ("the book is %.1f MB, over the %.0f MB limit"):format(
+            size / 1048576, limit / 1048576)
+    end
+
+    local directory = options.directory or "."
+    os.execute(("mkdir -p %q 2>/dev/null"):format(directory))
+    local final_path = directory .. "/" .. name
+    local part_path = final_path .. ".duopart"
+
+    local file, err = io.open(part_path, "wb")
+    if not file then
+        return nil, err or ("cannot write to " .. directory)
+    end
+
+    return setmetatable({
+        file = file,
+        name = name,
+        directory = directory,
+        final_path = final_path,
+        part_path = part_path,
+        size = size,
+        received = 0,
+    }, Receiver)
+end
+
+--- Writes one encoded chunk.
+-- @treturn boolean true, or false plus an error message
+function Receiver:write(encoded)
+    if not self.file then return false, "transfer already finished" end
+    local data, err = Base64.decode(encoded)
+    if not data then return false, err end
+    if self.size > 0 and self.received + #data > self.size then
+        return false, "the sender is sending more than it promised"
+    end
+    self.file:write(data)
+    self.received = self.received + #data
+    return true
+end
+
+function Receiver:progress()
+    if not self.size or self.size == 0 then return 0 end
+    return self.received / self.size
+end
+
+--- Moves the finished file into place.
+-- @treturn string the path, or nil plus an error message
+function Receiver:finish()
+    if not self.file then return nil, "transfer already finished" end
+    self.file:close()
+    self.file = nil
+    if self.size > 0 and self.received ~= self.size then
+        os.remove(self.part_path)
+        return nil, ("the book arrived incomplete (%d of %d bytes)"):format(self.received, self.size)
+    end
+    os.remove(self.final_path)
+    local ok, err = os.rename(self.part_path, self.final_path)
+    if not ok then
+        os.remove(self.part_path)
+        return nil, err or "could not put the book in place"
+    end
+    return self.final_path
+end
+
+function Receiver:abort()
+    if self.file then
+        self.file:close()
+        self.file = nil
+    end
+    os.remove(self.part_path)
+end
+
+return BookTransfer

@@ -241,7 +241,14 @@ function Env.install(options)
         ["ui/widget/buttondialog"] = makeWidget("ButtonDialog"),
         ["ui/widget/confirmbox"] = makeWidget("ConfirmBox"),
         ["luasettings"] = makeLuaSettings(),
-        ["datastorage"] = { getSettingsDir = function() return "/tmp" end },
+        ["datastorage"] = {
+            getSettingsDir = function() return "/tmp" end,
+            -- Per-device, so two simulated readers do not write over each
+            -- other when a book is sent from one to the other.
+            getDataDir = function()
+                return options.data_dir or ("/tmp/duo-data-" .. (options.device_name or "device"))
+            end,
+        },
         ["device"] = {
             model = options.device_name or "TestReader",
             isKindle = function() return false end,

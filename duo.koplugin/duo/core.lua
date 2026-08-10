@@ -71,6 +71,8 @@ local DEFAULTS = {
     slave_can_turn = true,
     follow_document = true,
     match_typography = true,
+    sync_books = true,
+    max_book_mb = 64,
     device_name = "",
     autostart = false,
     autostart_role = "off",
@@ -534,6 +536,7 @@ function Core:poll()
     -- user can reach these from the config dialog, a gesture, a profile or
     -- another plugin, and a poll every second and a half catches all of it.
     self:checkTypography()
+    self:pumpBookSender()
 end
 
 --- Wraps a freshly opened stream in an authenticated link.
@@ -706,6 +709,189 @@ function Core:applyRemotePage(page)
         self:log("could not go to page", page, err)
     end
     self:changed()
+end
+
+--------------------------------------------------------------------------
+-- Sending the book itself
+--------------------------------------------------------------------------
+
+--[[--
+Asks the master for a book this device does not have.
+
+Called when the master announces a document that is nowhere on this device.
+Following someone else's reading is not much use if you cannot open what
+they are reading.
+--]]--
+function Core:requestBook(msg)
+    if not self:get("sync_books") then return false end
+    if self:isMaster() then return false end
+    local link = self:getReadyLinks()[1]
+    if not link then return false end
+    if self.book_receiver or self.book_request then return false end
+
+    self.book_request = {
+        file = msg.file,
+        digest = msg.digest,
+        title = msg.title,
+        started = Util.now(),
+    }
+    link:send(Protocol.BOOK_REQ, { file = msg.file, digest = msg.digest or "" })
+    self:notify(("Duo: asking for %s"):format(msg.title ~= "" and msg.title or "the book"))
+    return true
+end
+
+--- The master starts sending a book a slave asked for.
+function Core:handleBookRequest(link, msg)
+    if not self:isMaster() then return end
+    local BookTransfer = require("duo/booktransfer")
+
+    if not self:get("sync_books") then
+        link:send(Protocol.BOOK_ERR, { reason = "the other device is not set up to send books" })
+        return
+    end
+    -- Only ever the book actually open here: a peer does not get to name a
+    -- path and be handed whatever is at it.
+    local document = self.reader and self.reader.getDocument() or nil
+    if not document or not document.file or document.file ~= msg.file then
+        link:send(Protocol.BOOK_ERR, { reason = "that is not the book this device has open" })
+        return
+    end
+
+    local sender, err = BookTransfer.newSender(document.file)
+    if not sender then
+        link:send(Protocol.BOOK_ERR, { reason = tostring(err) })
+        return
+    end
+    local limit = self:get("max_book_mb") * 1024 * 1024
+    if sender.size > limit then
+        sender:close()
+        link:send(Protocol.BOOK_ERR, {
+            reason = ("the book is %.1f MB, over this device's %d MB limit"):format(
+                sender.size / 1048576, self:get("max_book_mb")),
+        })
+        return
+    end
+
+    self.book_sender = { sender = sender, link = link, name = document.file:gsub("^.*/", "") }
+    link:send(Protocol.BOOK_HEAD, {
+        name = self.book_sender.name,
+        size = sender.size,
+        digest = document.digest or "",
+        title = document.title or "",
+    })
+    self:notify(("Duo: sending %s (%.1f MB)"):format(self.book_sender.name, sender.size / 1048576))
+    self:changed()
+end
+
+--- Pushes as much of the book as the link will take right now.
+function Core:pumpBookSender()
+    local transfer = self.book_sender
+    if not transfer then return end
+    if transfer.link:isClosed() then
+        transfer.sender:close()
+        self.book_sender = nil
+        return
+    end
+
+    local BookTransfer = require("duo/booktransfer")
+    while transfer.link:pending() < BookTransfer.HIGH_WATER do
+        local chunk = transfer.sender:next()
+        if not chunk then
+            transfer.link:send(Protocol.BOOK_DONE, { size = transfer.sender.size })
+            transfer.sender:close()
+            self.book_sender = nil
+            self:notify("Duo: the book has been sent")
+            self:changed()
+            return
+        end
+        local ok = transfer.link:send(Protocol.BOOK_DATA, { b = chunk })
+        if not ok then
+            transfer.sender:close()
+            self.book_sender = nil
+            return
+        end
+    end
+    self:changed()
+end
+
+function Core:handleBookHead(msg)
+    local BookTransfer = require("duo/booktransfer")
+    -- Unsolicited books are refused: something has to have asked.
+    if not self.book_request then
+        return
+    end
+    if self.book_receiver then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+    end
+
+    local directory = self.hooks and self.hooks.getBookDir and self.hooks.getBookDir() or "."
+    local receiver, err = BookTransfer.newReceiver{
+        directory = directory,
+        name = msg.name,
+        size = Protocol.num(msg, "size", 0),
+        max_bytes = self:get("max_book_mb") * 1024 * 1024,
+    }
+    if not receiver then
+        self.book_request = nil
+        self:alert(("Duo could not take the book: %s"):format(tostring(err)))
+        return
+    end
+    self.book_receiver = receiver
+    self.book_title = msg.title ~= "" and msg.title or msg.name
+    self:changed()
+end
+
+function Core:handleBookData(msg)
+    if not self.book_receiver then return end
+    local ok, err = self.book_receiver:write(msg.b or "")
+    if not ok then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+        self.book_request = nil
+        self:alert(("Duo could not save the book: %s"):format(tostring(err)))
+    end
+end
+
+function Core:handleBookDone()
+    if not self.book_receiver then return end
+    local path, err = self.book_receiver:finish()
+    self.book_receiver = nil
+    local request = self.book_request
+    self.book_request = nil
+    self:changed()
+
+    if not path then
+        self:alert(("Duo could not save the book: %s"):format(tostring(err)))
+        return
+    end
+    self:notify(("Duo: received %s"):format(self.book_title or "the book"))
+    -- Straight into it, which is the whole point of having asked.
+    if self.hooks and self.hooks.openDocument and request then
+        self.opening_file = nil
+        self.hooks.openDocument(path, { title = self.book_title or "", digest = request.digest or "" })
+    end
+end
+
+function Core:handleBookError(msg)
+    if self.book_receiver then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+    end
+    self.book_request = nil
+    self:changed()
+    self:alert(("Duo could not fetch the book: %s"):format(msg.reason or "the other device refused"))
+end
+
+--- "sending 42%" / "receiving 42%", for the status line.
+function Core:getTransferProgress()
+    if self.book_sender then
+        return "sending", self.book_sender.sender:progress()
+    end
+    if self.book_receiver then
+        return "receiving", self.book_receiver:progress()
+    end
+    return nil
 end
 
 --------------------------------------------------------------------------
@@ -885,6 +1071,16 @@ function Core:handleMessage(link, msg)
         self:sendStateTo(link)
     elseif msg.type == Protocol.TYPO then
         self:applyTypography(msg, link)
+    elseif msg.type == Protocol.BOOK_REQ then
+        self:handleBookRequest(link, msg)
+    elseif msg.type == Protocol.BOOK_HEAD then
+        self:handleBookHead(msg)
+    elseif msg.type == Protocol.BOOK_DATA then
+        self:handleBookData(msg)
+    elseif msg.type == Protocol.BOOK_DONE then
+        self:handleBookDone()
+    elseif msg.type == Protocol.BOOK_ERR then
+        self:handleBookError(msg)
     elseif msg.type == Protocol.DOC then
         if self:isMaster() then return end
         self:handleRemoteDocument(msg)
@@ -959,6 +1155,12 @@ end
 function Core:getStatusText()
     if not self:isActive() then
         return "Off"
+    end
+    local direction, progress = self:getTransferProgress()
+    if direction then
+        return ("%s %s · %d%%"):format(
+            direction == "sending" and "Sending" or "Receiving",
+            self.book_title or "a book", math.floor((progress or 0) * 100))
     end
     if self:isMaster() then
         local ready = self:getReadyLinks()

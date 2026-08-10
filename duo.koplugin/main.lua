@@ -72,6 +72,7 @@ function Duo:init()
             onChanged = function() end,
             openDocument = function(file, msg) self:openRemoteDocument(file, msg) end,
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
+            getBookDir = function() return Duo:getBookDir() end,
             openFirewall = function(port)
                 if Device:isKindle() then NetUtil.openFirewall(port) end
             end,
@@ -110,6 +111,17 @@ function Duo:ensurePolling()
         if registered == poller then return end
     end
     UIManager:insertZMQ(poller)
+end
+
+--- Where a book sent by the other device is put.
+-- Under the reader's own library folder when there is one, so it turns up
+-- in the file manager where books are expected to be.
+function Duo:getBookDir()
+    local home = G_reader_settings and G_reader_settings:readSetting("home_dir")
+    if not home or home == "" then
+        home = DataStorage:getDataDir()
+    end
+    return home .. "/Duo"
 end
 
 function Duo:getDefaultDeviceName()
@@ -339,6 +351,10 @@ function Duo:openRemoteDocument(file, msg)
         target = self:findLocalCopy(file)
     end
     if not target then
+        -- Not here, and not anywhere else on this device: ask for it.
+        if msg and Core:requestBook(msg) then
+            return
+        end
         UIManager:show(InfoMessage:new{
             text = T(_("Duo: the master is reading a book this device does not have:\n%1"),
                      msg and msg.title ~= "" and msg.title or file),
@@ -849,6 +865,12 @@ When you connect, the master's settings win. Change anything afterwards, on eith
             help_text = _("When the master opens a book, open the same one here."),
             checked_func = function() return Core:get("follow_document") end,
             callback = function() Core:set("follow_document", not Core:get("follow_document")) end,
+        },
+        {
+            text = _("Send the book if the other device lacks it"),
+            help_text = _("When the master opens a book this device does not have, fetch it over the same link. Only the book the master actually has open can be sent."),
+            checked_func = function() return Core:get("sync_books") end,
+            callback = function() Core:set("sync_books", not Core:get("sync_books")) end,
         },
         {
             text = _("Start Duo when KOReader starts"),

@@ -136,6 +136,7 @@ the pages currently on show.
 | **Match typography** | Keep both devices laying the book out identically. On by default. |
 | **Page turns from the other device** | Off makes the slave a display only. |
 | **Follow the master's book** | When the master opens a book, open it here too. |
+| **Send the book if the other device lacks it** | Hand the file over the same link when the other device does not have it. On by default. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role used. |
 | **Pairing code** | Shared secret. Empty means any device may connect. |
 | **Device name** | What the other device calls this one. |
@@ -143,6 +144,31 @@ the pages currently on show.
 
 Duo also registers two actions for gestures and hardware keys, under
 Dispatcher: **Duo: start/stop** and **Duo: resync now**.
+
+## Sending the book
+
+Following someone else's reading is not much use if you cannot open what
+they are reading. When the master opens a book the other device does not
+have, that device asks for it and the file comes down the same link the page
+numbers do — then opens, at the right page, as part of the spread.
+
+Nothing to set up: it is on by default, and there is no server, no cable and
+no cloud account involved. The status line shows the progress while it runs.
+
+- **Only the open book can be asked for.** A request names a file, and the
+  master answers only if that is the book it actually has open. There is no
+  way to ask a paired device for an arbitrary path.
+- **Books land in a `Duo` folder** inside your library, so they turn up in
+  the file manager where you would expect.
+- **Half a book is never left behind.** The file is written to a part-file
+  and only moved into place once all of it has arrived and the size matches.
+- **There is a size limit** — 64 MB by default — so a mistyped tap cannot
+  push a 2 GB scan down a slow link.
+
+Over Wi-Fi a normal EPUB arrives in a second or two. Over a serial link it
+will take as long as the line takes; the transfer is chunked and paced by
+how fast the other end drains it, so a slow link makes it slow rather than
+making it fail.
 
 ## Matching typography
 
@@ -237,16 +263,17 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-125 tests, no mocking of the interesting parts:
+143 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 29 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, and typography converging from both directions |
+| `integration_spec` | 34 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, and a book sent between devices |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
+| `booktransfer_spec` | 13 | Base64 against the published vectors, every byte value round-tripped, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
@@ -276,6 +303,17 @@ own crengine and page turns arriving as real key events through its input
 stack. The status line in the settings screenshot — `Master · Kindle-Right ·
 pages 7–8` — is the plugin reporting the live connection.
 
+Both of the features above were checked there too, not only in the suite:
+
+- **Typography.** Raising the font size from 22 to 24 in the master's own
+  settings panel moved the slave with it. Both books reflowed from 256 pages
+  to 279, and the spread stayed intact.
+- **Sending the book.** With the master's library hidden from the slave (a
+  tmpfs over it in a private mount namespace, so the file really was
+  missing), the slave asked for the book, received all 174,311 bytes —
+  identical MD5 — and opened it as page 10 of the spread while the master
+  sat on page 9.
+
 To repeat it on a desktop:
 
 ```sh
@@ -304,6 +342,9 @@ duo.koplugin/
   duo/
     core.lua                the engine: roles, links, who shows which page
     spread.lua              spread arithmetic, kept dependency-free
+    typography.lua          keeping both devices laying the book out alike
+    booktransfer.lua        sending the book file itself, a chunk at a time
+    base64.lua              so a book fits down a line-based link
     link.lua                one authenticated connection: handshake, heartbeat
     protocol.lua            message framing
     transport_tcp.lua       non-blocking TCP, for Wi-Fi and Bluetooth PAN

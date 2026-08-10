@@ -98,6 +98,11 @@ function Stream:isClosed()
     return self.closed
 end
 
+--- Bytes still waiting to go out, so a bulk sender knows when to pause.
+function Stream:pending()
+    return #self.out_buffer
+end
+
 --- "1.2.3.4:9970", for the connection status screen.
 function Stream:getPeerName()
     local ok, ip, port = pcall(function()

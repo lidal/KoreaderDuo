@@ -154,6 +154,11 @@ function Stream:isClosed()
     return self.closed
 end
 
+--- Bytes still waiting to go out, so a bulk sender knows when to pause.
+function Stream:pending()
+    return #self.out_buffer
+end
+
 function Stream:getPeerName()
     return self.path
 end

@@ -29,6 +29,7 @@ function Instance.new(options)
     options = options or {}
     local env = Env.install{
         device_name = options.name or "TestReader",
+        data_dir = options.data_dir,
         debug = options.debug,
     }
 
