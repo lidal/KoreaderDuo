@@ -7,15 +7,14 @@ what to display. The other is the **slave**: it shows the page it is given
 and can pass page turns back. Put them next to each other and you get a left
 page and a right page, and a single tap moves both.
 
-```
-   ┌───────────────┐   ┌───────────────┐
-   │               │   │               │
-   │   page 12     │   │   page 13     │
-   │   (master)    │◄─►│   (slave)     │
-   │               │   │               │
-   └───────────────┘   └───────────────┘
-        one tap advances the pair to 14 · 15
-```
+![One tap on the master moves both devices on by two](screenshots/page-turn.png)
+
+Two copies of KOReader, side by side, reading *Alice's Adventures in
+Wonderland*. The master is on page 7 and the slave on page 8, and the prose
+runs straight across the gap: the left screen ends *"getting somewhere near
+the centre of the"* and the right one picks up *"earth. Let me see: that
+would be four thousand miles down…"*. One tap moves the pair to 9 and 10 —
+by two, so no page is read twice and none is skipped.
 
 It also does **mirror mode**, where both devices show the same page — handy
 for reading along with somebody else.
@@ -122,6 +121,12 @@ network, so leave Duo on **Link → Wi-Fi** and pair as usual.
 
 ## Settings
 
+Everything lives under **☰ → Network → Duo (two-device spread)**. The top line
+is the live connection: which role this device has, which peer it found, and
+the pages currently on show.
+
+<img src="screenshots/duo-menu.png" alt="Duo's settings menu in KOReader, showing the status line &quot;Master · Kindle-Right · pages 7–8&quot;" width="420">
+
 | Setting | What it does |
 | --- | --- |
 | **Layout → Two-page spread** | Master shows page N, slave shows N+1. A turn moves by two. |
@@ -208,12 +213,43 @@ luajit tools/duo-demo.lua 3      # run three devices, print what each displayed
 luajit tools/duo-menu-dump.lua   # print the menu exactly as the device builds it
 ```
 
-KOReader itself cannot be built in this environment (it needs a compiled C
-core), so `spec/harness` provides the frontend API the plugin uses — the same
-module names, signatures and event-propagation rules — and the plugin file is
-loaded unmodified, exactly as KOReader's plugin loader does it. The devices in
-the integration tests are separate operating-system processes sharing no state
-but a socket.
+The suite runs the plugin against `spec/harness`, which provides the frontend
+API KOReader exposes — the same module names, signatures and event-propagation
+rules — with `main.lua` loaded unmodified, exactly as KOReader's plugin loader
+does it. That keeps the suite fast and lets it stage things that are tedious to
+arrange in a running application: a yanked connection, a wrong pairing code,
+two network namespaces. The devices in the integration suites are separate
+operating-system processes sharing nothing but a socket.
+
+The harness is not the last word, though — see below.
+
+## Verified in KOReader itself
+
+The screenshots above are two copies of **KOReader v2026.03** running the
+plugin: separate processes, separate settings directories, paired over a real
+socket, with Project Gutenberg's *Alice in Wonderland* paginated by KOReader's
+own crengine and page turns arriving as real key events through its input
+stack. The status line in the settings screenshot — `Master · Kindle-Right ·
+pages 7–8` — is the plugin reporting the live connection.
+
+To repeat it on a desktop:
+
+```sh
+# any recent release; assets are per-tag, so check the name for yours
+curl -L -o koreader.AppImage \
+  https://github.com/koreader/koreader/releases/download/v2026.03/koreader-v2026.03-x86_64.AppImage
+chmod +x koreader.AppImage && ./koreader.AppImage --appimage-extract
+cp -r duo.koplugin squashfs-root/usr/lib/koreader/plugins/
+
+# two instances, each with its own HOME so their settings stay apart
+cd squashfs-root/usr/lib/koreader
+KO_MULTIUSER=1 HOME=/tmp/ko1 ./reader.lua /path/to/book.epub &
+KO_MULTIUSER=1 HOME=/tmp/ko2 ./reader.lua /path/to/book.epub &
+```
+
+Then pair them from the menu as usual, with the second one connecting to
+`127.0.0.1`. Setting `["autostart"] = true` and `["autostart_role"]` in
+`$HOME/.config/koreader/settings/duo.lua` skips the tapping.
 
 ## Layout
 
