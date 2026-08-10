@@ -34,15 +34,25 @@ Document.__index = Document
 
 function Reader.newDocument(options)
     options = options or {}
+    -- With a real book loaded, the page count comes from its layout and the
+    -- pages have text on them; without one, the document is just a count.
+    local book = options.book
     return setmetatable({
-        file = options.file or "/books/moby-dick.epub",
-        page_count = options.page_count or 300,
+        file = options.file or (book and book.path) or "/books/moby-dick.epub",
+        book = book,
+        page_count = book and book:getPageCount() or options.page_count or 300,
         pages_per_view = options.pages_per_view or 1,
         info = { has_pages = options.has_pages ~= false },
     }, Document)
 end
 
 function Document:getPageCount() return self.page_count end
+
+--- The text on a page, when a real book is loaded.
+function Document:getPageText(number)
+    if not self.book then return "" end
+    return self.book:getPageText(number)
+end
 function Document:getVisiblePageNumberCount() return self.pages_per_view end
 
 --------------------------------------------------------------------------

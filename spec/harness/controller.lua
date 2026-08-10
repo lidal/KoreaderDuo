@@ -53,6 +53,7 @@ Starts a device process and waits for it to check in.
 @tparam[opt] table options
     namespace  run inside this network namespace
     pages      pages in the device's document
+    book       path to a plain-text book to lay out and display
 --]]--
 function Controller:spawn(name, options)
     options = options or {}
@@ -60,8 +61,9 @@ function Controller:spawn(name, options)
     -- `ip netns exec` runs its argument directly rather than through a
     -- shell, so the environment has to be set before it, not after.
     local prefix = options.namespace and ("ip netns exec " .. options.namespace .. " ") or ""
-    os.execute(("LUA_PATH=%q %s%s spec/harness/instance_main.lua %s %d %d %s >%s 2>&1 &"):format(
-        "./?.lua;./duo.koplugin/?.lua;;", prefix, self.interpreter,
+    local book = options.book and ("DUO_BOOK=%q "):format(options.book) or ""
+    os.execute(("LUA_PATH=%q %s%s%s spec/harness/instance_main.lua %s %d %d %s >%s 2>&1 &"):format(
+        "./?.lua;./duo.koplugin/?.lua;;", book, prefix, self.interpreter,
         name, self.port, options.pages or 300, self.reach_host, log))
 
     local deadline = socket.gettime() + 20

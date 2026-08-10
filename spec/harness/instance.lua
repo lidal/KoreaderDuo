@@ -63,14 +63,26 @@ function Instance:openDocument(options)
     if self.plugin then
         self.plugin:onCloseDocument()
     end
+    -- DUO_BOOK points at a plain-text book to lay out and display, which is
+    -- how the demo puts real prose on the two screens.
+    local book
+    local book_path = options.book_path or os.getenv("DUO_BOOK")
+    if book_path and book_path ~= "" then
+        local Book = require("spec/harness/book")
+        local loaded, err = Book.load(book_path)
+        if not loaded then error("could not load " .. book_path .. ": " .. tostring(err)) end
+        book = loaded
+    end
+
     self.ui = Reader.newUI{
         Event = self.Event,
         document = Reader.newDocument{
             file = options.file,
+            book = book,
             page_count = options.page_count,
             pages_per_view = options.pages_per_view,
         },
-        title = options.title,
+        title = options.title or (book and book.title),
         digest = options.digest,
     }
     self.plugin = self.Duo:new{ ui = self.ui }
@@ -107,6 +119,11 @@ end
 
 function Instance:getPage()
     return self.ui.paging.current_page
+end
+
+--- What is actually on this device's screen, when a real book is loaded.
+function Instance:getPageText()
+    return self.ui.document:getPageText(self:getPage())
 end
 
 function Instance:getStatus()

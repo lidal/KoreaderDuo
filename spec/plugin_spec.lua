@@ -189,12 +189,17 @@ T.describe("pairing dialogs", function()
     T.it("shows the code and address after starting as master", function()
         reset()
         Core.settings.token = "K7F2QX"
+        -- Not the default port: a real KOReader running Duo on this machine
+        -- would already hold 9970, and this test would fail for a reason
+        -- that has nothing to do with the pairing sheet.
+        Core.settings.port = 19899
         device.plugin:startMaster()
         local shown = table.concat(device:drainMessages(), "\n")
         T.assertMatch(shown, "K7F2QX")
-        T.assertMatch(shown, "9970")
+        T.assertMatch(shown, "19899")
         T.assertTrue(Core:isMaster())
         Core:stop("test done")
+        Core.settings.port = 9970
     end)
 
     T.it("refuses an address that is not one", function()
