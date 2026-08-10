@@ -195,6 +195,100 @@ T.describe("two devices, one spread", function()
     end)
 end)
 
+T.describe("matching typography", function()
+    -- The point of all this: page numbers only mean the same thing on two
+    -- devices if both break the lines in the same places.
+    local function fontSize(device) return controller:number(device, "UI.document.configurable.font_size") end
+    local function pageCount(device) return controller:number(device, "UI.document:getPageCount()") end
+
+    T.it("brings a mismatched slave into line on connect", function()
+        callMaster("Core:stop('reset')")
+        callSlave("Core:stop('reset')")
+        -- The slave is reading at a bigger size, so it has more pages than
+        -- the master and the spread would be nonsense.
+        callSlave("UI.document.configurable.font_size = 30; UI.document:repaginate()")
+        T.assertNotEquals(pageCount(slave), pageCount(master), "the fixture is not actually mismatched")
+
+        connectPair()
+        controller:assertEventually(slave, "UI.document.configurable.font_size", 22,
+            "the slave kept its own font size")
+        T.assertEquals(pageCount(slave), pageCount(master),
+            "the two devices still disagree about how long the book is")
+    end)
+
+    T.it("follows a change made on the master", function()
+        connectPair()
+        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 26))")
+        controller:assertEventually(slave, "UI.document.configurable.font_size", 26,
+            "the slave did not follow the master")
+        T.assertEquals(pageCount(slave), pageCount(master))
+    end)
+
+    T.it("follows a change made on the slave", function()
+        connectPair()
+        callSlave("UI:handleEvent(D.Event:new('SetFontSize', 18))")
+        -- A slave cannot decide anything by itself: it tells the master,
+        -- which applies it and passes it on.
+        controller:assertEventually(master, "UI.document.configurable.font_size", 18,
+            "the master did not follow the slave")
+        T.assertEquals(fontSize(slave), 18)
+        T.assertEquals(pageCount(slave), pageCount(master))
+    end)
+
+    T.it("matches margins, which are a pair rather than a number", function()
+        connectPair()
+        callMaster("UI:handleEvent(D.Event:new('SetPageHorizMargins', {25, 25}))")
+        controller:assertEventually(slave, "UI.document.configurable.h_page_margins[1]", 25,
+            "the slave did not follow the margins")
+        T.assertEquals(controller:number(slave, "UI.document.configurable.h_page_margins[2]"), 25)
+        T.assertEquals(pageCount(slave), pageCount(master))
+    end)
+
+    T.it("keeps the spread correct after a relayout", function()
+        connectPair()
+        setMasterPage(40)
+        controller:assertEventually(slave, "D:getPage()", 41)
+
+        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 24))")
+        controller:assertEventually(slave, "UI.document.configurable.font_size", 24)
+        -- Whatever page the master ended up on, the slave must be on the next.
+        local master_page = controller:number(master, "D:getPage()")
+        controller:assertEventually(slave, "D:getPage()", master_page + 1,
+            "the spread broke when the book was laid out again")
+    end)
+
+    T.it("leaves the devices alone when switched off", function()
+        connectPair()
+        callSlave("Core.settings.match_typography = false")
+        callMaster("Core.settings.match_typography = false")
+        callSlave("UI.document.configurable.font_size = 30; UI.document:repaginate()")
+        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 20))")
+        socket.sleep(2.5)
+        T.assertEquals(fontSize(slave), 30, "the slave was changed with matching switched off")
+    end)
+
+    T.it("can put the slave's own settings back", function()
+        callSlave("Core:stop('reset')")
+        callMaster("Core:stop('reset')")
+        callSlave("Core.settings.match_typography = true")
+        callMaster("Core.settings.match_typography = true")
+        -- On a device this is fresh per document; these are all one session.
+        callSlave("Core.typography_backup = nil")
+        -- Both sizes set here rather than assumed: the previous test leaves
+        -- the master somewhere of its own choosing.
+        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 22))")
+        callSlave("UI:handleEvent(D.Event:new('SetFontSize', 30))")
+        connectPair()
+        controller:assertEventually(slave, "UI.document.configurable.font_size", 22,
+            "the slave did not take the master's size")
+
+        T.assertEquals(callSlave("Core:hasTypographyBackup()"), "true")
+        T.assertEquals(callSlave("Core:restoreTypography()"), "true")
+        T.assertEquals(fontSize(slave), 30, "the slave's own size did not come back")
+        T.assertEquals(callSlave("Core:hasTypographyBackup()"), "false")
+    end)
+end)
+
 T.describe("three devices", function()
     -- Nothing in the design caps this at two: each device gets a slot and
     -- shows the master's page plus its slot number, and a turn moves the
@@ -256,15 +350,62 @@ T.describe("two devices, when things go wrong", function()
         controller:assertEventually(master, "D:getPage()", 71)
     end)
 
-    T.it("warns when the two devices paginate the book differently", function()
-        connectPair()
-        callSlave("UI.document.page_count = 412") -- a bigger font, say
+    local WARNED = "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('pages here') or tostring(m.text):find('paginates') then return true end end return false end)()"
+
+    T.it("says nothing about a mismatch it is about to fix itself", function()
+        -- The slave arrives with a bigger font and so a longer book. With
+        -- matching on, that is not worth a word: it is fixed a moment later.
+        callSlave("Core:stop('reset')")
+        callSlave("Core.settings.match_typography = true")
+        callMaster("Core.settings.match_typography = true")
+        callSlave("UI:handleEvent(D.Event:new('SetFontSize', 30))")
+        callSlave("UIManager.shown_log = {}")
         callSlave("Core.warned_pagination = false")
+
+        connectPair()
+        setMasterPage(60)
+        socket.sleep(6) -- well past the settle window
+        setMasterPage(62)
+        socket.sleep(1)
+
+        T.assertEquals(callSlave(WARNED), "false", "warned about a mismatch it had already fixed")
+        T.assertEquals(controller:number(slave, "UI.document:getPageCount()"),
+            controller:number(master, "UI.document:getPageCount()"),
+            "the two devices should agree by now")
+    end)
+
+    T.it("warns when matching cannot fix it, because the screens differ", function()
+        connectPair()
+        -- Same settings on both, but this device still lays the book out
+        -- differently: a smaller screen, which no setting can match.
+        callSlave("UIManager.shown_log = {}")
+        callSlave("Core.warned_pagination = false")
+        callSlave("Core.typography_applied_at = 0")
+        callSlave("UI.document.page_count = 412")
         setMasterPage(80)
+        controller:assertEventually(slave, WARNED, true,
+            "no warning when the pages genuinely cannot line up")
+        T.assertEquals(callSlave(
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('between the screens') then return true end end return false end)()"),
+            "true", "the warning should name the real cause")
+        callSlave("UI.document:repaginate()")
+    end)
+
+    T.it("still tells you to match them when matching is switched off", function()
+        callSlave("Core:stop('reset')")
+        callSlave("Core.settings.match_typography = false")
+        callMaster("Core.settings.match_typography = false")
+        connectPair()
+        callSlave("UIManager.shown_log = {}")
+        callSlave("Core.warned_pagination = false")
+        callSlave("UI.document.page_count = 412")
+        setMasterPage(84)
         controller:assertEventually(slave,
-            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('paginates') then return true end end return false end)()",
-            true, "no warning about mismatched pagination")
-        callSlave("UI.document.page_count = 300")
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('Match typography') then return true end end return false end)()",
+            true, "no warning with matching switched off")
+        callSlave("UI.document:repaginate()")
+        callSlave("Core.settings.match_typography = true")
+        callMaster("Core.settings.match_typography = true")
     end)
 
     T.it("tells the slave which book to open", function()

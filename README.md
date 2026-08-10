@@ -133,6 +133,7 @@ the pages currently on show.
 | **Layout → Mirror the same page** | Both show the same page. A turn moves by one. |
 | **Layout → This device holds the right-hand page** | Swaps the sides: the slave shows the *earlier* page. |
 | **Link** | Wi-Fi (any IP network, including Bluetooth PAN), a direct router-free link, or a Bluetooth/serial device. |
+| **Match typography** | Keep both devices laying the book out identically. On by default. |
 | **Page turns from the other device** | Off makes the slave a display only. |
 | **Follow the master's book** | When the master opens a book, open it here too. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role used. |
@@ -142,6 +143,47 @@ the pages currently on show.
 
 Duo also registers two actions for gestures and hardware keys, under
 Dispatcher: **Duo: start/stop** and **Duo: resync now**.
+
+## Matching typography
+
+A spread only works if both devices break the lines in the same places, and
+"please set the same font size on both" is an instruction nobody follows.
+So Duo does it.
+
+**When you connect, the master's settings win.** Afterwards, change anything
+on *either* device and the rest follow — including the master, when the
+change was made on a slave. The master is still the only device that decides:
+a slave hands its change over, the master applies it and passes it on.
+
+What gets matched — everything that moves a line break:
+
+> typeface · font size · font weight · hinting · kerning · line spacing ·
+> word spacing · word expansion · CJK width scaling · left/right margins ·
+> top and bottom margins · view mode · columns · block rendering mode ·
+> zoom (render DPI) · embedded styles · embedded fonts · status bar
+
+What is left alone, because it is yours or particular to one device:
+
+> rotation · night mode · frontlight · image smoothing · refresh settings ·
+> anything not affecting where the text falls
+
+Changed the wrong device's settings? **Undo: restore my own typography**
+puts back what this device had before Duo first changed anything. Duo only
+records that snapshot when it actually changes something, so the undo is
+never offered for a change that never happened.
+
+Two caveats worth knowing:
+
+- **A typeface has to exist on both devices.** If the master is using one
+  this device does not have, Duo says so rather than silently leaving the
+  pages misaligned.
+- **Different screen sizes cannot be matched.** Two different Kindle models
+  will paginate differently whatever the settings. That is the one case Duo
+  warns about — once, after matching has been tried and the pages still
+  disagree.
+
+Reflowable formats only. A PDF has the pages the file says it has, so two
+devices agree about it regardless, and Duo does not touch its settings.
 
 ## How it works
 
@@ -173,10 +215,11 @@ Dispatcher: **Duo: start/stop** and **Duo: resync now**.
 
 ## Things worth knowing
 
-- **Match the two devices' typography.** Page numbers only line up if both
-  paginate the book identically, so use the same font, size, line spacing
-  and margins. Duo checks the page counts when it connects and warns you
-  once when they differ.
+- **Typography is matched for you.** Page numbers only line up if both
+  devices break the lines in the same places, so Duo keeps the settings that
+  decide that in step (see below). It stays quiet about a mismatch it is
+  about to fix; it speaks up only when the pages still do not line up with
+  the settings already matched, which means the screens themselves differ.
 - **Keep Wi-Fi on.** If KOReader is set to drop Wi-Fi after a while, the
   link goes with it. Duo reconnects by itself, but the gap is visible.
 - **Sleep.** Duo shuts its sockets down cleanly on suspend and brings them
@@ -194,15 +237,16 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-106 tests, no mocking of the interesting parts:
+125 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 22 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, pagination mismatch |
+| `integration_spec` | 29 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, and typography converging from both directions |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
+| `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 

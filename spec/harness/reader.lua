@@ -37,13 +37,48 @@ function Reader.newDocument(options)
     -- With a real book loaded, the page count comes from its layout and the
     -- pages have text on them; without one, the document is just a count.
     local book = options.book
-    return setmetatable({
+    local document = setmetatable({
         file = options.file or (book and book.path) or "/books/moby-dick.epub",
         book = book,
+        base_page_count = book and book:getPageCount() or options.page_count or 300,
         page_count = book and book:getPageCount() or options.page_count or 300,
         pages_per_view = options.pages_per_view or 1,
-        info = { has_pages = options.has_pages ~= false },
+        -- A reflowable document by default: paged formats have fixed pages
+        -- and no typography worth matching.
+        info = { has_pages = options.has_pages == true },
+        -- The same table KOReader hangs off a document, with the handful of
+        -- settings Duo matches.
+        configurable = {
+            font_size = options.font_size or 22,
+            line_spacing = 100,
+            h_page_margins = { 10, 10 },
+            t_page_margin = 10,
+            b_page_margin = 10,
+            view_mode = 0,
+            visible_pages = 1,
+            embedded_css = 1,
+            font_hinting = 2,
+        },
     }, Document)
+    document:repaginate()
+    return document
+end
+
+--[[--
+Recomputes the page count from the typography.
+
+Crude but monotone and deterministic, which is all a test needs: bigger
+text means more pages, wider margins mean more pages. What matters is that
+two devices with the same settings agree, and two devices with different
+settings do not — exactly the condition the spread depends on.
+--]]--
+function Document:repaginate()
+    local configurable = self.configurable
+    local size = configurable.font_size or 22
+    local spacing = (configurable.line_spacing or 100) / 100
+    local margins = ((configurable.h_page_margins or { 10, 10 })[1] or 10) / 10
+    local scale = (size / 22) * spacing * (0.9 + 0.1 * margins)
+    self.page_count = math.max(1, math.floor(self.base_page_count * scale + 0.5))
 end
 
 function Document:getPageCount() return self.page_count end
@@ -90,6 +125,79 @@ function Paging:onPageUpdate(page)
     -- Returns nothing on purpose: the event must reach the plugin too.
 end
 
+--------------------------------------------------------------------------
+-- Typography
+--------------------------------------------------------------------------
+
+-- The events KOReader's own modules answer, doing the one thing that
+-- matters here: change the setting, then relayout.
+local TYPOGRAPHY_EVENTS = {
+    onSetFontSize = "font_size",
+    onSetLineSpace = "line_spacing",
+    onSetPageHorizMargins = "h_page_margins",
+    onSetPageTopMargin = "t_page_margin",
+    onSetPageBottomMargin = "b_page_margin",
+    onSetViewMode = "view_mode",
+    onSetVisiblePages = "visible_pages",
+    onToggleEmbeddedStyleSheet = "embedded_css",
+    onSetFontHinting = "font_hinting",
+}
+
+local Typeset = {}
+Typeset.__index = Typeset
+
+function Reader.newTypeset(ui)
+    local typeset = setmetatable({ ui = ui }, Typeset)
+    for handler, key in pairs(TYPOGRAPHY_EVENTS) do
+        typeset[handler] = function(self_, value)
+            self_.ui.document.configurable[key] = value
+            self_.ui.document:repaginate()
+            -- Relaying out can leave the reader past the end of the book.
+            local paging = self_.ui.paging
+            local count = self_.ui.document:getPageCount()
+            if paging.current_page > count then
+                paging.current_page = count
+            end
+            self_.ui:handleEvent(self_.ui.Event:new("UpdatePos"))
+            return true
+        end
+    end
+    return typeset
+end
+
+function Typeset:handleEvent(event)
+    local handler = self[event.handler]
+    if handler then
+        return handler(self, unpack(event.args, 1, event.args.n))
+    end
+end
+
+--- Stands in for ReaderFont, which owns the typeface.
+local Font = {}
+Font.__index = Font
+
+function Reader.newFont(ui, face)
+    return setmetatable({ ui = ui, font_face = face or "Noto Serif", installed = {
+        ["Noto Serif"] = true, ["Noto Sans"] = true, ["Literata"] = true,
+    } }, Font)
+end
+
+function Font:handleEvent(event)
+    local handler = self[event.handler]
+    if handler then
+        return handler(self, unpack(event.args, 1, event.args.n))
+    end
+end
+
+function Font:onSetFont(face)
+    -- A face this device does not have is simply ignored, as KOReader does.
+    if not self.installed[face] then return true end
+    self.font_face = face
+    self.ui.document:repaginate()
+    self.ui:handleEvent(self.ui.Event:new("UpdatePos"))
+    return true
+end
+
 function Paging:gotoPageInternal(page)
     local target = clamp(page, 1, self.ui.document:getPageCount())
     if target == self.current_page then return end
@@ -129,9 +237,24 @@ function Reader.newUI(options)
         end,
     }
 
-    ui.paging = Reader.newPaging(ui)
+    -- KOReader has two of these and picks between them on
+    -- document.info.has_pages: ReaderPaging for PDFs and the like,
+    -- ReaderRolling for reflowable formats. The parts Duo touches
+    -- (current_page, onGotoViewRel, onGotoPage) are the same in both, so
+    -- one stand-in is registered under both names and the document type
+    -- decides which one the plugin reaches for — exactly as it does in
+    -- KOReader.
+    local module = Reader.newPaging(ui)
+    ui.paging = module
+    ui.rolling = module
     ui.view = { state = { page = 1 } }
-    table.insert(ui.modules, ui.paging)
+    table.insert(ui.modules, module)
+
+    -- Registered in KOReader's order: the core modules first, plugins last.
+    ui.typeset = Reader.newTypeset(ui)
+    ui.font = Reader.newFont(ui, options.font_face)
+    table.insert(ui.modules, ui.typeset)
+    table.insert(ui.modules, ui.font)
     return ui
 end
 

@@ -34,6 +34,7 @@ local T = require("ffi/util").template
 local Core = require("duo/core")
 local NetUtil = require("duo/netutil")
 local Spread = require("duo/spread")
+local Typography = require("duo/typography")
 local Util = require("duo/util")
 
 -- Settings live outside the plugin instance: KOReader rebuilds that instance
@@ -193,6 +194,12 @@ function Duo:bindDocument()
             else
                 ui:handleEvent(Event:new("GotoViewRel", diff))
             end
+        end,
+        getTypography = function()
+            return Typography.snapshot(ui)
+        end,
+        applyTypography = function(settings)
+            return Typography.apply(ui, settings, Event)
         end,
         getDocument = function()
             return {
@@ -793,6 +800,43 @@ function Duo:getMenuTable()
                     end,
                 },
             },
+        },
+        {
+            text = _("Match typography"),
+            help_text = _([[Keep both devices laying the book out the same way, so the pages line up.
+
+Font, size, weight, line spacing, margins, columns and zoom are matched; brightness, rotation and night mode are left alone.
+
+When you connect, the master's settings win. Change anything afterwards, on either device, and the others follow.]]),
+            checked_func = function() return Core:get("match_typography") end,
+            callback = function()
+                Core:set("match_typography", not Core:get("match_typography"))
+                if Core:get("match_typography") and Core:isMaster() then
+                    Core:pushTypography("switched on")
+                end
+            end,
+        },
+        {
+            text = _("Use this device's typography everywhere"),
+            enabled_func = function() return Core:isConnected() and Core:get("match_typography") end,
+            keep_menu_open = true,
+            callback = function()
+                Core:pushTypography("sent by hand")
+                Core:notify(_("Duo: sent this device's typography"))
+            end,
+        },
+        {
+            text = _("Undo: restore my own typography"),
+            enabled_func = function() return Core:hasTypographyBackup() end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.menu_container = touchmenu_instance
+                if Core:restoreTypography() then
+                    Core:notify(_("Duo: put your own typography back"))
+                end
+                self:refreshMenu()
+            end,
+            separator = true,
         },
         {
             text = _("Page turns from the other device"),

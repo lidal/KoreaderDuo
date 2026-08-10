@@ -34,6 +34,7 @@ Protocol.STATE     = "STATE"     -- master -> peer: the page this peer must disp
 Protocol.TURN      = "TURN"      -- peer -> master: user turned the page on the slave
 Protocol.GOTO      = "GOTO"      -- peer -> master: user jumped to an absolute page
 Protocol.DOC       = "DOC"       -- master -> peer: open this document
+Protocol.TYPO      = "TYPO"      -- either way: lay the book out like this
 Protocol.NOTE      = "NOTE"      -- either way: show this text to the user
 Protocol.SYNC      = "SYNC"      -- peer -> master: (re)send me the current state
 Protocol.BYE       = "BYE"       -- either way: closing on purpose

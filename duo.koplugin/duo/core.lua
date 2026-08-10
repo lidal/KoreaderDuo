@@ -70,6 +70,7 @@ local DEFAULTS = {
     reverse = false,
     slave_can_turn = true,
     follow_document = true,
+    match_typography = true,
     device_name = "",
     autostart = false,
     autostart_role = "off",
@@ -175,10 +176,15 @@ function Core:attachReader(binding)
     self.reader = binding
     self.warned_pagination = false
     self.opening_file = nil -- whatever we were opening has now arrived
+    -- A different document has its own typography; nothing carries over.
+    self.typography_snapshot = nil
+    self.typography_checked_at = nil
+    self.typography_backup = nil
     self:changed()
     if not self:isActive() then return end
     if self:isMaster() then
         self:broadcastDocument()
+        self:pushTypography("document opened")
         self:broadcastState()
     else
         local link = self:getReadyLinks()[1]
@@ -523,6 +529,11 @@ function Core:poll()
             table.remove(self.links, index)
         end
     end
+
+    -- Watching the settings rather than listening for a change event: the
+    -- user can reach these from the config dialog, a gesture, a profile or
+    -- another plugin, and a poll every second and a half catches all of it.
+    self:checkTypography()
 end
 
 --- Wraps a freshly opened stream in an authenticated link.
@@ -565,6 +576,9 @@ function Core:onLinkReady(link)
         -- would have it told twice, and a second DOC can mean opening the
         -- same book twice.
         self:sendDocumentTo(link)
+        -- Typography before the page: the layout decides what page numbers
+        -- even mean, so sending the page first would only move it twice.
+        self:sendTypographyTo(link)
         self:sendStateTo(link)
     end
     self:changed()
@@ -695,6 +709,154 @@ function Core:applyRemotePage(page)
 end
 
 --------------------------------------------------------------------------
+-- Typography
+--------------------------------------------------------------------------
+
+-- How often to look for a typography change the user made here.
+local TYPOGRAPHY_POLL = 1.5
+
+-- How long to let a relayout settle before believing a page count. Real
+-- rendering engines finish repaginating a little after the event returns.
+local PAGINATION_SETTLE = 4
+
+function Core:typographyEnabled()
+    return self:get("match_typography") and self.reader ~= nil
+        and self.reader.getTypography ~= nil
+end
+
+--- Sends this device's layout settings to everyone who should have them.
+function Core:pushTypography(reason)
+    if not self:typographyEnabled() then return end
+    local settings = self.reader.getTypography()
+    if not settings or not next(settings) then return end
+    self.typography_snapshot = settings
+    for _, link in ipairs(self:getReadyLinks()) do
+        link:send(Protocol.TYPO, settings)
+    end
+    self:log("pushed typography:", reason)
+end
+
+function Core:sendTypographyTo(link)
+    if not self:typographyEnabled() then return end
+    local settings = self.reader.getTypography()
+    if settings and next(settings) then
+        self.typography_snapshot = settings
+        link:send(Protocol.TYPO, settings)
+    end
+end
+
+--[[--
+Applies the layout settings from the other device.
+
+Whoever sent this is, for the moment, right: on connect that is the master,
+and afterwards it is whichever device the user just changed something on.
+The result is that both screens keep breaking lines in the same places.
+--]]--
+function Core:applyTypography(msg, from_link)
+    if not self:typographyEnabled() then return end
+
+    local settings = {}
+    for key, value in pairs(msg) do
+        if key ~= "type" then settings[key] = value end
+    end
+
+    local Typography = require("duo/typography")
+    local before = self.reader.getTypography()
+    self.applying_typography = true
+    local applied = self.reader.applyTypography(settings)
+    self.applying_typography = false
+    self.typography_snapshot = self.reader.getTypography()
+
+    -- Did everything actually take? If the two devices now agree on every
+    -- setting and still paginate differently, the difference is in the
+    -- hardware, and that is worth saying; until then it is not.
+    self.typography_in_sync = #Typography.differences(self.typography_snapshot, settings) == 0
+    self.typography_applied_at = Util.now()
+
+    -- Remember what this device had, but only once and only when something
+    -- was really changed. Recording it on every message would capture the
+    -- state at the first connection — when nothing had been touched yet —
+    -- and would offer an "undo" for a change that never happened.
+    if applied and #applied > 0 and not self.typography_backup then
+        self.typography_backup = before
+    end
+
+    if applied and #applied > 0 then
+        self:notify(("Duo: matched %s"):format(Typography.describe(applied)))
+        -- Relaying out moves every page number, so the spread has to be
+        -- recomputed from wherever the master ended up.
+        self.warned_pagination = false
+        if self:isMaster() then
+            self:broadcastState()
+        end
+    end
+    if applied and applied.missing_font then
+        self:alert(("The other device is using a typeface this one does not have (%s), so the pages will not line up.\n\nInstall it here, or pick a font both devices have."):format(
+            tostring(applied.missing_font)))
+    end
+
+    -- A change made on a slave has to reach the other slaves too, and the
+    -- master is the only device that talks to all of them.
+    if self:isMaster() then
+        for _, link in ipairs(self:getReadyLinks()) do
+            if link ~= from_link then
+                link:send(Protocol.TYPO, settings)
+            end
+        end
+    end
+end
+
+--- Notices a typography change made on this device and shares it.
+function Core:checkTypography()
+    if not self:typographyEnabled() or not self:isConnected() then return end
+    if self.applying_typography then return end
+    local now = Util.now()
+    if self.typography_checked_at and now - self.typography_checked_at < TYPOGRAPHY_POLL then
+        return
+    end
+    self.typography_checked_at = now
+
+    local current = self.reader.getTypography()
+    if not current or not next(current) then return end
+    if not self.typography_snapshot then
+        self.typography_snapshot = current
+        return
+    end
+
+    local Typography = require("duo/typography")
+    local changed = Typography.differences(self.typography_snapshot, current)
+    if #changed == 0 then return end
+
+    self.typography_snapshot = current
+    self:log("typography changed here:", table.concat(changed, ", "))
+    if self:isMaster() then
+        self:pushTypography("changed on the master")
+        self:broadcastState()
+    else
+        -- Hand it to the master, which applies it and passes it on.
+        local link = self:getReadyLinks()[1]
+        if link then link:send(Protocol.TYPO, current) end
+    end
+end
+
+--- Puts back the settings this device had before it ever matched another.
+function Core:restoreTypography()
+    if not self.typography_backup or not self.reader or not self.reader.applyTypography then
+        return false
+    end
+    self.applying_typography = true
+    self.reader.applyTypography(self.typography_backup)
+    self.applying_typography = false
+    self.typography_snapshot = self.reader.getTypography()
+    self.typography_backup = nil
+    return true
+end
+
+function Core:hasTypographyBackup()
+    return self.typography_backup ~= nil
+end
+
+--------------------------------------------------------------------------
 -- Incoming messages
 --------------------------------------------------------------------------
 
@@ -721,6 +883,8 @@ function Core:handleMessage(link, msg)
         if not self:isMaster() then return end
         self:sendDocumentTo(link)
         self:sendStateTo(link)
+    elseif msg.type == Protocol.TYPO then
+        self:applyTypography(msg, link)
     elseif msg.type == Protocol.DOC then
         if self:isMaster() then return end
         self:handleRemoteDocument(msg)
@@ -755,15 +919,36 @@ function Core:handleRemoteDocument(msg)
     self.hooks.openDocument(file, msg)
 end
 
---- Warns once when the two devices do not paginate the book identically,
--- which is what happens when their font size or margins differ.
+--[[--
+Warns once when the two devices do not paginate the book identically.
+
+Only when there is something to be done about it. With typography matching
+on, a mismatch at the moment of connecting is expected and about to be
+fixed, so saying anything would be noise; the warning is held back until
+the settings are known to agree and the relayout has settled. If the pages
+still do not line up then, the difference is in the screens themselves,
+which no setting can fix — and that is worth saying.
+--]]--
 function Core:checkPagination(master_pages)
     if self.warned_pagination or not master_pages or master_pages == 0 then return end
     if not self.reader then return end
     local own_pages = self.reader.getPageCount()
-    if own_pages and own_pages ~= master_pages then
+    if not own_pages or own_pages == master_pages then return end
+
+    if self:get("match_typography") then
+        -- Nothing to say until matching has actually happened.
+        if not self.typography_in_sync then return end
+        if self.typography_applied_at
+                and Util.now() - self.typography_applied_at < PAGINATION_SETTLE then
+            return
+        end
         self.warned_pagination = true
-        self:alert(("This device paginates the book differently (%d pages here, %d on the master), so the spread will not line up.\n\nMatch the font size, line spacing and margins on both devices."):format(own_pages, master_pages))
+        self:alert(("Both devices are laying this book out with the same settings, but it still comes to %d pages here and %d on the master.\n\nThat is usually a difference between the screens themselves, which cannot be matched. The two halves of the spread will drift apart."):format(
+            own_pages, master_pages))
+    else
+        self.warned_pagination = true
+        self:alert(("This device paginates the book differently (%d pages here, %d on the master), so the spread will not line up.\n\nTurn on \"Match typography\", or set the same font, size, line spacing and margins on both devices."):format(
+            own_pages, master_pages))
     end
 end
 
