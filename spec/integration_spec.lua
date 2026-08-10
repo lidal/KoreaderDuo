@@ -379,6 +379,35 @@ T.describe("one book list across two screens", function()
         T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
     end)
 
+    T.it("says so when it cannot fix the screenful size itself", function()
+        -- KOReader's cover browser can draw the list as a grid of covers,
+        -- and then a screenful is the grid's rows times its columns rather
+        -- than a number Duo is free to set. The user has to even it up.
+        browseTogether{ count = 24, perpage = 6 }
+        callSlave("UIManager.shown_log = {}")
+        callSlave("Core.warned_listing = false")
+        callSlave("UI.file_chooser:asCoverBrowser('mosaic', 9)")
+        callMaster("Core:broadcastBrowser()")
+        controller:assertEventually(slave,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('on a screen') then return true end end return false end)()",
+            true, "no warning when the two screenfuls are different sizes")
+        T.assertEquals(controller:number(slave, "UI.file_chooser.perpage"), 9,
+            "the grid should have been left as it is")
+    end)
+
+    T.it("asks where it belongs when it is reopened on the list", function()
+        -- A slave that has just been rebuilt — a document closed, a folder
+        -- reopened — knows nothing about which screenful is its own.
+        browseTogether{ count = 40, perpage = 6 }
+        callMaster("UI.file_chooser:onNextPage()")
+        controller:assertEventually(slave, "UI.file_chooser.page", 4)
+
+        callSlave("UI.file_chooser:onGotoPage(1)")
+        callSlave("Core:getReadyLinks()[1]:send('SYNC', {})")
+        controller:assertEventually(slave, "UI.file_chooser.page", 4,
+            "asking for the current state did not bring back the book list")
+    end)
+
     T.it("says so when the two devices hold different books", function()
         browseTogether{ count = 20, perpage = 6, slave_setup =
             "D:openFileManager{ path = '/books', perpage = 6, items = {'other01.epub','other02.epub'} }" }

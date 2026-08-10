@@ -73,6 +73,7 @@ local DEFAULTS = {
     match_typography = true,
     share_browser = true,
     sync_books = true,
+    sync_library = true,
     max_book_mb = 64,
     device_name = "",
     autostart = false,
@@ -747,30 +748,37 @@ function Core:browsingTogether()
     return self:get("share_browser") and self.browser ~= nil and self:isConnected()
 end
 
---- Sends each device the page of the listing it should be showing.
-function Core:broadcastBrowser()
+--- Sends one device the page of the listing it should be showing.
+function Core:sendBrowserTo(link)
     if not self:isMaster() or not self.browser then return end
     if not self:get("share_browser") then return end
     local state = self.browser.getState()
     if not state then return end
     self.browser_state = state
 
-    local options = {
+    local page = Spread.pageForSlot(state.page, link.slot, {
         mode = self:get("mode"),
         reverse = self:get("reverse"),
         page_count = state.pages,
-    }
+    })
+    self:log(("listing: %s, page %d of %d, %d per screen, %d items; slot %d gets page %d")
+        :format(state.path, state.page, state.pages, state.perpage, state.count,
+                link.slot, page))
+    link:send(Protocol.BROWSE, {
+        path = state.path,
+        page = page,
+        master_page = state.page,
+        pages = state.pages,
+        perpage = state.perpage,
+        count = state.count,
+        sig = state.signature or "",
+    })
+end
+
+--- Sends every device the page of the listing it should be showing.
+function Core:broadcastBrowser()
     for _, link in ipairs(self:getReadyLinks()) do
-        local page = Spread.pageForSlot(state.page, link.slot, options)
-        link:send(Protocol.BROWSE, {
-            path = state.path,
-            page = page,
-            master_page = state.page,
-            pages = state.pages,
-            perpage = state.perpage,
-            count = state.count,
-            sig = state.signature or "",
-        })
+        self:sendBrowserTo(link)
     end
     self:changed()
 end
@@ -800,13 +808,37 @@ function Core:applyBrowser(msg)
     self.browser.goToPage(Protocol.num(msg, "page", 1))
     self.applying_remote = false
 
+    self:reconcileLibrary(msg)
     self:checkListing(msg)
     self:changed()
 end
 
---- Warns once when the two devices are not looking at the same list.
+--- Fetches whatever is missing when the two folders do not match.
+function Core:reconcileLibrary(msg)
+    if not self:get("sync_library") or self:isMaster() then return end
+    if self.library or not self.browser then return end
+    local state = self.browser.getState()
+    if not state then return end
+    local their_count = Protocol.num(msg, "count")
+    local their_signature = msg.sig
+    local differs = (their_count and their_count ~= state.count)
+        or (their_signature and their_signature ~= "" and state.signature
+            and their_signature ~= state.signature)
+    if differs then
+        self:requestLibrary(state.path)
+    end
+end
+
+--[[--
+Warns once when the two devices are not looking at the same list.
+
+Nothing is said while books are on their way over: the mismatch is exactly
+what the library sync is busy repairing, and the next listing after it
+finishes will either match or be worth complaining about.
+--]]--
 function Core:checkListing(msg)
     if self.warned_listing or not self.browser then return end
+    if self:isSyncingLibrary() then return end
     local state = self.browser.getState()
     if not state then return end
 
@@ -822,6 +854,17 @@ function Core:checkListing(msg)
             and their_signature ~= state.signature then
         self.warned_listing = true
         self:alert("Both devices show the same number of books but not the same ones, so the two halves of the list will not line up.")
+        return
+    end
+    -- The same books, but cut into different sized screenfuls. Duo matches
+    -- this by itself where KOReader lets it, so reaching here means the
+    -- cover browser is showing a grid on at least one of the devices.
+    local their_perpage = Protocol.num(msg, "perpage")
+    if their_perpage and their_perpage > 0 and (state.perpage or 0) > 0
+            and their_perpage ~= state.perpage then
+        self.warned_listing = true
+        self:alert(("This device fits %d books on a screen and the other one %d, so the two halves of the list will not line up.\n\nSetting both to the same number puts it right."):format(
+            state.perpage, their_perpage))
     end
 end
 
@@ -874,6 +917,169 @@ function Core:checkBrowser()
 end
 
 --------------------------------------------------------------------------
+-- Keeping the whole library in step
+--------------------------------------------------------------------------
+
+-- A folder with more entries than this is not something to copy over a
+-- Wi-Fi link one file at a time without being asked.
+local MAX_LIBRARY_ENTRIES = 2000
+
+--[[--
+Asks the other device what it has in the shared folder.
+
+Only worth doing when the two listings already disagree — which is exactly
+what makes the two halves of a shared book list fail to line up.
+--]]--
+function Core:requestLibrary(path)
+    if not self:get("sync_library") then return false end
+    if self:isMaster() or not self.browser then return false end
+    if self.library or self.book_receiver then return false end
+    local link = self:getReadyLinks()[1]
+    if not link then return false end
+
+    self.library = { path = path, index = {}, collecting = true, done = 0 }
+    link:send(Protocol.LIB_REQ, { path = path })
+    self:log("asked for the library index of", path)
+    return true
+end
+
+--- The master lists the folder it is sharing.
+function Core:handleLibraryRequest(link, msg)
+    if not self:isMaster() or not self.browser then return end
+    if not self:get("sync_library") then
+        link:send(Protocol.LIB_END, { count = 0, reason = "not sharing the library" })
+        return
+    end
+    local state = self.browser.getState()
+    -- Only the folder actually on show: a peer does not get to enumerate
+    -- the filesystem.
+    if not state or state.path ~= msg.path then
+        link:send(Protocol.LIB_END, { count = 0, reason = "that is not the folder being shared" })
+        return
+    end
+
+    local entries = self.browser.getFiles()
+    if #entries > MAX_LIBRARY_ENTRIES then
+        link:send(Protocol.LIB_END, { count = 0, reason = "that folder holds too many files to copy" })
+        return
+    end
+    for _, entry in ipairs(entries) do
+        link:send(Protocol.LIB_ITEM, { name = entry.name, size = entry.size })
+    end
+    link:send(Protocol.LIB_END, { count = #entries })
+end
+
+function Core:handleLibraryItem(msg)
+    if not self.library or not self.library.collecting then return end
+    self.library.index[#self.library.index+1] = {
+        name = msg.name,
+        size = Protocol.num(msg, "size", 0),
+    }
+end
+
+--- Works out what is missing here and starts fetching it.
+function Core:handleLibraryEnd(msg)
+    if not self.library or not self.library.collecting then return end
+    self.library.collecting = false
+
+    if msg.reason and msg.reason ~= "" then
+        self:log("library sync refused:", msg.reason)
+        self.library = nil
+        self:changed()
+        return
+    end
+
+    local here = {}
+    for _, entry in ipairs(self.browser and self.browser.getFiles() or {}) do
+        here[entry.name] = entry.size or 0
+    end
+
+    local wanted, bytes = {}, 0
+    for _, entry in ipairs(self.library.index) do
+        -- Same name and same size counts as the same book; anything else is
+        -- fetched rather than guessed at.
+        if here[entry.name] == nil or here[entry.name] ~= entry.size then
+            wanted[#wanted+1] = entry
+            bytes = bytes + (entry.size or 0)
+        end
+    end
+
+    if #wanted == 0 then
+        self.library = nil
+        self:changed()
+        return
+    end
+
+    self.library.wanted = wanted
+    self.library.total = #wanted
+    self.library.bytes = bytes
+    self:notify(("Duo: fetching %d book%s (%.1f MB)"):format(
+        #wanted, #wanted == 1 and "" or "s", bytes / 1048576))
+    self:changed()
+    self:pumpLibrary()
+end
+
+--- Asks for the next book on the list, one at a time.
+function Core:pumpLibrary()
+    local library = self.library
+    if not library or library.collecting then return end
+    if self.book_receiver or self.book_request then return end
+
+    local next_entry = table.remove(library.wanted, 1)
+    if not next_entry then
+        local total = library.total or 0
+        self.library = nil
+        if total > 0 then
+            self:notify(("Duo: the library is in step (%d book%s)"):format(
+                total, total == 1 and "" or "s"))
+            if self.browser then self.browser.refresh() end
+            -- The list is a different length than it was a moment ago, so
+            -- the half of it this device was given no longer means the same
+            -- thing. Ask the master where in the new one it belongs.
+            local ready = self:getReadyLinks()[1]
+            if ready then ready:send(Protocol.SYNC, {}) end
+        end
+        self:changed()
+        return
+    end
+
+    local link = self:getReadyLinks()[1]
+    if not link then
+        self.library = nil
+        return
+    end
+    library.current = next_entry
+    self.book_request = {
+        file = library.path .. "/" .. next_entry.name,
+        title = next_entry.name,
+        library = true,
+        started = Util.now(),
+    }
+    link:send(Protocol.BOOK_REQ, {
+        file = self.book_request.file,
+        digest = "",
+        lib = 1,
+    })
+end
+
+function Core:stopLibrarySync(reason)
+    if not self.library then return false end
+    self.library = nil
+    if self.book_receiver then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+    end
+    self.book_request = nil
+    self:notify(("Duo: stopped fetching books%s"):format(reason and (" (" .. reason .. ")") or ""))
+    self:changed()
+    return true
+end
+
+function Core:isSyncingLibrary()
+    return self.library ~= nil
+end
+
+--------------------------------------------------------------------------
 -- Sending the book itself
 --------------------------------------------------------------------------
 
@@ -902,6 +1108,32 @@ function Core:requestBook(msg)
     return true
 end
 
+--[[--
+Turns a request for a library book into a path, or refuses.
+
+The only thing taken from the request is a bare file name, which must
+appear in the listing of the folder this device is currently sharing. The
+path is then built here. A name with a directory in it, or one that is not
+in that listing, gets nothing.
+
+@treturn string a readable path, or nil
+--]]--
+function Core:resolveSharedFile(requested)
+    if not self.browser or not self:get("sync_library") then return nil end
+    local BookTransfer = require("duo/booktransfer")
+    local name = BookTransfer.safeName(requested)
+    if not name then return nil end
+
+    local state = self.browser.getState()
+    if not state or not state.path then return nil end
+    for _, entry in ipairs(self.browser.getFiles()) do
+        if entry.name == name then
+            return state.path .. "/" .. name
+        end
+    end
+    return nil
+end
+
 --- The master starts sending a book a slave asked for.
 function Core:handleBookRequest(link, msg)
     if not self:isMaster() then return end
@@ -911,15 +1143,28 @@ function Core:handleBookRequest(link, msg)
         link:send(Protocol.BOOK_ERR, { reason = "the other device is not set up to send books" })
         return
     end
-    -- Only ever the book actually open here: a peer does not get to name a
-    -- path and be handed whatever is at it.
-    local document = self.reader and self.reader.getDocument() or nil
-    if not document or not document.file or document.file ~= msg.file then
-        link:send(Protocol.BOOK_ERR, { reason = "that is not the book this device has open" })
-        return
+    -- A peer never gets to name a path and be handed whatever is at it.
+    -- Two things may be asked for: the book this device has open, or a book
+    -- in the folder it is actively sharing — and in the second case the
+    -- path is rebuilt here from the shared folder plus a bare file name,
+    -- so nothing outside that folder is reachable however it is spelled.
+    local path
+    if Protocol.bool(msg, "lib") then
+        path = self:resolveSharedFile(msg.file)
+        if not path then
+            link:send(Protocol.BOOK_ERR, { reason = "that book is not in the shared folder" })
+            return
+        end
+    else
+        local document = self.reader and self.reader.getDocument() or nil
+        if not document or not document.file or document.file ~= msg.file then
+            link:send(Protocol.BOOK_ERR, { reason = "that is not the book this device has open" })
+            return
+        end
+        path = document.file
     end
 
-    local sender, err = BookTransfer.newSender(document.file)
+    local sender, err = BookTransfer.newSender(path)
     if not sender then
         link:send(Protocol.BOOK_ERR, { reason = tostring(err) })
         return
@@ -934,12 +1179,13 @@ function Core:handleBookRequest(link, msg)
         return
     end
 
-    self.book_sender = { sender = sender, link = link, name = document.file:gsub("^.*/", "") }
+    self.book_sender = { sender = sender, link = link, name = path:gsub("^.*/", "") }
     link:send(Protocol.BOOK_HEAD, {
         name = self.book_sender.name,
         size = sender.size,
-        digest = document.digest or "",
-        title = document.title or "",
+        digest = "",
+        title = (not Protocol.bool(msg, "lib") and self.reader and self.reader.getDocument()
+            and self.reader.getDocument().title) or "",
     })
     self:notify(("Duo: sending %s (%.1f MB)"):format(self.book_sender.name, sender.size / 1048576))
     self:changed()
@@ -987,7 +1233,14 @@ function Core:handleBookHead(msg)
         self.book_receiver = nil
     end
 
-    local directory = self.hooks and self.hooks.getBookDir and self.hooks.getBookDir() or "."
+    -- A book being fetched to make the shared folder match has to land in
+    -- that folder; anything else goes to the Duo folder.
+    local directory
+    if self.book_request.library and self.library then
+        directory = self.library.path
+    else
+        directory = self.hooks and self.hooks.getBookDir and self.hooks.getBookDir() or "."
+    end
     local receiver, err = BookTransfer.newReceiver{
         directory = directory,
         name = msg.name,
@@ -1027,6 +1280,16 @@ function Core:handleBookDone()
         self:alert(("Duo could not save the book: %s"):format(tostring(err)))
         return
     end
+    if request and request.library then
+        -- One of many: keep the folder in step rather than opening it.
+        if self.library then
+            self.library.done = (self.library.done or 0) + 1
+            if self.browser then self.browser.refresh() end
+        end
+        self:pumpLibrary()
+        return
+    end
+
     self:notify(("Duo: received %s"):format(self.book_title or "the book"))
     -- Straight into it, which is the whole point of having asked.
     if self.hooks and self.hooks.openDocument and request then
@@ -1040,8 +1303,15 @@ function Core:handleBookError(msg)
         self.book_receiver:abort()
         self.book_receiver = nil
     end
+    local was_library = self.book_request and self.book_request.library
     self.book_request = nil
     self:changed()
+    if was_library then
+        -- One book failing is not a reason to abandon the rest.
+        self:log("library book refused:", msg.reason)
+        self:pumpLibrary()
+        return
+    end
     self:alert(("Duo could not fetch the book: %s"):format(msg.reason or "the other device refused"))
 end
 
@@ -1231,6 +1501,7 @@ function Core:handleMessage(link, msg)
         if not self:isMaster() then return end
         self:sendDocumentTo(link)
         self:sendStateTo(link)
+        self:sendBrowserTo(link)
     elseif msg.type == Protocol.TYPO then
         self:applyTypography(msg, link)
     elseif msg.type == Protocol.BROWSE then
@@ -1239,6 +1510,12 @@ function Core:handleMessage(link, msg)
         if self:isMaster() and self:get("slave_can_turn") then
             self:applyBrowserTurn(Protocol.num(msg, "dir", 1))
         end
+    elseif msg.type == Protocol.LIB_REQ then
+        self:handleLibraryRequest(link, msg)
+    elseif msg.type == Protocol.LIB_ITEM then
+        self:handleLibraryItem(msg)
+    elseif msg.type == Protocol.LIB_END then
+        self:handleLibraryEnd(msg)
     elseif msg.type == Protocol.BOOK_REQ then
         self:handleBookRequest(link, msg)
     elseif msg.type == Protocol.BOOK_HEAD then
@@ -1323,6 +1600,10 @@ end
 function Core:getStatusText()
     if not self:isActive() then
         return "Off"
+    end
+    if self.library and self.library.total then
+        return ("Fetching books · %d of %d"):format(
+            (self.library.done or 0) + 1, self.library.total)
     end
     local direction, progress = self:getTransferProgress()
     if direction then

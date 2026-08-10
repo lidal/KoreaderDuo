@@ -135,6 +135,7 @@ the pages currently on show.
 | **Link** | Wi-Fi (any IP network, including Bluetooth PAN), a direct router-free link, or a Bluetooth/serial device. |
 | **Match typography** | Keep both devices laying the book out identically. On by default. |
 | **Share the book list too** | Spread the file browser across the devices as well. On by default. |
+| **Keep the whole library in step** | Fetch whatever books the shared folder is missing here. On by default. |
 | **Page turns from the other device** | Off makes the slave a display only. |
 | **Follow the master's book** | When the master opens a book, open it here too. |
 | **Send the book if the other device lacks it** | Hand the file over the same link when the other device does not have it. On by default. |
@@ -156,16 +157,36 @@ device opens it on both.
 ![One book list across two screens](screenshots/library-spread.png)
 
 Both devices need the same books in the same folder for the halves to line
-up, which is what **Send the book if the other device lacks it** is for.
-Duo checks rather than assumes: it compares how many items each device is
-showing and a hash of their names, and says so plainly if the two libraries
-differ instead of showing you a jumbled row.
+up, so **Duo fetches whatever is missing by itself**. When the two folders
+disagree, the device that is behind asks for the other's listing, works out
+what it lacks, and pulls those books across one at a time — the status line
+counts them off. After that the list lines up and stays that way.
+
+![The slave with three books, then with the master's ten, on the second screenful](screenshots/library-sync.png)
+
+That is **Keep the whole library in step**, on by default. Turn it off and
+Duo will still spread the list, but it will only tell you the two libraries
+differ rather than doing anything about it — which is the left-hand screen
+above.
+
+Only the folder on show is ever involved, and only the books in it: a
+request carries a bare file name that has to appear in that listing, and the
+path is rebuilt from the shared folder, so nothing outside it can be asked
+for however the name is spelled.
 
 Items per page is matched along with the typography, since that is what
-decides where one screenful ends and the next begins. Unlike KOReader's own
-paging, the shared list stops at the last screenful rather than wrapping
-round to the first — wrapping would put the devices on unrelated parts of
-the list.
+decides where one screenful ends and the next begins. Two widgets can be
+drawing that list and they disagree about where the number comes from: the
+plain file browser reads it from KOReader's settings, while the cover
+browser works out its own from the screen and ignores that setting
+entirely. Duo tells whichever one is actually in charge. Mosaic mode is the
+exception — there a screenful is a grid of rows and columns rather than a
+number anyone can set, so Duo leaves it alone and says the halves will not
+line up until you even them out yourself.
+
+Unlike KOReader's own paging, the shared list stops at the last screenful
+rather than wrapping round to the first — wrapping would put the devices on
+unrelated parts of the list.
 
 Switch it off with **Share the book list too** if you would rather browse
 independently and only share the reading.
@@ -288,17 +309,18 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-162 tests, no mocking of the interesting parts:
+175 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 42 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `integration_spec` | 44 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
-| `browser_spec` | 11 | Reading and paging the book list, the listing hash, matching items-per-page, and refusing a folder the device does not have |
+| `library_spec` | 9 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
+| `browser_spec` | 13 | Reading and paging the book list, the listing hash, matching items-per-page through both the plain browser and the cover browser, and refusing a folder the device does not have |
 | `booktransfer_spec` | 13 | Base64 against the published vectors, every byte value round-tripped, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
@@ -339,6 +361,20 @@ Both of the features above were checked there too, not only in the suite:
   missing), the slave asked for the book, received all 174,311 bytes —
   identical MD5 — and opened it as page 10 of the spread while the master
   sat on page 9.
+- **The whole library.** Same trick, one folder up: `/tmp/kolib` on the
+  slave was a tmpfs in its own mount namespace holding three books, against
+  the master's ten at that same path. On connecting, the slave fetched the
+  seven it lacked in about two seconds, then moved itself to the second
+  screenful without being told — the master showing books 1–9 and the slave
+  book 10. It said nothing about the mismatch on the way, which is the
+  point: the warning is for a difference nothing is going to fix.
+- **Matching the screenful.** Checked against both of the widgets that draw
+  the list. With the plain browser the slave went from 6 items a screen to
+  the master's 10; with the cover browser in list mode, where the global
+  setting does nothing, it went from 6 to 10 through that plugin's own
+  `files_per_page`. Given a screen too short to fit ten rows the widget
+  overrode it back to nine, and Duo said so rather than pretending the
+  halves lined up.
 
 To repeat it on a desktop:
 

@@ -52,6 +52,7 @@ Starts a device process and waits for it to check in.
 @string name          the device's name, as its peer will see it
 @tparam[opt] table options
     namespace  run inside this network namespace
+    prefix     any other command prefix, e.g. an `unshare -m` wrapper
     pages      pages in the device's document
     book       path to a plain-text book to lay out and display
 --]]--
@@ -60,7 +61,9 @@ function Controller:spawn(name, options)
     local log = ("%s/duo-%s.log"):format(LOG_DIR, name)
     -- `ip netns exec` runs its argument directly rather than through a
     -- shell, so the environment has to be set before it, not after.
-    local prefix = options.namespace and ("ip netns exec " .. options.namespace .. " ") or ""
+    local prefix = options.prefix
+        or (options.namespace and ("ip netns exec " .. options.namespace .. " "))
+        or ""
     local book = options.book and ("DUO_BOOK=%q "):format(options.book) or ""
     os.execute(("LUA_PATH=%q %s%s%s spec/harness/instance_main.lua %s %d %d %s >%s 2>&1 &"):format(
         "./?.lua;./duo.koplugin/?.lua;;", book, prefix, self.interpreter,

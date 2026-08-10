@@ -229,6 +229,7 @@ function Reader.newFileChooser(options)
         page = 1,
         item_table = {},
         folders = options.folders or {},
+        real_folder = options.real_folder or false,
     }, FileChooser)
     chooser:setItems(options.items or {})
     return chooser
@@ -237,7 +238,18 @@ end
 function FileChooser:setItems(names)
     self.item_table = {}
     for index, name in ipairs(names) do
-        self.item_table[index] = { text = name, path = self.path .. "/" .. name }
+        -- Shaped like KOReader's: files carry is_file and lfs attributes,
+        -- which is where the library index gets its names and sizes.
+        local path = self.path .. "/" .. name
+        local size = 0
+        local handle = io.open(path, "rb")
+        if handle then
+            size = handle:seek("end")
+            handle:close()
+        end
+        self.item_table[index] = {
+            text = name, path = path, is_file = true, attr = { size = size, mode = "file" },
+        }
     end
     self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
     if self.page > self.page_num then self.page = self.page_num end
@@ -267,10 +279,54 @@ function FileChooser:changeToPath(path)
 end
 
 function FileChooser:refreshPath()
+    -- Re-reads the folder, which is what happens after a book lands in it.
+    if self.real_folder then
+        local names = {}
+        local pipe = io.popen(("ls -1 %q 2>/dev/null"):format(self.path))
+        if pipe then
+            for line in pipe:lines() do
+                if line ~= "" and not line:match("%.duopart$") then names[#names+1] = line end
+            end
+            pipe:close()
+        end
+        table.sort(names)
+        self:setItems(names)
+    end
     -- Recomputes the layout, which is what a change of items-per-page needs.
     self.perpage = self.items_per_page or self.perpage
     self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
     if self.page > self.page_num then self.page = self.page_num end
+    return true
+end
+
+--[[--
+Turns this chooser into the one KOReader's cover browser plugin installs.
+
+That plugin takes the listing over and paginates it its own way: in list
+mode a `files_per_page` of its own choosing decides the screenful and
+`updateItems` redraws, while `items_per_page` and the global setting are
+ignored entirely; in mosaic mode the page is a grid instead. Duo has to
+notice which is in charge, so the harness can be either.
+
+@string mode         "list" or "mosaic"
+@int files_per_page  the screenful it settled on
+--]]--
+function FileChooser:asCoverBrowser(mode, files_per_page)
+    self.display_mode_type = mode
+    self.files_per_page = files_per_page
+    self.perpage = files_per_page
+    self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
+    return self
+end
+
+--- The cover browser's redraw, which is what applies a new files_per_page.
+function FileChooser:updateItems()
+    if self.display_mode_type == "list" then
+        self.perpage = self.files_per_page or self.perpage
+    end
+    self.page_num = math.max(1, math.ceil(#self.item_table / self.perpage))
+    if self.page > self.page_num then self.page = self.page_num end
+    self.updates = (self.updates or 0) + 1
     return true
 end
 
@@ -352,6 +408,7 @@ function Reader.newFileManager(options)
         registered_menus = {},
     }, ReaderUI)
     ui.file_chooser = Reader.newFileChooser(options)
+    if options.real_folder then ui.file_chooser:refreshPath() end
     -- Tell the stubbed lfs which folders this device has, so the browser's
     -- "do I have that folder?" check has something true to say.
     local lfs = package.loaded["libs/libkoreader-lfs"]

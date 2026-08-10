@@ -69,6 +69,37 @@ function Browser.signature(ui)
     return value
 end
 
+--[[--
+The books in the current folder, as the browser lists them.
+
+Taken from the browser's own list rather than from the filesystem, so it is
+already what the user sees: KOReader's file filter has been applied, sub
+folders are left out, and the order is the one both devices are paging
+through.
+
+@treturn table array of { name=, size= }
+--]]--
+function Browser.fileEntries(ui)
+    local entries = {}
+    if not Browser.isAvailable(ui) then return entries end
+    for _, item in ipairs(ui.file_chooser.item_table or {}) do
+        if item.is_file then
+            entries[#entries+1] = {
+                name = tostring(item.text or ""),
+                size = (item.attr and item.attr.size) or 0,
+            }
+        end
+    end
+    return entries
+end
+
+--- Rebuilds the listing, after a book has arrived in the folder.
+function Browser.refresh(ui)
+    if not Browser.isAvailable(ui) then return false end
+    ui.file_chooser:refreshPath()
+    return true
+end
+
 --- Everything the other devices need to show their part of the listing.
 function Browser.snapshot(ui)
     if not Browser.isAvailable(ui) then return nil end
@@ -110,20 +141,42 @@ end
 --[[--
 Makes this device fit the same number of items on a screen.
 
-Applied the way KOReader's own settings screen applies it: save the global
-and rebuild the listing. Without this the offset means nothing — device two
-would start its page somewhere in the middle of device one's.
+Without this the offset means nothing — device two would start its page
+somewhere in the middle of device one's.
+
+Two different widgets can be drawing that list, and they disagree about
+where the number comes from. The plain file browser reads `items_per_page`
+out of the global settings; the cover browser, in its list mode, works out
+a `files_per_page` from the screen height and ignores the global entirely.
+Whichever is actually in charge is the one told, each the way its own
+settings screen does it.
+
+Mosaic mode is left alone on purpose: there the page is a grid, and the
+count is the product of its rows and columns rather than a number anyone
+can just set.
+
+@treturn boolean true when the listing was changed
 --]]--
 function Browser.setPerPage(ui, perpage)
     if not Browser.isAvailable(ui) then return false end
     perpage = tonumber(perpage)
     if not perpage or perpage < 1 then return false end
-    if (ui.file_chooser.perpage or 0) == perpage then return false end
+    local chooser = ui.file_chooser
+    if (chooser.perpage or 0) == perpage then return false end
+
+    if chooser.display_mode_type == "mosaic" then return false end
+    if chooser.display_mode_type == "list" then
+        chooser.files_per_page = perpage
+        chooser.no_refresh_covers = nil
+        chooser:updateItems()
+        return true
+    end
+
     if not G_reader_settings then return false end
     G_reader_settings:saveSetting("items_per_page", perpage)
     -- The widget's own override would win over the global we just set.
-    ui.file_chooser.items_per_page = perpage
-    ui.file_chooser:refreshPath()
+    chooser.items_per_page = perpage
+    chooser:refreshPath()
     return true
 end
 

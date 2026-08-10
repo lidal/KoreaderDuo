@@ -107,6 +107,7 @@ function Instance:openFileManager(options)
         items = options.items,
         folders = options.folders,
         perpage = options.perpage,
+        real_folder = options.real_folder,
     }
     self.plugin = self.Duo:new{ ui = self.ui }
     self.ui:registerPlugin(self.plugin)

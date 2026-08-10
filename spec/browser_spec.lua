@@ -98,6 +98,33 @@ T.describe("matching the shape of a screenful", function()
         -- Nothing to do when it already matches.
         T.assertTrue(not Browser.setPerPage(device.ui, 8))
     end)
+
+    T.it("tells the cover browser instead, when that is drawing the list", function()
+        local device = Instance.new{
+            name = "Kindle-D2", file_manager = true,
+            path = "/books", items = books(24), perpage = 6,
+        }
+        local chooser = device.ui.file_chooser:asCoverBrowser("list", 10)
+        T.assertEquals(chooser.page_num, 3) -- 24 books, 10 to a screen
+
+        T.assertTrue(Browser.setPerPage(device.ui, 8))
+        T.assertEquals(chooser.files_per_page, 8, "the cover browser's own number")
+        T.assertEquals(chooser.perpage, 8)
+        T.assertEquals(chooser.page_num, 3)
+        -- The global is the plain browser's setting, and means nothing here.
+        T.assertEquals(G_reader_settings:readSetting("items_per_page"), nil)
+    end)
+
+    T.it("leaves a grid of covers alone", function()
+        local device = Instance.new{
+            name = "Kindle-D3", file_manager = true,
+            path = "/books", items = books(24), perpage = 6,
+        }
+        local chooser = device.ui.file_chooser:asCoverBrowser("mosaic", 9)
+        T.assertTrue(not Browser.setPerPage(device.ui, 8),
+            "a page of a grid is its rows times its columns, not ours to set")
+        T.assertEquals(chooser.perpage, 9)
+    end)
 end)
 
 T.describe("changing folder", function()

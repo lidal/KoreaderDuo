@@ -260,6 +260,8 @@ function Duo:bindBrowser()
             return state
         end,
         goToPage = function(page) return Browser.goToPage(ui, page) end,
+        getFiles = function() return Browser.fileEntries(ui) end,
+        refresh = function() return Browser.refresh(ui) end,
         changeDir = function(path) return Browser.changeDir(ui, path) end,
         setPerPage = function(perpage) return Browser.setPerPage(ui, perpage) end,
     }
@@ -967,6 +969,35 @@ When you connect, the master's settings win. Change anything afterwards, on eith
                 Core:set("share_browser", not Core:get("share_browser"))
                 if Core:get("share_browser") then Core:broadcastBrowser() end
             end,
+        },
+        {
+            text = _("Keep the whole library in step"),
+            help_text = _("When the shared folder does not hold the same books on both devices, fetch the missing ones. This is what makes a shared book list line up."),
+            checked_func = function() return Core:get("sync_library") end,
+            callback = function() Core:set("sync_library", not Core:get("sync_library")) end,
+        },
+        {
+            text_func = function()
+                if Core:isSyncingLibrary() then return _("Stop fetching books") end
+                return _("Fetch any missing books now")
+            end,
+            help_text = _("Compare this folder with the master's and pull over whatever is missing here. The master is the one holding the books, so this is for the other device to do."),
+            -- The master is where the books come from; it has nothing to fetch.
+            enabled_func = function() return Core:isConnected() and not Core:isMaster() end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.menu_container = touchmenu_instance
+                if Core:isSyncingLibrary() then
+                    Core:stopLibrarySync("stopped by hand")
+                elseif Core.browser then
+                    local state = Core.browser.getState()
+                    if state and not Core:requestLibrary(state.path) then
+                        Core:notify(_("Duo: nothing to fetch"))
+                    end
+                end
+                self:refreshMenu()
+            end,
+            separator = true,
         },
         {
             text = _("Send the book if the other device lacks it"),
