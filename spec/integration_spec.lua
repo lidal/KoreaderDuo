@@ -12,147 +12,18 @@ into their state directly, because it cannot: they are different processes.
 
 local T = require("spec/testrunner")
 local socket = require("socket")
-local Protocol = require("duo/protocol")
+local Controller = require("spec/harness/controller")
 
 local LOG_DIR = os.getenv("DUO_LOG_DIR") or "/tmp"
-local interpreter = arg and arg[-1] or "luajit"
-
---------------------------------------------------------------------------
--- Controller
---------------------------------------------------------------------------
-
-local Controller = {}
-Controller.__index = Controller
-
-function Controller.new()
-    local server, port
-    for candidate = 18800, 18900 do
-        server = socket.bind("127.0.0.1", candidate)
-        if server then port = candidate break end
-    end
-    assert(server, "no free control port")
-    server:settimeout(0)
-    return setmetatable({
-        server = server,
-        port = port,
-        devices = {},
-        next_id = 1,
-    }, Controller)
-end
-
---- Starts a device process and waits for it to check in.
-function Controller:spawn(name, page_count)
-    local log = ("%s/duo-%s.log"):format(LOG_DIR, name)
-    local command = ("LUA_PATH=%q %s spec/harness/instance_main.lua %s %d %d >%s 2>&1 &"):format(
-        "./?.lua;./duo.koplugin/?.lua;;", interpreter, name, self.port, page_count or 300, log)
-    os.execute(command)
-
-    local deadline = socket.gettime() + 20
-    while socket.gettime() < deadline do
-        local client = self.server:accept()
-        if client then
-            client:settimeout(0)
-            local device = {
-                name = name,
-                socket = client,
-                reader = Protocol.newReader(),
-                pending = {},
-                log = log,
-            }
-            -- The first message tells us which device this connection is.
-            local ready = self:awaitMessage(device, "READY", 10)
-            assert(ready, "device " .. name .. " never checked in; see " .. log)
-            device.name = ready.name or name
-            self.devices[device.name] = device
-            return device
-        end
-        socket.sleep(0.01)
-    end
-    error("device " .. name .. " did not start; see " .. log)
-end
-
-function Controller:awaitMessage(device, msg_type, timeout)
-    local deadline = socket.gettime() + (timeout or 10)
-    while socket.gettime() < deadline do
-        local data, err, partial = device.socket:receive(4096)
-        local received = data or partial
-        if received and #received > 0 then
-            device.reader:feed(received)
-        elseif err == "closed" then
-            error("device " .. device.name .. " died; see " .. device.log)
-        end
-        while true do
-            local msg = device.reader:next()
-            if not msg then break end
-            if msg.type == msg_type then return msg end
-            device.pending[#device.pending+1] = msg
-        end
-        socket.sleep(0.005)
-    end
-    return nil
-end
-
---- Runs a snippet on a device and returns its result as a string.
-function Controller:call(device, code, timeout)
-    local id = tostring(self.next_id)
-    self.next_id = self.next_id + 1
-    device.socket:send(Protocol.encode("CMD", { id = id, code = code }))
-    local deadline = socket.gettime() + (timeout or 10)
-    while socket.gettime() < deadline do
-        local msg = self:awaitMessage(device, "RESULT", deadline - socket.gettime())
-        if not msg then break end
-        if msg.id == id then
-            if msg.ok ~= "1" then
-                error(("%s failed to run %s: %s"):format(device.name, code, msg.value))
-            end
-            return msg.value
-        end
-    end
-    error(("%s did not answer %s in time"):format(device.name, code))
-end
-
-function Controller:number(device, code)
-    return tonumber(self:call(device, code))
-end
-
---- Polls a device until an expression takes the expected value.
-function Controller:waitFor(device, code, expected, timeout)
-    local deadline = socket.gettime() + (timeout or 8)
-    local last
-    while socket.gettime() < deadline do
-        last = self:call(device, code)
-        if last == tostring(expected) then return true, last end
-        socket.sleep(0.02)
-    end
-    return false, last
-end
-
-function Controller:assertEventually(device, code, expected, what)
-    local ok, last = self:waitFor(device, code, expected)
-    if not ok then
-        error(("%s: %s was %s, expected %s (%s)"):format(
-            device.name, code, tostring(last), tostring(expected), what or ""), 2)
-    end
-end
-
-function Controller:shutdown()
-    for _, device in pairs(self.devices) do
-        pcall(function()
-            device.socket:send(Protocol.encode("QUIT", {}))
-            device.socket:close()
-        end)
-    end
-    self.server:close()
-end
 
 --------------------------------------------------------------------------
 -- Fixture
 --------------------------------------------------------------------------
 
 local controller = Controller.new()
-local master = controller:spawn("master", 300)
-local slave = controller:spawn("slave", 300)
-local slave2 = controller:spawn("slave2", 300)
+local master = controller:spawn("master")
+local slave = controller:spawn("slave")
+local slave2 = controller:spawn("slave2")
 
 local DUO_PORT = 19970
 

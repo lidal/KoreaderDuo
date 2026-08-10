@@ -58,39 +58,67 @@ page, and one tap moves the pair.
 If the search finds nothing (some networks block broadcasts), choose **Type
 the address by hand** and enter the address shown on the master.
 
-## Connecting over Bluetooth
+## Getting the two devices talking
 
-KOReader has no Bluetooth stack of its own, so Duo takes the two routes that
-do not need one.
+The link is only a byte pipe, so several things can carry it. What a Kindle
+will actually give you differs by route.
 
-### Bluetooth PAN — nothing to configure
+### Any Wi-Fi network — works today
 
-If your devices can pair as a personal-area network (or one can tether to
-the other), that link *is* a network as far as KOReader is concerned. Leave
-Duo set to **Link → Wi-Fi (or any network link)** and pair as above; the
-address the master shows will simply be its PAN address. This also covers
-USB networking and a Wi-Fi direct link.
+A home router, or a phone hotspot with no internet on it. Pair as above.
+This is the path with the most testing behind it.
 
-### Bluetooth serial (RFCOMM) — no Wi-Fi at all
+### The two devices, direct — no router, no DHCP
 
-A bound RFCOMM channel shows up as a character device, and Duo can speak
-straight to it. Bind the channel outside KOReader (over SSH, say), once per
-boot:
+For reading somewhere with no network at all. One reader hosts a Wi-Fi link
+and the other joins it:
+
+**Duo → Connect the two devices… → No Wi-Fi network? Link the two directly…**
+
+It asks the device what it can do before touching anything, and tells you
+plainly when the answer is no. Where it works, the hosting device becomes an
+access point if its driver supports one and an ad-hoc network otherwise,
+takes `169.254.13.1`, and starts Duo as master. The other device joins,
+takes `169.254.13.2`, and connects — the host address is fixed, so there is
+no DHCP server needed and no address for anyone to type.
+
+Whether a particular Kindle can do this comes down to its Wi-Fi driver.
+Check before you rely on it, over SSH:
 
 ```sh
-# on the master, find the other device's address with `hcitool scan`
-rfcomm bind /dev/rfcomm0 AA:BB:CC:DD:EE:FF 1
+/mnt/us/koreader/plugins/duo.koplugin/tools/duo-direct-link.sh probe
 ```
 
-Then on both devices: **Duo → Link → Bluetooth serial (RFCOMM)**, check that
-**Serial device** matches the path you bound, and start one as master and
-the other as slave as usual. There is no address to enter — the line is the
-connection. The pairing code still applies.
+That prints the interface, the driver, the modes it supports, and a verdict.
+The same script does the work — `host`, `join`, `status`, `restore` — and
+takes `--dry-run` on any of them, so you can read the exact commands before
+running them. It takes Wi-Fi over while it is up; **restore** or a reboot
+gives it back.
 
-Whether a stock jailbroken Kindle will let you bind an RFCOMM channel
-depends on its firmware and what your jailbreak exposes; the plugin side of
-it is done and tested, over a pseudo-terminal that behaves exactly as
-`/dev/rfcomm0` does.
+### Bluetooth — not on a stock Kindle
+
+Kindles do not run bluez: there is no `rfcomm` and no `hciconfig`. Amazon's
+Bluetooth stack is its own, and the community page-turner projects reach it
+with a separate userspace stack that speaks HID only. So on a Kindle today
+there is no channel for Duo to bind to.
+
+The plugin side is nonetheless finished. A bound RFCOMM channel appears as a
+character device, and Duo's serial transport talks straight to one:
+
+```sh
+rfcomm bind /dev/rfcomm0 AA:BB:CC:DD:EE:FF 1     # where rfcomm exists
+```
+
+Then on both devices: **Duo → Link → Bluetooth serial (RFCOMM)**, set
+**Serial device** to the path, and start one as master and the other as
+slave. There is no address to enter — the line *is* the connection — and the
+pairing code still applies. This is tested end to end against a
+pseudo-terminal pair, which is exactly what an RFCOMM channel looks like, so
+it will work on any device that exposes one: a serial bridge over Amazon's
+stack, another platform, or a plain serial cable.
+
+**Bluetooth PAN** needs nothing special at all: it presents as an ordinary
+network, so leave Duo on **Link → Wi-Fi** and pair as usual.
 
 ## Settings
 
@@ -99,6 +127,7 @@ it is done and tested, over a pseudo-terminal that behaves exactly as
 | **Layout → Two-page spread** | Master shows page N, slave shows N+1. A turn moves by two. |
 | **Layout → Mirror the same page** | Both show the same page. A turn moves by one. |
 | **Layout → This device holds the right-hand page** | Swaps the sides: the slave shows the *earlier* page. |
+| **Link** | Wi-Fi (any IP network, including Bluetooth PAN), a direct router-free link, or a Bluetooth/serial device. |
 | **Page turns from the other device** | Off makes the slave a display only. |
 | **Follow the master's book** | When the master opens a book, open it here too. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role used. |
@@ -160,15 +189,24 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-82 tests, no mocking of the interesting parts:
+106 tests, no mocking of the interesting parts:
 
-| Suite | What it covers |
-| --- | --- |
-| `protocol_spec` | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors |
-| `link_spec` | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, pagination mismatch |
-| `serial_spec` | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
+| Suite | Tests | What it covers |
+| --- | --- | --- |
+| `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
+| `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
+| `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
+| `integration_spec` | 22 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, pagination mismatch |
+| `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
+| `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
+| `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
+
+Two tools double as documentation, and both print live data:
+
+```sh
+luajit tools/duo-demo.lua 3      # run three devices, print what each displayed
+luajit tools/duo-menu-dump.lua   # print the menu exactly as the device builds it
+```
 
 KOReader itself cannot be built in this environment (it needs a compiled C
 core), so `spec/harness` provides the frontend API the plugin uses — the same
@@ -191,10 +229,16 @@ duo.koplugin/
     transport_tcp.lua       non-blocking TCP, for Wi-Fi and Bluetooth PAN
     transport_serial.lua    non-blocking character device, for RFCOMM
     discovery.lua           UDP search, so nobody types an IP address
+    directlink.lua          the router-free link: probe, host, join
     netutil.lua             local address, Kindle firewall
     sha256.lua              for the pairing proof
     util.lua
+  tools/
+    duo-direct-link.sh      brings the router-free Wi-Fi link up and down
 spec/                       tests and the KOReader harness
+tools/
+  duo-demo.lua              runs a real session and prints what each device showed
+  duo-menu-dump.lua         prints the menu as the device builds it
 ```
 
 ## License

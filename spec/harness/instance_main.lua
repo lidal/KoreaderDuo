@@ -1,7 +1,7 @@
 --[[--
 A simulated device, as its own operating-system process.
 
-    <interpreter> spec/harness/instance_main.lua <name> <control-port>
+    <interpreter> spec/harness/instance_main.lua <name> <control-port> [pages] [control-host]
 
 It boots one KOReader-plus-Duo instance, dials back to the test controller
 on the given port, and then spends its life doing two things: pumping the UI
@@ -37,7 +37,9 @@ local sandbox = setmetatable({
     Protocol = Protocol,
 }, { __index = _G })
 
-local control = assert(socket.connect("127.0.0.1", control_port))
+-- The controller may be on the other side of a network namespace boundary
+-- when the direct-link tests are running.
+local control = assert(socket.connect(arg[4] or "127.0.0.1", control_port))
 control:settimeout(0)
 local reader = Protocol.newReader()
 

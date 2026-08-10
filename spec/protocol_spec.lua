@@ -121,6 +121,58 @@ T.describe("sha256", function()
     end)
 end)
 
+T.describe("reading our own address", function()
+    local NetUtil = require("duo/netutil")
+
+    T.it("understands old ifconfig output", function()
+        T.assertEquals(NetUtil.parseAddresses([[
+lo        Link encap:Local Loopback
+          inet addr:127.0.0.1  Mask:255.0.0.0
+wlan0     Link encap:Ethernet  HWaddr 00:11:22:33:44:55
+          inet addr:192.168.1.24  Bcast:192.168.1.255  Mask:255.255.255.0
+]]), "192.168.1.24")
+    end)
+
+    T.it("understands ip and modern ifconfig output", function()
+        T.assertEquals(NetUtil.parseAddresses([[
+1: lo    inet 127.0.0.1/8 scope host lo
+2: wlan0    inet 192.168.1.24/24 scope global wlan0
+]]), "192.168.1.24")
+    end)
+
+    T.it("accepts a link-local address when that is the only link there is", function()
+        -- Two readers talking only to each other have no routable address at
+        -- all; refusing 169.254 here would break the direct link entirely.
+        T.assertEquals(NetUtil.parseAddresses([[
+1: lo    inet 127.0.0.1/8 scope host lo
+2: wlan0    inet 169.254.13.1/16 scope link wlan0
+]]), "169.254.13.1")
+    end)
+
+    T.it("prefers a routable address over a link-local one", function()
+        T.assertEquals(NetUtil.parseAddresses([[
+2: wlan0    inet 169.254.13.1/16 scope link wlan0
+3: eth0    inet 192.168.1.24/24 scope global eth0
+]]), "192.168.1.24")
+    end)
+
+    T.it("returns nothing when there is only loopback", function()
+        T.assertNil(NetUtil.parseAddresses("1: lo    inet 127.0.0.1/8 scope host lo"))
+        T.assertNil(NetUtil.parseAddresses(""))
+        T.assertNil(NetUtil.parseAddresses(nil))
+    end)
+
+    T.it("knows where to broadcast on a link-local network", function()
+        local addresses = NetUtil.getBroadcastAddresses("169.254.13.1")
+        local found = false
+        for _, address in ipairs(addresses) do
+            if address == "169.254.255.255" then found = true end
+        end
+        T.assertTrue(found, "a /16 link-local network broadcasts to 169.254.255.255")
+        T.assertEquals(NetUtil.getBroadcastAddresses("192.168.1.24")[1], "192.168.1.255")
+    end)
+end)
+
 T.describe("util", function()
     T.it("makes readable pairing tokens", function()
         for _ = 1, 50 do

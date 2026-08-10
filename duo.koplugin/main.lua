@@ -390,6 +390,13 @@ function Duo:showConnectDialog()
                 end,
             }},
             {{
+                text = _("No Wi-Fi network? Link the two directly…"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:showDirectLinkDialog()
+                end,
+            }},
+            {{
                 text = _("Cancel"),
                 callback = function() UIManager:close(dialog) end,
             }},
@@ -564,6 +571,116 @@ function Duo:promptForAddress()
 end
 
 --------------------------------------------------------------------------
+-- A link with no router on it
+--------------------------------------------------------------------------
+
+--[[--
+The self-contained arrangement: the two devices make a Wi-Fi link between
+themselves. Whether a reader can do this at all depends on its Wi-Fi
+driver, so nothing is attempted until the device has been asked.
+--]]--
+function Duo:showDirectLinkDialog()
+    local DirectLink = require("duo/directlink")
+    local report = DirectLink.probe()
+
+    if not DirectLink.isPossible(report) then
+        UIManager:show(InfoMessage:new{
+            text = T(_([[
+This device cannot make a Wi-Fi link of its own.
+
+%1
+
+Any network will do instead: a home router, or a phone hotspot with no internet on it. Duo works the same over either.]]),
+                DirectLink.describe(report)),
+        })
+        return
+    end
+
+    local dialog
+    dialog = ButtonDialog:new{
+        title = T(_([[
+Link the two devices directly, with no router.
+
+One device hosts the link and the other joins it. Do this on both, then they find each other by themselves.
+
+%1
+
+This takes over Wi-Fi while it runs. "Restore normal Wi-Fi" or a reboot puts it back.]]),
+            DirectLink.describe(report)),
+        buttons = {
+            {{
+                text = _("Host the link, and be the master"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:runDirectLink("host")
+                end,
+            }},
+            {{
+                text = _("Join the link, and be the slave"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:runDirectLink("join")
+                end,
+            }},
+            {{
+                text = _("Restore normal Wi-Fi"),
+                callback = function()
+                    UIManager:close(dialog)
+                    local DirectLinkModule = require("duo/directlink")
+                    Core:stop("restoring Wi-Fi")
+                    DirectLinkModule.restore()
+                    UIManager:show(InfoMessage:new{
+                        text = _("Wi-Fi handed back to the system."),
+                    })
+                end,
+            }},
+            {{
+                text = _("Cancel"),
+                callback = function() UIManager:close(dialog) end,
+            }},
+        },
+    }
+    UIManager:show(dialog)
+end
+
+--- Brings the direct link up and then starts Duo on it, so the whole thing
+-- is one tap on each device.
+function Duo:runDirectLink(role)
+    local DirectLink = require("duo/directlink")
+    local working = InfoMessage:new{
+        text = _("Setting up the direct link…"),
+        timeout = 30,
+    }
+    UIManager:show(working)
+    UIManager:forceRePaint()
+
+    local output = (role == "host") and DirectLink.host() or DirectLink.join()
+    UIManager:close(working)
+
+    if not output or output:match("^error:") or output:match("\nerror:") then
+        UIManager:show(InfoMessage:new{
+            text = T(_("The direct link could not be set up.\n\n%1"), tostring(output)),
+        })
+        return
+    end
+
+    Core:set("transport", Core.TRANSPORT_TCP)
+    if role == "host" then
+        if Core:start(Core.ROLE_MASTER) then
+            self:showPairingSheet()
+        end
+    else
+        -- The host is always at the same address, so there is nothing to
+        -- search for and nothing to type.
+        Core:set("peer_host", DirectLink.HOST_ADDRESS)
+        Core:start(Core.ROLE_SLAVE, {
+            host = DirectLink.HOST_ADDRESS,
+            port = Core:get("peer_port"),
+        })
+    end
+end
+
+--------------------------------------------------------------------------
 -- Menu
 --------------------------------------------------------------------------
 
@@ -652,6 +769,12 @@ function Duo:getMenuTable()
                     help_text = _("Talk over TCP/IP. This also covers a Bluetooth PAN connection, which looks like an ordinary network to KOReader."),
                     checked_func = function() return not Core:usesSerial() end,
                     callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
+                },
+                {
+                    text = _("Set up a direct link (no router)…"),
+                    help_text = _("Make a Wi-Fi link between the two devices themselves, for reading somewhere with no network."),
+                    keep_menu_open = true,
+                    callback = function() self:showDirectLinkDialog() end,
                 },
                 {
                     text = _("Bluetooth serial (RFCOMM)"),

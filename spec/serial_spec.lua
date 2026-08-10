@@ -12,11 +12,10 @@ Wi-Fi tests, with the transport swapped underneath.
 
 local T = require("spec/testrunner")
 local socket = require("socket")
-local Protocol = require("duo/protocol")
+local Controller = require("spec/harness/controller")
 local SerialTransport = require("duo/transport_serial")
 
 local LOG_DIR = os.getenv("DUO_LOG_DIR") or "/tmp"
-local interpreter = arg and arg[-1] or "luajit"
 local PTY_A = LOG_DIR .. "/duo-pty-a"
 local PTY_B = LOG_DIR .. "/duo-pty-b"
 
@@ -47,97 +46,6 @@ local function stopPtyPair()
 end
 
 --------------------------------------------------------------------------
--- Device processes, driven exactly as in integration_spec
---------------------------------------------------------------------------
-
-local Controller = {}
-Controller.__index = Controller
-
-function Controller.new()
-    local server, port
-    for candidate = 18950, 19000 do
-        server = socket.bind("127.0.0.1", candidate)
-        if server then port = candidate break end
-    end
-    assert(server, "no free control port")
-    server:settimeout(0)
-    return setmetatable({ server = server, port = port, devices = {}, next_id = 1 }, Controller)
-end
-
-function Controller:spawn(name)
-    local log = ("%s/duo-serial-%s.log"):format(LOG_DIR, name)
-    os.execute(("LUA_PATH=%q %s spec/harness/instance_main.lua %s %d 300 >%s 2>&1 &"):format(
-        "./?.lua;./duo.koplugin/?.lua;;", interpreter, name, self.port, log))
-    local deadline = socket.gettime() + 20
-    while socket.gettime() < deadline do
-        local client = self.server:accept()
-        if client then
-            client:settimeout(0)
-            local device = { name = name, socket = client, reader = Protocol.newReader(), log = log }
-            assert(self:awaitMessage(device, "READY", 10), "no check-in from " .. name)
-            self.devices[name] = device
-            return device
-        end
-        socket.sleep(0.01)
-    end
-    error("device " .. name .. " did not start; see " .. log)
-end
-
-function Controller:awaitMessage(device, msg_type, timeout)
-    local deadline = socket.gettime() + (timeout or 10)
-    while socket.gettime() < deadline do
-        local data, err, partial = device.socket:receive(4096)
-        local received = data or partial
-        if received and #received > 0 then
-            device.reader:feed(received)
-        elseif err == "closed" then
-            error("device " .. device.name .. " died; see " .. device.log)
-        end
-        while true do
-            local msg = device.reader:next()
-            if not msg then break end
-            if msg.type == msg_type then return msg end
-        end
-        socket.sleep(0.005)
-    end
-    return nil
-end
-
-function Controller:call(device, code, timeout)
-    local id = tostring(self.next_id)
-    self.next_id = self.next_id + 1
-    device.socket:send(Protocol.encode("CMD", { id = id, code = code }))
-    local msg = self:awaitMessage(device, "RESULT", timeout or 10)
-    if not msg then error(("%s did not answer %s"):format(device.name, code)) end
-    if msg.ok ~= "1" then
-        error(("%s failed to run %s: %s"):format(device.name, code, msg.value))
-    end
-    return msg.value
-end
-
-function Controller:assertEventually(device, code, expected, what)
-    local deadline = socket.gettime() + 15
-    local last
-    while socket.gettime() < deadline do
-        last = self:call(device, code)
-        if last == tostring(expected) then return end
-        socket.sleep(0.05)
-    end
-    error(("%s: %s was %s, expected %s (%s)"):format(
-        device.name, code, tostring(last), tostring(expected), what or ""), 2)
-end
-
-function Controller:shutdown()
-    for _, device in pairs(self.devices) do
-        pcall(function()
-            device.socket:send(Protocol.encode("QUIT", {}))
-            device.socket:close()
-        end)
-    end
-    self.server:close()
-end
-
---------------------------------------------------------------------------
 -- Tests
 --------------------------------------------------------------------------
 
@@ -152,7 +60,7 @@ if not startPtyPair() then
     return 0
 end
 
-local controller = Controller.new()
+local controller = Controller.new{ first_port = 18950 }
 local master = controller:spawn("ser-master")
 local slave = controller:spawn("ser-slave")
 

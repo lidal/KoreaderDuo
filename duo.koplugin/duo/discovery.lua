@@ -103,9 +103,8 @@ function Discovery.newScanner(options)
     pcall(function() udp:setoption("broadcast", true) end)
 
     local targets = { "255.255.255.255" }
-    local broadcast = NetUtil.getBroadcastAddress(NetUtil.getLocalIP())
-    if broadcast then
-        targets[#targets+1] = broadcast
+    for _, address in ipairs(NetUtil.getBroadcastAddresses(NetUtil.getLocalIP())) do
+        targets[#targets+1] = address
     end
     for _, host in ipairs(options.extra_hosts or {}) do
         targets[#targets+1] = host

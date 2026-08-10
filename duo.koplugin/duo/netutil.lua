@@ -9,11 +9,44 @@ local socket = require("socket")
 
 local NetUtil = {}
 
+--[[--
+Picks this device's address out of the output of `ip addr` or `ifconfig`.
+
+Both spellings have to be understood: `ifconfig` on older readers prints
+`inet addr:192.168.1.5`, while `ip` and newer `ifconfig` print
+`inet 192.168.1.5/24`.
+
+A routable address wins over a link-local one when the device has both;
+when a direct reader-to-reader link is the only network there is, the
+169.254 address *is* the answer.
+
+@string text command output
+@treturn string an address, or nil
+--]]--
+function NetUtil.parseAddresses(text)
+    local routable, link_local
+    for _, pattern in ipairs({ "inet%s+addr:%s*(%d+%.%d+%.%d+%.%d+)",
+                               "inet%s+(%d+%.%d+%.%d+%.%d+)" }) do
+        for ip in tostring(text or ""):gmatch(pattern) do
+            if not ip:match("^127%.") then
+                if ip:match("^169%.254%.") then
+                    link_local = link_local or ip
+                else
+                    routable = routable or ip
+                end
+            end
+        end
+        if routable then return routable end
+    end
+    return routable or link_local
+end
+
 --- Best guess at this device's address on the local network.
 -- A connected UDP socket sends no packets, but the kernel still picks the
--- interface it would use, which is exactly the address we want to show the
--- user. Falls back to parsing `ip`/`ifconfig` when there is no route out.
--- @treturn string an IPv4 address, or nil when the device is offline
+-- interface it would use. That fails when there is no route off the link,
+-- which is the normal state of two readers talking only to each other, so
+-- the interface list is the fallback.
+-- @treturn string an IPv4 address, or nil when the device has no network
 function NetUtil.getLocalIP()
     local udp = socket.udp()
     if udp then
@@ -36,23 +69,32 @@ function NetUtil.getLocalIP()
         if pipe then
             local output = pipe:read("*a") or ""
             pipe:close()
-            for ip in output:gmatch("inet%s+addr?:?%s*(%d+%.%d+%.%d+%.%d+)") do
-                if not ip:match("^127%.") then
-                    return ip
-                end
-            end
+            local ip = NetUtil.parseAddresses(output)
+            if ip then return ip end
         end
     end
     return nil
 end
 
---- The /24 broadcast address for `ip`, used as an extra discovery probe on
+--- Broadcast addresses worth probing for a device holding `ip`, used on
 -- networks that drop 255.255.255.255.
-function NetUtil.getBroadcastAddress(ip)
-    if not ip then return nil end
+-- @treturn table array of addresses (possibly empty)
+function NetUtil.getBroadcastAddresses(ip)
+    if not ip then return {} end
     local a, b, c = ip:match("^(%d+)%.(%d+)%.(%d+)%.%d+$")
-    if not a then return nil end
-    return string.format("%s.%s.%s.255", a, b, c)
+    if not a then return {} end
+    local addresses = { string.format("%s.%s.%s.255", a, b, c) }
+    if a == "169" and b == "254" then
+        -- Link-local is a /16, which is what a router-free direct link
+        -- between two readers uses.
+        addresses[#addresses+1] = "169.254.255.255"
+    end
+    return addresses
+end
+
+--- The /24 broadcast address for `ip`.
+function NetUtil.getBroadcastAddress(ip)
+    return NetUtil.getBroadcastAddresses(ip)[1]
 end
 
 --- True when `address` looks like a usable IPv4 literal.
