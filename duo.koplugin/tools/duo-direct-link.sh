@@ -117,12 +117,15 @@ probe() {
 
     ap=no
     ibss=no
+    p2p_go=no
     for mode in $modes; do
         [ "$mode" = "AP" ] && ap=yes
         [ "$mode" = "IBSS" ] && ibss=yes
+        [ "$mode" = "P2P-GO" ] && p2p_go=yes
     done
     echo "mode_ap=$ap"
     echo "mode_ibss=$ibss"
+    echo "mode_p2p_go=$p2p_go"
 
     # WEXT drivers report no modes to iw but can usually still do ad-hoc.
     wext=no
@@ -140,6 +143,12 @@ probe() {
     elif [ "$wext" = yes ]; then
         echo "method=ibss-wext"
         echo "verdict=Old-style Wi-Fi driver; ad-hoc is worth trying. Run: $0 host"
+    elif [ "$p2p_go" = yes ]; then
+        # Wi-Fi Direct can host a group, but joining one means agreeing an
+        # SSID and passphrase this script did not choose, so it is a lead to
+        # follow by hand rather than something to run.
+        echo "method=none"
+        echo "verdict=No access point or ad-hoc mode, but this driver does report Wi-Fi Direct (P2P-GO). That is worth trying by hand with wpa_cli p2p_group_add; Duo will pair over it like any other network, but cannot set it up for you. Otherwise use a phone hotspot or any Wi-Fi network."
     else
         echo "method=none"
         echo "verdict=This device cannot make its own link. Use a phone hotspot or any Wi-Fi network instead; Duo works the same over either."

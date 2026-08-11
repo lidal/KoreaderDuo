@@ -79,6 +79,17 @@ Wiphy phy0
 EOF
 ]]
 
+local IW_LIST_P2P_ONLY = [[
+cat <<'EOF'
+Wiphy phy0
+	Supported interface modes:
+		 * managed
+		 * P2P-client
+		 * P2P-GO
+	Band 1:
+EOF
+]]
+
 T.describe("probing what a device can do", function()
     T.it("spots a driver that can be an access point", function()
         local environment = fakeEnvironment{ iw = IW_LIST_AP, wpa_supplicant = "exit 0" }
@@ -95,6 +106,28 @@ T.describe("probing what a device can do", function()
         T.assertEquals(field(output, "mode_ap"), "no")
         T.assertEquals(field(output, "mode_ibss"), "yes")
         T.assertEquals(field(output, "method"), "ibss")
+    end)
+
+    T.it("says nothing can be hosted, but names Wi-Fi Direct when it is there", function()
+        -- Neither mode Duo drives, but a lead worth handing over rather
+        -- than a flat no: a P2P group is still a network to pair across.
+        local environment = fakeEnvironment{ iw = IW_LIST_P2P_ONLY, wpa_supplicant = "exit 0" }
+        local output = runScript(environment, "probe")
+        T.assertEquals(field(output, "mode_ap"), "no")
+        T.assertEquals(field(output, "mode_ibss"), "no")
+        T.assertEquals(field(output, "mode_p2p_go"), "yes")
+        T.assertEquals(field(output, "method"), "none",
+            "Duo does not set a P2P group up, so it must not claim it can")
+        T.assertMatch(field(output, "verdict"), "Wi%-Fi Direct")
+    end)
+
+    T.it("does not mention Wi-Fi Direct on a driver that has none", function()
+        local environment = fakeEnvironment{ iw = IW_LIST_MANAGED_ONLY }
+        local output = runScript(environment, "probe")
+        T.assertEquals(field(output, "mode_p2p_go"), "no")
+        T.assertEquals(field(output, "method"), "none")
+        T.assertTrue(not field(output, "verdict"):find("Direct"),
+            "no point naming a way out the device does not have")
     end)
 
     T.it("tries old-style ad-hoc when the driver predates nl80211", function()

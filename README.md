@@ -89,6 +89,13 @@ Check before you rely on it, over SSH:
 ```
 
 That prints the interface, the driver, the modes it supports, and a verdict.
+Three ways are driven automatically, in the order they are worth having:
+access point mode where the driver has it, ad-hoc where it does not, and
+old-style ad-hoc through `iwconfig` for drivers that predate `iw`. A fourth
+is only reported, not driven: if the device advertises Wi-Fi Direct
+(`P2P-GO`) and nothing else, the probe says so, because a P2P group is
+still a network Duo can pair across — but setting one up means agreeing an
+SSID and passphrase this script did not choose, so that part is yours.
 The same script does the work — `host`, `join`, `status`, `restore` — and
 takes `--dry-run` on any of them, so you can read the exact commands before
 running them. It takes Wi-Fi over while it is up; **restore** or a reboot
@@ -445,7 +452,7 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-203 tests, no mocking of the interesting parts:
+205 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
@@ -459,7 +466,7 @@ make test LUA=lua5.1
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
 | `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
+| `directlink_spec` | 15 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
 Two tools double as documentation, and both print live data:
