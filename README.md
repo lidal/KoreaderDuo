@@ -129,13 +129,27 @@ neither — nothing enumerates, no interface appears, and no amount of
 software on either side changes that. Cables sold with two male ends are
 for charging or for host-mode phones; on two Kindles they do nothing.
 
-Host mode would be the way round it, and Kindles do not offer it: their
-USB support is the gadget side, which is what USBNetwork uses to present
-the reader to a PC.
+**USBNetwork does not change this**, which is worth saying plainly because
+it looks as though it should. It is the jailbreak's headline USB feature
+and it is exactly the gadget half: `g_ether`, which makes the reader appear
+to a *host* as a USB Ethernet adapter. It is the thing that makes a Kindle
+a device. Running it on both ends of a cable gives you two devices waiting
+to be enumerated by a host that is not there, and neither `usb0` ever comes
+up.
 
-What does work is putting a host in the middle. Anything that can be a USB
-host and route between two USB Ethernet gadgets — a Raspberry Pi, an
-Android phone with OTG and tethering, a laptop — gives both readers a
+Host mode is the only way round it, and a plain cable would not select it
+even on hardware that could. Host mode is chosen by grounding the ID pin,
+which is what an OTG adapter does and what a male-to-male cable does not;
+the host also has to supply power out of a port that is built to take it
+in. So this is a soldering-and-kernel project rather than a cable, and
+whether a given model can be made to do it at all is a question for the
+people who hack Kindle kernels — not something this plugin can answer.
+Everything the jailbreak ships today is on the gadget side.
+
+What does work is putting a host in the middle, and there USBNetwork is
+exactly what you want on both readers. Anything that can be a USB host and
+route between two USB Ethernet gadgets — a Raspberry Pi, an Android phone
+with OTG and tethering, a laptop — gives both readers a
 `usb0` interface with an address, and from Duo's point of view that is
 simply a network. Nothing in the plugin looks for a wireless card: it takes
 whatever interface has an address, so pairing over `usb0` needs no special
