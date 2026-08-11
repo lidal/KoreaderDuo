@@ -966,8 +966,8 @@ function Duo:getMenuTable()
                     callback = function() self:showDirectLinkDialog() end,
                 },
                 {
-                    text = _("Bluetooth serial (RFCOMM)"),
-                    help_text = _("Talk over a bound RFCOMM channel, with no Wi-Fi at all. Bind the channel outside KOReader first, e.g. 'rfcomm bind /dev/rfcomm0 <address> 1'."),
+                    text = _("Serial line (RFCOMM or UART)"),
+                    help_text = _("Talk over a character device instead of a network: a bound RFCOMM channel, or a real serial line between the two devices. Set it up outside KOReader first — for Bluetooth, 'rfcomm bind /dev/rfcomm0 <address> 1'; for a wire, whatever the port is called, with nothing else using it."),
                     checked_func = function() return Core:usesSerial() end,
                     callback = function() self:setTransport(Core.TRANSPORT_SERIAL) end,
                     separator = true,

@@ -108,7 +108,7 @@ character device, and Duo's serial transport talks straight to one:
 rfcomm bind /dev/rfcomm0 AA:BB:CC:DD:EE:FF 1     # where rfcomm exists
 ```
 
-Then on both devices: **Duo → Link → Bluetooth serial (RFCOMM)**, set
+Then on both devices: **Duo → Link → Serial line (RFCOMM or UART)**, set
 **Serial device** to the path, and start one as master and the other as
 slave. There is no address to enter — the line *is* the connection — and the
 pairing code still applies. This is tested end to end against a
@@ -157,10 +157,35 @@ setting. It is only worth the trouble if you already have such a thing to
 hand; two readers and a Wi-Fi link is the simpler answer, and a phone
 hotspot with no internet on it works anywhere.
 
-There is one wired route with no third device, and it is not USB: the
-serial transport above. Any two devices that can expose a character device
-to each other — a real serial line, an RFCOMM channel — can carry the
-spread, which is why that transport exists.
+### A wire with no third device: the debug UART
+
+There is one wired route between two readers and nothing else, and it is
+not the USB port. Kindles have a serial console on test pads inside the
+case — the same one used to rescue a bricked device. Two of those joined
+together, TX to RX each way and a common ground, are a serial line, and
+Duo's serial transport talks to any character device: set **Link → Serial
+line** and give it the port's name on each side. Nothing else is needed;
+there is no address to type and the pairing code still applies.
+
+It is a soldering job, and there are three things to get right:
+
+- **Free the port first.** The UART is normally the kernel console with a
+  login on it, so it will be busy answering boot messages rather than
+  carrying a spread. Drop the `console=` argument and stop the getty before
+  using it.
+- **Match the levels.** These pads are 1.8 V on many models and 3.3 V on
+  others. Two of the same model are fine wired directly; two different
+  ones may need a level shifter, and getting this wrong damages a reader.
+- **Expect it to be slow.** At the usual 115200 baud a line carries about
+  11 KB a second, and a book travels as text, so call it 8 KB of book per
+  second. Page turns are a few dozen bytes and feel instant. A 500 KB
+  novel takes about a minute. A whole library does not bear thinking
+  about, which is an argument for leaving *covers now, books when you open
+  them* switched on. Raise **Serial baud** if the port will take it.
+
+Everything else wired needs something in the middle that can be a USB
+host. There is no passive cable that turns two device ports into a link,
+and no setting in this plugin — or any other — that can conjure one.
 
 ## Settings
 
