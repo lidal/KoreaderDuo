@@ -78,6 +78,7 @@ local DEFAULTS = {
     share_browser = true,
     sync_books = true,
     sync_library = true,
+    covers_first = true,
     max_book_mb = 64,
     device_name = "",
     autostart = false,
@@ -441,6 +442,7 @@ function Core:dropTransfers()
     end
     if self.book_sender then
         self.book_sender.sender:close()
+        self:clearTemporary(self.book_sender)
         self.book_sender = nil
     end
     self.book_request = nil
@@ -580,10 +582,13 @@ is not.
 function Core:checkBookRequest()
     local request = self.book_request
     if not request then return end
-    local since = Util.now() - (request.progress_at or request.started or 0)
+    -- Anything set without a clock reading starts its clock here, rather
+    -- than counting from the epoch and being written off at once.
+    request.started = request.started or Util.now()
+    local since = Util.now() - (request.progress_at or request.started)
     if since < BOOK_SILENCE then return end
 
-    local was_library = request.library
+    local was_library = request.library and not request.open_when_done
     self.book_request = nil
     if self.book_receiver then
         self.book_receiver:abort()
@@ -1061,8 +1066,15 @@ function Core:handleLibraryEnd(msg)
     local wanted, bytes = {}, 0
     for _, entry in ipairs(self.library.index) do
         -- Same name and same size counts as the same book; anything else is
-        -- fetched rather than guessed at.
-        if here[entry.name] == nil or here[entry.name] ~= entry.size then
+        -- fetched rather than guessed at. A stand-in is the exception: the
+        -- size is meant to differ, and it is the shelf being right that was
+        -- asked for, not the bytes.
+        local mine = here[entry.name]
+        local satisfied = mine ~= nil and mine == entry.size
+        if not satisfied and mine ~= nil and self:wantsStubs() then
+            satisfied = self:isStub(self.library.path .. "/" .. entry.name)
+        end
+        if not satisfied then
             wanted[#wanted+1] = entry
             bytes = bytes + (entry.size or 0)
         end
@@ -1113,17 +1125,79 @@ function Core:pumpLibrary()
         return
     end
     library.current = next_entry
+    local stub = self:wantsStubs() and next_entry.name:lower():match("%.epub$") ~= nil
     self.book_request = {
         file = library.path .. "/" .. next_entry.name,
         title = next_entry.name,
         library = true,
+        stub = stub,
         started = Util.now(),
     }
     link:send(Protocol.BOOK_REQ, {
         file = self.book_request.file,
         digest = "",
         lib = 1,
+        stub = stub and 1 or nil,
     })
+end
+
+--[[--
+Whether the library should fill up with stand-ins rather than books.
+
+A stand-in is a real EPUB holding the cover and the title and nothing else,
+so the shelf and the shared list are right immediately and the bytes wait
+until somebody opens something. Only EPUBs can have one: a stand-in has to
+carry the name of the book it stands in for, so it has to be the same
+format too, and anything else is copied whole.
+--]]--
+function Core:wantsStubs()
+    return self:get("sync_library") and self:get("covers_first")
+end
+
+--[[--
+Whether a file here is one of Duo's stand-ins rather than a book.
+
+Asked of the file itself — the marker is written into it — so it survives
+restarts, backups and anything else that would lose a list kept alongside.
+--]]--
+function Core:isStub(path)
+    local loaded, EpubStub = pcall(require, "duo/epubstub")
+    if not loaded then return false end
+    local read, answer = pcall(EpubStub.isPlaceholder, path)
+    if not read then
+        self:log("could not read", path, "-", tostring(answer))
+        return false
+    end
+    return answer == true
+end
+
+--[[--
+Fetches the book a stand-in is standing in for, and opens it.
+
+This is the moment the bytes were being saved for: the user has picked the
+book, so the wait is theirs to spend, and it is spent once.
+
+@string path  the stand-in, which the book will replace
+@treturn boolean true when the asking started
+--]]--
+function Core:fetchBookFor(path, title)
+    if not self:isConnected() or self:isMaster() then return false end
+    if self.book_receiver or self.book_request then return false end
+    local link = self:getReadyLinks()[1]
+    if not link then return false end
+
+    self.book_request = {
+        file = path,
+        title = title or path:gsub("^.*/", ""),
+        library = true,     -- it lives in the shared folder, not the Duo one
+        replacing = path,   -- and lands exactly where the stand-in was
+        open_when_done = true,
+        started = Util.now(),
+    }
+    link:send(Protocol.BOOK_REQ, { file = path, digest = "", lib = 1 })
+    self:notify(("Duo: fetching %s"):format(self.book_request.title))
+    self:changed()
+    return true
 end
 
 function Core:stopLibrarySync(reason)
@@ -1228,6 +1302,20 @@ function Core:handleBookRequest(link, msg)
         path = document.file
     end
 
+    -- A stand-in is built here and sent in the book's place, under the
+    -- book's own name: the other device needs the listing to match, and it
+    -- is this device that has the file to take a cover out of.
+    local sending_stub = false
+    if Protocol.bool(msg, "stub") then
+        local stub_path, stub_err = self:buildStub(path)
+        if stub_path then
+            path = stub_path
+            sending_stub = true
+        else
+            self:log("no stand-in for", path, "-", tostring(stub_err), "- sending the book")
+        end
+    end
+
     local sender, err = BookTransfer.newSender(path)
     if not sender then
         link:send(Protocol.BOOK_ERR, { reason = tostring(err) })
@@ -1243,7 +1331,13 @@ function Core:handleBookRequest(link, msg)
         return
     end
 
-    self.book_sender = { sender = sender, link = link, name = path:gsub("^.*/", "") }
+    self.book_sender = {
+        sender = sender,
+        link = link,
+        name = (sending_stub and msg.file or path):gsub("^.*/", ""),
+        -- Built for this transfer alone, and no use to anyone afterwards.
+        temporary = sending_stub and path or nil,
+    }
     link:send(Protocol.BOOK_HEAD, {
         name = self.book_sender.name,
         size = sender.size,
@@ -1255,12 +1349,50 @@ function Core:handleBookRequest(link, msg)
     self:changed()
 end
 
+--[[--
+Makes a stand-in for a book, and returns where it was put.
+
+Built fresh each time rather than kept: it is a few hundred kilobytes per
+book, the cover only changes when the book does, and a device that is
+asking for stand-ins is usually asking once.
+
+@treturn string a path, or nil plus a reason
+--]]--
+function Core:buildStub(source)
+    if not source:lower():match("%.epub$") then
+        return nil, "only an EPUB can stand in for itself"
+    end
+    local ok, EpubStub = pcall(require, "duo/epubstub")
+    if not ok then return nil, "no stand-in builder" end
+
+    if not self.hooks or not self.hooks.getTempDir then
+        return nil, "nowhere to build it"
+    end
+    local found, directory = pcall(self.hooks.getTempDir)
+    if not found or not directory then
+        return nil, "nowhere to build it: " .. tostring(directory)
+    end
+    local out = ("%s/duo-stub-%s.epub"):format(directory, Util.randomHex(6))
+    local made, built, err = pcall(EpubStub.make, source, out)
+    if not made then return nil, tostring(built) end
+    if not built then return nil, err end
+    return out
+end
+
+--- Removes a stand-in built for a transfer that is over.
+function Core:clearTemporary(transfer)
+    if transfer and transfer.temporary then
+        os.remove(transfer.temporary)
+    end
+end
+
 --- Pushes as much of the book as the link will take right now.
 function Core:pumpBookSender()
     local transfer = self.book_sender
     if not transfer then return end
     if transfer.link:isClosed() then
         transfer.sender:close()
+        self:clearTemporary(transfer)
         self.book_sender = nil
         return
     end
@@ -1271,6 +1403,7 @@ function Core:pumpBookSender()
         if not chunk then
             transfer.link:send(Protocol.BOOK_DONE, { size = transfer.sender.size })
             transfer.sender:close()
+            self:clearTemporary(transfer)
             self.book_sender = nil
             self:notify("Duo: the book has been sent")
             self:changed()
@@ -1294,6 +1427,7 @@ function Core:abortBookSend(reason)
     if not transfer then return end
     self.book_sender = nil
     transfer.sender:close()
+    self:clearTemporary(transfer)
     if not transfer.link:isClosed() then
         transfer.link:send(Protocol.BOOK_ERR, { reason = reason })
     end
@@ -1316,7 +1450,9 @@ function Core:handleBookHead(msg)
     -- A book being fetched to make the shared folder match has to land in
     -- that folder; anything else goes to the Duo folder.
     local directory
-    if self.book_request.library and self.library then
+    if self.book_request.replacing then
+        directory = self.book_request.replacing:match("^(.*)/[^/]*$") or "."
+    elseif self.book_request.library and self.library then
         directory = self.library.path
     else
         directory = self.hooks and self.hooks.getBookDir and self.hooks.getBookDir() or "."
@@ -1363,6 +1499,16 @@ function Core:handleBookDone()
         self:alert(("Duo could not save the book: %s"):format(tostring(err)))
         return
     end
+    if request and request.open_when_done then
+        -- The user asked for this one by opening it, so it opens.
+        self:notify(("Duo: %s is here"):format(request.title or "the book"))
+        if self.browser then self.browser.refresh() end
+        if self.hooks and self.hooks.openDocument then
+            self.opening_file = nil
+            self.hooks.openDocument(path, { title = request.title or "", digest = "" })
+        end
+        return
+    end
     if request and request.library then
         -- One of many: keep the folder in step rather than opening it.
         if self.library then
@@ -1386,9 +1532,15 @@ function Core:handleBookError(msg)
         self.book_receiver:abort()
         self.book_receiver = nil
     end
-    local was_library = self.book_request and self.book_request.library
+    local request = self.book_request
+    local was_library = request and request.library and not request.open_when_done
     self.book_request = nil
     self:changed()
+    if request and request.open_when_done then
+        self:alert(("Duo could not fetch %s: %s"):format(
+            request.title or "the book", msg.reason or "the other device refused"))
+        return
+    end
     if was_library then
         -- One book failing is not a reason to abandon the rest.
         self:log("library book refused:", msg.reason)

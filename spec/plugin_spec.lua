@@ -247,4 +247,4 @@ T.describe("spread arithmetic", function()
     end)
 end)
 
-return T.run()
+os.exit(T.run())

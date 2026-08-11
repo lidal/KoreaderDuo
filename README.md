@@ -136,6 +136,7 @@ the pages currently on show.
 | **Match typography** | Keep both devices laying the book out identically. On by default. |
 | **Share the book list too** | Spread the file browser across the devices as well. On by default. |
 | **Keep the whole library in step** | Fetch whatever books the shared folder is missing here. On by default. |
+| **Covers now, books when you open them** | Fill the shelf with covers and titles, and fetch each book the first time it is opened. On by default. EPUB only. |
 | **Page turns from the other device** | Off makes the slave a display only. |
 | **Follow the master's book** | When the master opens a book, open it here too. |
 | **Send the book if the other device lacks it** | Hand the file over the same link when the other device does not have it. On by default. |
@@ -168,6 +169,33 @@ That is **Keep the whole library in step**, on by default. Turn it off and
 Duo will still spread the list, but it will only tell you the two libraries
 differ rather than doing anything about it — which is the left-hand screen
 above.
+
+### Covers now, books when you open them
+
+Copying a whole library before anything can be read is a lot of waiting for
+books you may never open. So by default Duo sends a **stand-in** for each
+book instead: a real EPUB carrying the cover and the title and nothing else.
+The shelf fills up at once, the two halves of the list line up straight
+away, and the book itself is fetched the first time you open it — landing
+over the top of the stand-in and opening as if it had been there all along.
+
+![A shelf of covers, and one of them opened after a tap](screenshots/covers-first.png)
+
+Ten Gutenberg books came to 2.2 MB as stand-ins against 6.2 MB whole, and
+the one that was actually opened took five seconds to arrive. The saving
+depends entirely on the covers: these are big scans on small books, and a
+more usual library — a few megabytes a book, a small cover — saves far more.
+
+Turn **Covers now, books when you open them** off and the whole library is
+copied up front instead, as before.
+
+Two limits worth knowing. It is **EPUB only**: a stand-in has to carry the
+name of the book it stands in for, so it has to be the same format too, and
+there is no such thing as a PDF with no pages — anything else is copied
+whole. And a book cannot be *read* while it downloads, whatever the format:
+an EPUB is a zip whose index sits at the end of the file, so there is no
+first page to show until the last byte lands. What Duo does instead is start
+the moment you tap, and open the moment it is there.
 
 Only the folder on show is ever involved, and only the books in it: a
 request carries a bare file name that has to appear in that listing, and the
@@ -337,7 +365,7 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-182 tests, no mocking of the interesting parts:
+199 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
@@ -347,9 +375,10 @@ make test LUA=lua5.1
 | `integration_spec` | 46 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
-| `library_spec` | 9 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
+| `library_spec` | 10 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
 | `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
+| `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
 | `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
@@ -400,6 +429,12 @@ Both of the features above were checked there too, not only in the suite:
 
   Real books are also what turned up the transfer bug described below. A
   library of fixtures would not have.
+- **Covers first.** With the shelf empty on one side, the ten books arrived
+  as stand-ins — 2.2 MB against 6.2 MB — covers drawn by KOReader's own
+  cover browser out of files holding no book at all, and the two halves of
+  the list lined up at once. Tapping *Wuthering Heights* fetched the real
+  587,526 bytes in five seconds, over the top of the stand-in, and opened it
+  at page 1 of 705.
 - **Matching the screenful.** Checked against all three of the widgets that
   draw the list. With the plain browser the slave went from 6 items a screen
   to the master's 10; with the cover browser in list mode, where the global

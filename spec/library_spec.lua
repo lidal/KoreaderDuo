@@ -174,6 +174,25 @@ T.describe("keeping the whole library in step", function()
             "it went looking for books again with nothing missing")
     end)
 
+    T.it("fetches a book on demand when the shelf holds only a stand-in", function()
+        -- The stand-in machinery needs an archive library this harness has
+        -- not got, so the file is declared a stand-in rather than built as
+        -- one. What is under test is the rest: a tap turns into a request,
+        -- the book lands over the top of what was there, and it opens.
+        local target = SHARED .. "/book05.epub"
+        callSlave("Core.isStub = function(self, path) return path == '" .. target .. "' end")
+        callSlave("UIManager.shown_log = {}")
+        callSlave(("D:openFile(%q)"):format(target))
+
+        controller:assertEventually(slave,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return m.text end end return '' end)()",
+            target, "the fetched book did not open", 30)
+        T.assertEquals(callSlave(("tostring(D:sizeOf(%q))"):format(target)),
+            callMaster(("tostring(D:sizeOf(%q))"):format(target)),
+            "what landed is not the book the other device has")
+        callSlave("Core.isStub = nil")
+    end)
+
     T.it("will not hand over anything outside the shared folder", function()
         callSlave("UIManager.shown_log = {}")
         -- A traversal, and a name that is simply not in the folder.
@@ -191,4 +210,4 @@ end)
 local exit_code = T.run()
 controller:shutdown()
 os.execute(("rm -rf %q %q"):format(SHARED, SLAVE_SRC))
-return exit_code
+os.exit(exit_code)

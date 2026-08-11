@@ -187,4 +187,4 @@ end)
 local exit_code = T.run()
 controller:shutdown()
 stopPtyPair()
-return exit_code
+os.exit(exit_code)

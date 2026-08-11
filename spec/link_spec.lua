@@ -340,4 +340,4 @@ T.describe("discovery", function()
     end)
 end)
 
-return T.run()
+os.exit(T.run())

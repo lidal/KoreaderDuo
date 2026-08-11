@@ -809,4 +809,4 @@ end)
 
 local exit_code = T.run()
 controller:shutdown()
-return exit_code
+os.exit(exit_code)

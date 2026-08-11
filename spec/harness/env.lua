@@ -225,6 +225,9 @@ function Env.install(options)
     -- the follower can simply open the leader's copy off the disk and no
     -- book ever travels — which makes a transfer test prove nothing.
     local lfs_stub = { directories = {}, missing = {} }
+    function lfs_stub.mkdir(path)
+        return os.execute(("mkdir -p %q"):format(path)) == 0
+    end
     function lfs_stub.attributes(path, what)
         if lfs_stub.missing[path] then return nil end
         if lfs_stub.directories[path] then

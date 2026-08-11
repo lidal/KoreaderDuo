@@ -227,4 +227,4 @@ end)
 -- After the run, not before it: describe() only registers, run() executes.
 local exit_code = T.run()
 os.execute("rm -rf " .. TMP)
-return exit_code
+os.exit(exit_code)

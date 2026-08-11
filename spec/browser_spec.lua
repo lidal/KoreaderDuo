@@ -184,4 +184,4 @@ T.describe("changing folder", function()
     end)
 end)
 
-return T.run()
+os.exit(T.run())

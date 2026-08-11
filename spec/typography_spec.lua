@@ -113,4 +113,4 @@ T.describe("reading and applying on a device", function()
     end)
 end)
 
-return T.run()
+os.exit(T.run())

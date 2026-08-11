@@ -74,6 +74,7 @@ function Duo:init()
             openDocument = function(file, msg) self:openRemoteDocument(file, msg) end,
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
+            getTempDir = function() return Duo:getTempDir() end,
             openFirewall = function(port)
                 if Device:isKindle() then NetUtil.openFirewall(port) end
             end,
@@ -127,6 +128,18 @@ function Duo:getBookDir()
     return home .. "/Duo"
 end
 
+--- Somewhere to build a stand-in before sending it, out of the way of the
+--- library so it never turns up in a listing.
+function Duo:getTempDir()
+    local directory = DataStorage:getDataDir() .. "/cache/duo"
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(directory, "mode") ~= "directory" then
+        lfs.mkdir(DataStorage:getDataDir() .. "/cache")
+        lfs.mkdir(directory)
+    end
+    return directory
+end
+
 function Duo:getDefaultDeviceName()
     local model = Device.model or "KOReader"
     return tostring(model)
@@ -144,6 +157,7 @@ end
 function Duo:onCloseWidget()
     self:unwrapPageTurns()
     self:unwrapBrowserTurns()
+    self:unwrapFileOpening()
     Core:detachReader(self.reader_binding)
     Core:detachBrowser(self.browser_binding)
 end
@@ -250,6 +264,7 @@ function Duo:bindBrowser()
     -- Already bound to this very browser: nothing to redo.
     if self.browser_binding and self.wrapped_chooser == ui.file_chooser then return end
     self:wrapBrowserTurns()
+    self:wrapFileOpening()
 
     self.browser_binding = {
         getState = function()
@@ -432,6 +447,60 @@ function Duo:resync()
             Core:notify(_("Duo: asked the master where we are"))
         end
     end
+end
+
+--[[--
+Catches a tap on a book that is not really here yet.
+
+The file manager funnels every way of opening a book — a tap, the history,
+a search result — through `openFile`, so wrapping it catches the lot. A
+stand-in is sent to Duo to be filled in first; everything else is opened
+exactly as it would have been.
+--]]--
+function Duo:wrapFileOpening()
+    local ui = self.ui
+    if not ui or type(ui.openFile) ~= "function" then return end
+    if self.wrapped_open == ui then return end
+    self.wrapped_open = ui
+
+    local original = ui.openFile
+    self.original_open_file = original
+    ui.openFile = function(manager, file, ...)
+        if Duo:fetchBeforeOpening(file) then return true end
+        return original(manager, file, ...)
+    end
+end
+
+function Duo:unwrapFileOpening()
+    if self.wrapped_open and self.original_open_file then
+        self.wrapped_open.openFile = self.original_open_file
+    end
+    self.wrapped_open = nil
+    self.original_open_file = nil
+end
+
+--[[--
+Turns opening a stand-in into fetching the book it stands for.
+
+@treturn boolean true when Duo took the tap and the file manager should not
+--]]--
+function Duo:fetchBeforeOpening(file)
+    if type(file) ~= "string" or not file:lower():match("%.epub$") then return false end
+    if not Core:isConnected() or Core:isMaster() then return false end
+    if not Core:isStub(file) then return false end
+
+    local name = file:gsub("^.*/", "")
+    if not Core:fetchBookFor(file, name) then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Duo is already fetching a book. %1 will have to wait its turn."), name),
+        })
+        return true
+    end
+    UIManager:show(InfoMessage:new{
+        text = T(_("Fetching %1 from the other device — it will open when it arrives."), name),
+        timeout = 3,
+    })
+    return true
 end
 
 --------------------------------------------------------------------------
@@ -977,6 +1046,13 @@ When you connect, the master's settings win. Change anything afterwards, on eith
             help_text = _("When the shared folder does not hold the same books on both devices, fetch the missing ones. This is what makes a shared book list line up."),
             checked_func = function() return Core:get("sync_library") end,
             callback = function() Core:set("sync_library", not Core:get("sync_library")) end,
+        },
+        {
+            text = _("Covers now, books when you open them"),
+            help_text = _("Fill the shelf with stand-ins that carry the cover and the title, and fetch the book itself the first time you open it. Much less to copy, and the two halves of the list line up straight away. EPUB only — anything else is copied whole."),
+            enabled_func = function() return Core:get("sync_library") end,
+            checked_func = function() return Core:get("covers_first") end,
+            callback = function() Core:set("covers_first", not Core:get("covers_first")) end,
         },
         {
             text_func = function()

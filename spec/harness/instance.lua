@@ -132,6 +132,23 @@ function Instance:doesNotHave(path)
     self.env.lfs.missing[path] = true
 end
 
+--- Opens a book the way a tap in the file browser does.
+function Instance:openFile(path)
+    if self.ui and type(self.ui.openFile) == "function" then
+        return self.ui:openFile(path)
+    end
+    return false
+end
+
+--- How big a file is on this device, for comparing the two.
+function Instance:sizeOf(path)
+    local handle = io.open(path, "rb")
+    if not handle then return nil end
+    local size = handle:seek("end")
+    handle:close()
+    return size
+end
+
 --- Runs the UI loop for `seconds`, or until `condition` becomes true.
 function Instance:pump(seconds, condition)
     local socket = require("socket")

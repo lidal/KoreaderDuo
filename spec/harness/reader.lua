@@ -427,6 +427,12 @@ function Reader.newFileManager(options)
     }, ReaderUI)
     ui.file_chooser = Reader.newFileChooser(options)
     if options.real_folder then ui.file_chooser:refreshPath() end
+    -- Every way of opening a book from the browser goes through this, which
+    -- is why Duo wraps it to catch a tap on a book that is not really here.
+    ui.openFile = function(_, file)
+        require("apps/reader/readerui"):showReader(file)
+        return true
+    end
     -- Tell the stubbed lfs which folders this device has, so the browser's
     -- "do I have that folder?" check has something true to say.
     local lfs = package.loaded["libs/libkoreader-lfs"]

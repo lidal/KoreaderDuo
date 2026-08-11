@@ -204,4 +204,4 @@ T.describe("util", function()
     end)
 end)
 
-return T.run()
+os.exit(T.run())

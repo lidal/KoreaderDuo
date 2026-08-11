@@ -212,4 +212,4 @@ T.describe("bringing the link up", function()
 end)
 
 os.execute("rm -rf " .. FAKE_BIN)
-return T.run()
+os.exit(T.run())
