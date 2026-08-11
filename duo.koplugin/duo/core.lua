@@ -58,6 +58,18 @@ local RECONNECT_MAX = 15
 --- seconds. Generous: a slow link is not the same as a dead one.
 local BOOK_SILENCE = 30
 
+--[[--
+How long the pair stays up after the last page turn, in seconds.
+
+This is the one number that decides when two readers doze off together, and
+it has to be longer than reading a page takes. Too short and they nod off
+between turns — and since a sleeping follower cannot be woken by the leader,
+that would mean a tap turning one screen and not the other. Five minutes is
+comfortably longer than a page and short enough to save something real when
+the book goes down.
+--]]--
+local IDLE_HOLD = 300
+
 Core.TRANSPORT_TCP = "tcp"
 Core.TRANSPORT_SERIAL = "serial"
 
@@ -237,19 +249,49 @@ function Core:isSlave()
 end
 
 --[[--
-Asks the device to keep the UI ticking while Duo is running.
+Decides whether this device should stay awake, and says so.
 
-Duo has no timer of its own: it is polled by the UI loop, and a reader that
-drops into standby stops polling. On a desktop that costs nothing to
-ignore, because nothing suspends; on a Kindle it means a follower that
-quietly stops following, and a book transfer that stops halfway. So while
-Duo is on, standby is held off — which is the trade this feature makes:
-two readers kept awake to stay in step, rather than one asleep and wrong.
+Duo has no timer of its own: it is polled by the UI loop, and a reader in
+standby stops polling. Holding that off costs battery, so it is held only
+where it buys something.
 
-Balanced by construction: the flag makes a second hold, or a release with
-nothing held, do nothing, because KOReader counts these and asserts on a
-mismatch.
+A **follower** holds it while the leader is awake. It has nobody tapping it
+to wake it up, and a follower asleep while the other device turns pages is
+simply wrong.
+
+A **leader** does not, because someone is holding it: any tap wakes it, and
+holding standby off there would also stop KOReader ever telling us the
+reader has gone idle — which is the signal the followers need. When it does
+go idle it says so, and the followers go with it.
+
+Either way a transfer in flight holds it, on both devices: a book that
+stops halfway is worse than a minute of battery.
+
+Balanced by construction — a second hold, or a release with nothing held,
+does nothing, because KOReader counts these and asserts on a mismatch.
 --]]--
+function Core:shouldStayAwake()
+    if not self:isActive() then return false end
+    -- Bytes in flight, at either end.
+    if self.book_sender or self.book_receiver or self.library then return true end
+    if self:isMaster() then
+        return Util.now() - (self.last_activity or 0) < IDLE_HOLD
+    end
+    return self:isConnected() and not self.peer_napping
+end
+
+--- Somebody is reading: whichever device the turn came from, the leader is
+--- the one that decides how long the pair stays up.
+function Core:noteActivity()
+    self.last_activity = Util.now()
+    self:updateAwake()
+end
+
+--- Brings the standby hold in line with what this device now needs.
+function Core:updateAwake()
+    self:setAwake(self:shouldStayAwake())
+end
+
 function Core:setAwake(awake)
     if awake == (self.awake_held or false) then return end
     if not self.hooks or not self.hooks.setAwake then return end
@@ -355,7 +397,8 @@ function Core:start(role, options)
             self:stop("serial device unavailable")
             return false
         end
-        self:setAwake(true)
+        self.last_activity = Util.now()
+        self:updateAwake()
         self:changed()
         return true
     end
@@ -417,7 +460,8 @@ function Core:start(role, options)
     end
 
     self.settings.autostart_role = self.role
-    self:setAwake(true)
+    self.last_activity = Util.now()
+    self:updateAwake()
     self:save()
     self:changed()
     return true
@@ -447,6 +491,7 @@ function Core:stop(reason)
     end
     self.reconnect_at = nil
     self:dropTransfers()
+    self.peer_napping = false
     self:setAwake(false)
     if self.role ~= Core.ROLE_OFF then
         self.role = Core.ROLE_OFF
@@ -596,6 +641,9 @@ function Core:poll()
     self:checkBrowser()
     self:pumpBookSender()
     self:checkBookRequest()
+    -- Connections come and go and transfers start and finish in all of the
+    -- above, and each changes whether this device can afford to doze.
+    self:updateAwake()
 end
 
 --[[--
@@ -720,6 +768,7 @@ end
 
 function Core:broadcastState()
     if not self:isMaster() then return end
+    self:noteActivity()
     for _, link in ipairs(self:getReadyLinks()) do
         self:sendStateTo(link)
     end
@@ -876,6 +925,7 @@ end
 
 --- Sends every device the page of the listing it should be showing.
 function Core:broadcastBrowser()
+    if self:isMaster() then self:noteActivity() end
     for _, link in ipairs(self:getReadyLinks()) do
         self:sendBrowserTo(link)
     end
@@ -967,6 +1017,41 @@ function Core:checkListing(msg)
         self:alert(("This device fits %d books on a screen and the other one %d, so the two halves of the list will not line up.\n\nThe two are showing the list differently. Putting both on the same display mode lets Duo even them up by itself."):format(
             state.perpage, their_perpage))
     end
+end
+
+--[[--
+The reader is about to go idle, or has just come back.
+
+Only the leader is asked: it is the one with a person holding it, and it is
+the one KOReader tells. A follower asleep on its own is a bug; a follower
+asleep because the leader is, is the whole point.
+--]]--
+function Core:setDeviceIdle(idle)
+    self.device_idle = idle and true or false
+    if not self:isActive() then return end
+
+    if self:isMaster() then
+        for _, link in ipairs(self:getReadyLinks()) do
+            link:send(Protocol.NAP, { sleep = idle and 1 or 0 })
+        end
+        return
+    end
+    -- A follower that has just woken has missed whatever happened while it
+    -- was out, and the cheapest way to find out is to ask.
+    if not idle and self:isConnected() then
+        local link = self:getReadyLinks()[1]
+        if link then link:send(Protocol.SYNC, {}) end
+    end
+end
+
+--- The other device says it is dozing off, or waking up.
+function Core:handleNap(msg)
+    if self:isMaster() then return end
+    self.peer_napping = Protocol.bool(msg, "sleep")
+    self:log(self.peer_napping and "the other device is dozing off"
+        or "the other device is back")
+    self:updateAwake()
+    self:changed()
 end
 
 --[[--
@@ -1775,6 +1860,8 @@ function Core:handleMessage(link, msg)
             self.applying_remote = false
             self:broadcastState()
         end
+    elseif msg.type == Protocol.NAP then
+        self:handleNap(msg)
     elseif msg.type == Protocol.SYNC then
         if not self:isMaster() then return end
         self:sendDocumentTo(link)

@@ -159,6 +159,17 @@ function Duo:setAwake(awake)
     end
 end
 
+--- KOReader is about to let the device doze, or has just stopped.
+-- Only ever reaches the plugin when nothing is holding standby off, which
+-- is exactly the state a leader sits in and a follower does not.
+function Duo:onAllowStandby()
+    Core:setDeviceIdle(true)
+end
+
+function Duo:onPreventStandby()
+    Core:setDeviceIdle(false)
+end
+
 function Duo:getDefaultDeviceName()
     local model = Device.model or "KOReader"
     return tostring(model)

@@ -885,6 +885,50 @@ T.describe("two devices, when things go wrong", function()
             "the rebuilt plugin instance is not following any more")
     end)
 
+    T.it("takes the follower to sleep with the leader, and back", function()
+        -- The leader is the one somebody is holding, so it is the one
+        -- allowed to doze; the follower has nobody to wake it and would
+        -- simply stop following.
+        connectPair()
+        setMasterPage(30)
+        controller:assertEventually(slave, "UIManager._prevent_standby_count", 1,
+            "a follower should stay awake while the leader is")
+        T.assertEquals(controller:number(master, "UIManager._prevent_standby_count"), 1,
+            "the leader holds while the book is being read")
+
+        -- Nothing happens for long enough that the book is down. The
+        -- leader lets go, which is what tells KOReader — and through it
+        -- this plugin — that the reader has gone idle.
+        callMaster("Core.last_activity = 0")
+        controller:assertEventually(master, "UIManager._prevent_standby_count", 0,
+            "the leader should stop holding once nobody is reading", 15)
+        callMaster("D.plugin:onAllowStandby()")
+        controller:assertEventually(slave, "UIManager._prevent_standby_count", 0,
+            "the follower stayed awake after the leader dozed off")
+
+        callMaster("D.plugin:onPreventStandby()")
+        controller:assertEventually(slave, "UIManager._prevent_standby_count", 1,
+            "the follower did not wake with the leader")
+    end)
+
+    T.it("catches up by itself when it wakes", function()
+        connectPair()
+        setMasterPage(30)
+        controller:assertEventually(slave, "D:getPage()", 31)
+
+        -- Asleep, and missing everything.
+        callMaster("Core.last_activity = 0")
+        callMaster("D.plugin:onAllowStandby()")
+        controller:assertEventually(slave, "UIManager._prevent_standby_count", 0)
+        callSlave("UI.paging.current_page = 1")
+
+        -- Waking is the follower's cue to ask where it belongs, since it
+        -- has no idea what happened while it was out.
+        callSlave("D.plugin:onPreventStandby()")
+        controller:assertEventually(slave, "D:getPage()", 31,
+            "a woken follower should ask for its place rather than wait")
+    end)
+
     T.it("survives the master restarting", function()
         connectPair()
         setMasterPage(100)

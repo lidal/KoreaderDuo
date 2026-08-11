@@ -180,41 +180,91 @@ end)
 T.describe("keeping the reader awake", function()
     --[[
     Duo is polled by the UI loop and has no timer of its own, so a device
-    that drops into standby stops following. It therefore holds standby off
-    while it is running — and has to put it back, exactly once, or KOReader
-    asserts.
+    in standby stops following. Holding standby off costs battery, so it is
+    held where it buys something and not otherwise — and whatever the
+    answer, it has to balance, because KOReader asserts on a stray release.
     ]]
-    T.it("holds standby off while it is running, and gives it back after", function()
-        local device = Instance.new{ name = "Kindle-Awake", page_count = 100 }
-        local UIManager = device.UIManager
-        T.assertEquals(UIManager._prevent_standby_count, 0)
+    local function reader(name)
+        local made = Instance.new{ name = name, page_count = 100 }
+        made.Core.settings.token = "AWAKE1"
+        return made
+    end
 
-        device.Core.settings.port = 19801
-        device.Core.settings.token = "AWAKE1"
-        T.assertTrue(device.Core:start("master"))
-        T.assertEquals(UIManager._prevent_standby_count, 1,
-            "a running Duo must keep the loop ticking")
+    T.it("keeps a leader up while somebody is reading, then lets it doze", function()
+        --[[
+        The leader holds standby off while the book is being read and lets
+        go when it is not. Letting go is what tells KOReader the reader has
+        gone idle, and that is the signal the followers wait for — so this
+        is not only about battery on this device.
+        ]]
+        local unit = reader("Kindle-Lead")
+        unit.Core.settings.port = 19801
+        T.assertTrue(unit.Core:start("master"))
+        T.assertEquals(unit.UIManager._prevent_standby_count, 1,
+            "a leader just started is being used")
 
-        device.Core:stop("done")
-        T.assertEquals(UIManager._prevent_standby_count, 0,
-            "and must hand it back when it stops")
+        -- Long enough since the last page turn that the book is down.
+        unit.Core.last_activity = 0
+        unit.Core:updateAwake()
+        T.assertEquals(unit.UIManager._prevent_standby_count, 0,
+            "nothing has happened for a while; let the reader sleep")
+
+        -- And a page turn brings it back up.
+        unit.Core:noteActivity()
+        T.assertEquals(unit.UIManager._prevent_standby_count, 1)
+        unit.Core:stop("done")
     end)
 
-    T.it("does not stack holds, however many times it is started", function()
-        local device = Instance.new{ name = "Kindle-Awake2", page_count = 100 }
-        local UIManager = device.UIManager
-        device.Core.settings.token = "AWAKE2"
-        for port = 19811, 19813 do
-            device.Core.settings.port = port
-            T.assertTrue(device.Core:start("master"))
-        end
-        T.assertEquals(UIManager._prevent_standby_count, 1,
-            "three starts is still one hold")
+    T.it("keeps a follower awake while the leader is", function()
+        local unit = reader("Kindle-Follow")
+        unit.Core.role = unit.Core.ROLE_SLAVE
+        unit.Core.peer_napping = false
+        -- Connected, as far as this half of the pair can tell.
+        unit.Core.isConnected = function() return true end
+        unit.Core:updateAwake()
+        T.assertEquals(unit.UIManager._prevent_standby_count, 1)
 
-        device.Core:stop("done")
-        device.Core:stop("done again")
-        T.assertEquals(UIManager._prevent_standby_count, 0,
-            "and stopping twice must not release a hold it does not have")
+        -- And goes to sleep with it.
+        unit.Core:handleNap{ sleep = "1" }
+        T.assertEquals(unit.UIManager._prevent_standby_count, 0,
+            "a follower should doze when the leader does")
+
+        unit.Core:handleNap{ sleep = "0" }
+        T.assertEquals(unit.UIManager._prevent_standby_count, 1,
+            "and wake up with it")
+        unit.Core:stop("done")
+        T.assertEquals(unit.UIManager._prevent_standby_count, 0)
+    end)
+
+    T.it("stays awake for a book, whichever end of it this is", function()
+        local unit = reader("Kindle-Busy")
+        unit.Core.settings.port = 19802
+        T.assertTrue(unit.Core:start("master"))
+        -- Idle long enough that only the transfer can be holding it.
+        unit.Core.last_activity = 0
+        unit.Core:updateAwake()
+        T.assertEquals(unit.UIManager._prevent_standby_count, 0)
+
+        unit.Core.book_sender = { sender = { close = function() end }, link = {} }
+        unit.Core:updateAwake()
+        T.assertEquals(unit.UIManager._prevent_standby_count, 1,
+            "a book half sent is worth a minute of battery")
+
+        unit.Core.book_sender = nil
+        unit.Core.last_activity = 0
+        unit.Core:updateAwake()
+        T.assertEquals(unit.UIManager._prevent_standby_count, 0)
+        unit.Core:stop("done")
+    end)
+
+    T.it("never releases a hold it does not have", function()
+        local unit = reader("Kindle-Balance")
+        unit.Core.settings.port = 19803
+        T.assertTrue(unit.Core:start("master"))
+        unit.Core:stop("done")
+        unit.Core:stop("done again")
+        unit.Core:updateAwake()
+        T.assertEquals(unit.UIManager._prevent_standby_count, 0)
     end)
 end)
 

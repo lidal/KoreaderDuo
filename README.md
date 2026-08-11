@@ -445,13 +445,19 @@ devices agree about it regardless, and Duo does not touch its settings.
 - **Battery.** The heartbeat is one small packet every four seconds on an
   already-open socket. Wi-Fi being on at all is the real cost — and so is
   the next point.
-- **Standby is held off while Duo runs.** Duo has no timer of its own: it
-  is polled by the UI loop, and a reader that drops into standby stops
-  polling, which means a follower that quietly stops following and a book
-  transfer that stops halfway. So the loop is kept ticking from **Start**
-  to **Stop**. That is the trade this makes — two readers awake and in
-  step, rather than one asleep and wrong — and it is a reason to stop Duo
-  when you are done rather than leaving it on.
+- **The pair sleeps together.** Duo has no timer of its own: it is polled
+  by the UI loop, and a reader in standby stops polling — so a sleeping
+  follower quietly stops following. Rather than hold two devices awake for
+  as long as Duo is on, only the leader decides. It stays up while the book
+  is being read and lets go five minutes after the last page turn; the
+  follower stays awake exactly as long as the leader does, and dozes when it
+  does. A transfer in flight holds both, because half a book is worse than a
+  minute of battery.
+
+  One consequence is worth knowing: a sleeping follower cannot be woken by
+  the leader — nothing arrives to wake it, which is the whole point of it
+  being asleep. Waking them both is a tap each. The follower asks where it
+  belongs the moment it comes back, so a single tap puts it in step again.
 
 ## Tests
 
@@ -460,14 +466,14 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-207 tests, no mocking of the interesting parts:
+211 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 25 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 49 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `plugin_spec` | 27 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
+| `integration_spec` | 51 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 10 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |

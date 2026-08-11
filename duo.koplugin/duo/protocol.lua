@@ -45,6 +45,7 @@ Protocol.BOOK_HEAD = "BOOK_HEAD" -- master -> peer: here it comes
 Protocol.BOOK_DATA = "BOOK_DATA" -- master -> peer: a chunk of it
 Protocol.BOOK_DONE = "BOOK_DONE" -- master -> peer: that was all of it
 Protocol.BOOK_ERR  = "BOOK_ERR"  -- either way: the transfer failed
+Protocol.NAP       = "NAP"       -- master -> peer: I am dozing off / I am back
 Protocol.NOTE      = "NOTE"      -- either way: show this text to the user
 Protocol.SYNC      = "SYNC"      -- peer -> master: (re)send me the current state
 Protocol.BYE       = "BYE"       -- either way: closing on purpose
