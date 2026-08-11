@@ -472,6 +472,16 @@ KO_MULTIUSER=1 HOME=/tmp/ko1 ./reader.lua /path/to/book.epub &
 KO_MULTIUSER=1 HOME=/tmp/ko2 ./reader.lua /path/to/book.epub &
 ```
 
+One difference from a Kindle worth knowing if you compare against the
+screenshots above: the desktop build reports a keyboard, so KOReader draws
+a Q/W/E/R shortcut key beside every row of the file browser. A Kindle has no
+keyboard and shows none. To match, drop this in
+`$HOME/.config/koreader/patches/2-no-item-shortcuts.lua`:
+
+```lua
+require("ui/widget/menu").is_enable_shortcut = false
+```
+
 Then pair them from the menu as usual, with the second one connecting to
 `127.0.0.1`. Setting `["autostart"] = true` and `["autostart_role"]` in
 `$HOME/.config/koreader/settings/duo.lua` skips the tapping.
