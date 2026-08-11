@@ -227,9 +227,17 @@ guessing would rearrange your screen — so if one device is on a grid and
 the other on a list, Duo leaves both alone and says the halves will not line
 up until you put them on the same display mode.
 
+A turn moves the row by as many screenfuls as there are devices, exactly as
+a page turn does in a book: with two devices showing screens 1 and 2, one
+swipe takes them to 3 and 4, so nothing is looked at twice and nothing is
+skipped. That holds in the cover grid too — the cover browser changes how a
+screenful is measured, not how it is turned — and a swipe on either device
+moves the pair.
+
 Unlike KOReader's own paging, the shared list stops at the last screenful
 rather than wrapping round to the first — wrapping would put the devices on
-unrelated parts of the list.
+unrelated parts of the list. At the very end both devices show the last
+screenful, the same way both show the last page at the end of a book.
 
 Switch it off with **Share the book list too** if you would rather browse
 independently and only share the reading.
@@ -365,14 +373,14 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-199 tests, no mocking of the interesting parts:
+200 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 46 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `integration_spec` | 47 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 10 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
@@ -429,6 +437,11 @@ Both of the features above were checked there too, not only in the suite:
 
   Real books are also what turned up the transfer bug described below. A
   library of fixtures would not have.
+- **Paging the grid.** Thirty books in a 2 x 3 grid of covers, six
+  screenfuls. The pair started on 1 and 2; one tap on the master's
+  next-page arrow took them to 3 and 4, another to 5 and 6, and a third
+  stopped at the end rather than wrapping. A finger-swipe on the *slave*
+  moved the row back to 4 and 5, so a turn works from either side.
 - **Covers first.** With the shelf empty on one side, the ten books arrived
   as stand-ins — 2.2 MB against 6.2 MB — covers drawn by KOReader's own
   cover browser out of files holding no book at all, and the two halves of

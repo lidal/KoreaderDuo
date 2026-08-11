@@ -403,6 +403,43 @@ T.describe("one book list across two screens", function()
             "false", "it warned about a difference it had just evened out")
     end)
 
+    T.it("moves a grid on by two screenfuls too, and stops at the end", function()
+        -- The same rule as a book: with one follower, a turn skips the
+        -- screenful the follower is already showing. Worth its own test in
+        -- mosaic mode, where the cover browser replaces how a page is
+        -- measured but not how it is turned.
+        browseTogether{ count = 30, perpage = 6 }
+        callMaster("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 3 })")
+        callSlave("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 3 })")
+        callMaster("Core:broadcastBrowser()")
+        controller:assertEventually(master, "UI.file_chooser.page_num", 5,
+            "thirty books at six a screen is five screenfuls")
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+
+        callMaster("UI.file_chooser:onNextPage()")
+        controller:assertEventually(master, "UI.file_chooser.page", 3,
+            "the master must skip the screenful the slave was showing")
+        controller:assertEventually(slave, "UI.file_chooser.page", 4)
+        T.assertEquals(visible(master), "book13.epub,book14.epub,book15.epub,book16.epub,book17.epub,book18.epub")
+        T.assertEquals(visible(slave), "book19.epub,book20.epub,book21.epub,book22.epub,book23.epub,book24.epub")
+
+        -- A turn on the follower moves the row just the same.
+        callSlave("UI.file_chooser:onPrevPage()")
+        controller:assertEventually(master, "UI.file_chooser.page", 1,
+            "a swipe on the grid of the second device did not reach the first")
+        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+
+        -- And the end of the list is a wall, not a loop.
+        callMaster("UI.file_chooser:onNextPage()")
+        controller:assertEventually(slave, "UI.file_chooser.page", 4)
+        callMaster("UI.file_chooser:onNextPage()")
+        socket.sleep(0.8)
+        T.assertEquals(controller:number(master, "UI.file_chooser.page"), 5,
+            "the master should stop at the last screenful rather than wrap")
+        T.assertEquals(controller:number(slave, "UI.file_chooser.page"), 5,
+            "with nothing after it, the follower shows the last screenful too")
+    end)
+
     T.it("says so when one device is a grid and the other a list", function()
         -- Here the shape cannot be worked out: told only that the other
         -- device fits eight, a grid has no way to know whether that is two
