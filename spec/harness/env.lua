@@ -86,6 +86,26 @@ local function makeUIManager(clock)
         shown_log = {},  -- everything ever shown, for assertions
     }
 
+    --[[--
+    KOReader's standby counter, asserts and all.
+
+    A reader that drops into standby stops running the UI loop, which is
+    what polls Duo's sockets, so the plugin holds it off while it is
+    connected. The real one refuses an unbalanced release, and so does
+    this: an off-by-one here is a crash on a device.
+    ]]
+    UIManager._prevent_standby_count = 0
+
+    function UIManager:preventStandby()
+        self._prevent_standby_count = self._prevent_standby_count + 1
+    end
+
+    function UIManager:allowStandby()
+        assert(self._prevent_standby_count > 0,
+            "allowing standby that isn't prevented; you have an allow/prevent mismatch somewhere")
+        self._prevent_standby_count = self._prevent_standby_count - 1
+    end
+
     function UIManager:insertZMQ(zeromq)
         table.insert(self._zeromqs, zeromq)
         return zeromq

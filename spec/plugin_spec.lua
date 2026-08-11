@@ -177,6 +177,47 @@ T.describe("master page stepping", function()
     end)
 end)
 
+T.describe("keeping the reader awake", function()
+    --[[
+    Duo is polled by the UI loop and has no timer of its own, so a device
+    that drops into standby stops following. It therefore holds standby off
+    while it is running — and has to put it back, exactly once, or KOReader
+    asserts.
+    ]]
+    T.it("holds standby off while it is running, and gives it back after", function()
+        local device = Instance.new{ name = "Kindle-Awake", page_count = 100 }
+        local UIManager = device.UIManager
+        T.assertEquals(UIManager._prevent_standby_count, 0)
+
+        device.Core.settings.port = 19801
+        device.Core.settings.token = "AWAKE1"
+        T.assertTrue(device.Core:start("master"))
+        T.assertEquals(UIManager._prevent_standby_count, 1,
+            "a running Duo must keep the loop ticking")
+
+        device.Core:stop("done")
+        T.assertEquals(UIManager._prevent_standby_count, 0,
+            "and must hand it back when it stops")
+    end)
+
+    T.it("does not stack holds, however many times it is started", function()
+        local device = Instance.new{ name = "Kindle-Awake2", page_count = 100 }
+        local UIManager = device.UIManager
+        device.Core.settings.token = "AWAKE2"
+        for port = 19811, 19813 do
+            device.Core.settings.port = port
+            T.assertTrue(device.Core:start("master"))
+        end
+        T.assertEquals(UIManager._prevent_standby_count, 1,
+            "three starts is still one hold")
+
+        device.Core:stop("done")
+        device.Core:stop("done again")
+        T.assertEquals(UIManager._prevent_standby_count, 0,
+            "and stopping twice must not release a hold it does not have")
+    end)
+end)
+
 T.describe("pairing dialogs", function()
     T.it("offers both roles", function()
         reset()

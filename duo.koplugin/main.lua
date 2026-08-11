@@ -75,6 +75,7 @@ function Duo:init()
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
             getTempDir = function() return Duo:getTempDir() end,
+            setAwake = function(awake) Duo:setAwake(awake) end,
             openFirewall = function(port)
                 if Device:isKindle() then NetUtil.openFirewall(port) end
             end,
@@ -138,6 +139,24 @@ function Duo:getTempDir()
         lfs.mkdir(directory)
     end
     return directory
+end
+
+--[[--
+Keeps the UI loop ticking while Duo is running, or lets it stop.
+
+The count lives on the class rather than the instance: KOReader rebuilds
+the instance on every document switch, and a hold taken by one instance has
+to be released by whichever one is alive when Duo stops. UIManager asserts
+on an unbalanced release, so the flag matters.
+--]]--
+function Duo:setAwake(awake)
+    if awake and not Duo.standby_held then
+        Duo.standby_held = true
+        UIManager:preventStandby()
+    elseif not awake and Duo.standby_held then
+        Duo.standby_held = false
+        UIManager:allowStandby()
+    end
 end
 
 function Duo:getDefaultDeviceName()

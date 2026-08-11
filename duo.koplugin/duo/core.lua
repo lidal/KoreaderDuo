@@ -236,6 +236,31 @@ function Core:isSlave()
     return self.role == Core.ROLE_SLAVE
 end
 
+--[[--
+Asks the device to keep the UI ticking while Duo is running.
+
+Duo has no timer of its own: it is polled by the UI loop, and a reader that
+drops into standby stops polling. On a desktop that costs nothing to
+ignore, because nothing suspends; on a Kindle it means a follower that
+quietly stops following, and a book transfer that stops halfway. So while
+Duo is on, standby is held off — which is the trade this feature makes:
+two readers kept awake to stay in step, rather than one asleep and wrong.
+
+Balanced by construction: the flag makes a second hold, or a release with
+nothing held, do nothing, because KOReader counts these and asserts on a
+mismatch.
+--]]--
+function Core:setAwake(awake)
+    if awake == (self.awake_held or false) then return end
+    if not self.hooks or not self.hooks.setAwake then return end
+    local ok, err = pcall(self.hooks.setAwake, awake)
+    if not ok then
+        self:log("could not change the standby hold:", tostring(err))
+        return
+    end
+    self.awake_held = awake
+end
+
 --- Links that finished the handshake.
 function Core:getReadyLinks()
     local ready = {}
@@ -330,6 +355,7 @@ function Core:start(role, options)
             self:stop("serial device unavailable")
             return false
         end
+        self:setAwake(true)
         self:changed()
         return true
     end
@@ -391,6 +417,7 @@ function Core:start(role, options)
     end
 
     self.settings.autostart_role = self.role
+    self:setAwake(true)
     self:save()
     self:changed()
     return true
@@ -420,6 +447,7 @@ function Core:stop(reason)
     end
     self.reconnect_at = nil
     self:dropTransfers()
+    self:setAwake(false)
     if self.role ~= Core.ROLE_OFF then
         self.role = Core.ROLE_OFF
         self.settings.autostart_role = Core.ROLE_OFF

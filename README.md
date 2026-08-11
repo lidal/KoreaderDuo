@@ -443,7 +443,15 @@ devices agree about it regardless, and Duo does not touch its settings.
   master opens the port with `iptables` while it runs and closes it again
   when it stops.
 - **Battery.** The heartbeat is one small packet every four seconds on an
-  already-open socket. Wi-Fi being on at all is the real cost.
+  already-open socket. Wi-Fi being on at all is the real cost — and so is
+  the next point.
+- **Standby is held off while Duo runs.** Duo has no timer of its own: it
+  is polled by the UI loop, and a reader that drops into standby stops
+  polling, which means a follower that quietly stops following and a book
+  transfer that stops halfway. So the loop is kept ticking from **Start**
+  to **Stop**. That is the trade this makes — two readers awake and in
+  step, rather than one asleep and wrong — and it is a reason to stop Duo
+  when you are done rather than leaving it on.
 
 ## Tests
 
@@ -452,13 +460,13 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-205 tests, no mocking of the interesting parts:
+207 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
+| `plugin_spec` | 25 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
 | `integration_spec` | 49 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
