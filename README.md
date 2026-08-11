@@ -125,7 +125,11 @@ Everything lives under **☰ → Network → Duo (two-device spread)**. The top 
 is the live connection: which role this device has, which peer it found, and
 the pages currently on show.
 
-<img src="screenshots/duo-menu.png" alt="Duo's settings menu in KOReader, showing the status line &quot;Master · Kindle-Right · pages 7–8&quot;" width="420">
+![Both pages of Duo's menu, with the status line "Master · Kindle-Right · pages 7–8"](screenshots/duo-menu.png)
+
+Everything below, on the master of a pair reading *Alice* together. *Fetch
+any missing books now* is greyed out because this is the device the books
+come **from** — there is nothing for it to fetch.
 
 | Setting | What it does |
 | --- | --- |
