@@ -156,6 +156,16 @@ wlan0     Link encap:Ethernet  HWaddr 00:11:22:33:44:55
 ]]), "192.168.1.24")
     end)
 
+    T.it("finds an address on a USB network interface too", function()
+        -- A Kindle running USBNetwork brings up `usb0` and takes
+        -- 192.168.15.244. Nothing here is looking for a wireless card, and
+        -- nothing should: whatever carries IP will do.
+        T.assertEquals(NetUtil.parseAddresses([[
+1: lo    inet 127.0.0.1/8 scope host lo
+2: usb0    inet 192.168.15.244/24 scope global usb0
+]]), "192.168.15.244")
+    end)
+
     T.it("returns nothing when there is only loopback", function()
         T.assertNil(NetUtil.parseAddresses("1: lo    inet 127.0.0.1/8 scope host lo"))
         T.assertNil(NetUtil.parseAddresses(""))

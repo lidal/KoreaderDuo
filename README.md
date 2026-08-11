@@ -119,6 +119,35 @@ stack, another platform, or a plain serial cable.
 **Bluetooth PAN** needs nothing special at all: it presents as an ordinary
 network, so leave Duo on **Link → Wi-Fi** and pair as usual.
 
+### A cable between the two — not with USB alone
+
+The obvious idea is a micro-USB cable with a plug on both ends, and it
+cannot work. A Kindle's port is a USB *device* port: it waits to be
+enumerated by a host and never does the enumerating. USB needs exactly one
+host and one device on a link, so joining two device ports gives you
+neither — nothing enumerates, no interface appears, and no amount of
+software on either side changes that. Cables sold with two male ends are
+for charging or for host-mode phones; on two Kindles they do nothing.
+
+Host mode would be the way round it, and Kindles do not offer it: their
+USB support is the gadget side, which is what USBNetwork uses to present
+the reader to a PC.
+
+What does work is putting a host in the middle. Anything that can be a USB
+host and route between two USB Ethernet gadgets — a Raspberry Pi, an
+Android phone with OTG and tethering, a laptop — gives both readers a
+`usb0` interface with an address, and from Duo's point of view that is
+simply a network. Nothing in the plugin looks for a wireless card: it takes
+whatever interface has an address, so pairing over `usb0` needs no special
+setting. It is only worth the trouble if you already have such a thing to
+hand; two readers and a Wi-Fi link is the simpler answer, and a phone
+hotspot with no internet on it works anywhere.
+
+There is one wired route with no third device, and it is not USB: the
+serial transport above. Any two devices that can expose a character device
+to each other — a real serial line, an RFCOMM channel — can carry the
+spread, which is why that transport exists.
+
 ## Settings
 
 Everything lives under **☰ → Network → Duo (two-device spread)**. The top line
@@ -377,14 +406,14 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-200 tests, no mocking of the interesting parts:
+203 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
-| `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
+| `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 47 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `integration_spec` | 49 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 10 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
