@@ -9,11 +9,11 @@ page and a right page, and a single tap moves both.
 
 ![One tap on the master moves both devices on by two](screenshots/page-turn.png)
 
-Two copies of KOReader, side by side, reading *Alice's Adventures in
-Wonderland*. The master is on page 7 and the slave on page 8, and the prose
-runs straight across the gap: the left screen ends *"getting somewhere near
-the centre of the"* and the right one picks up *"earth. Let me see: that
-would be four thousand miles down…"*. One tap moves the pair to 9 and 10 —
+Two copies of KOReader, side by side, reading Project Gutenberg's *Alice's
+Adventures in Wonderland*. The master is on page 13 and the slave on page
+14, and the prose runs straight across the gap: the left screen ends *"she
+was now the right size for going"* and the right one picks up *"through the
+little door into that lovely garden."* One tap moves the pair to 15 and 16 —
 by two, so no page is read twice and none is skipped.
 
 It also does **mirror mode**, where both devices show the same page — handy
@@ -415,16 +415,19 @@ The harness is not the last word, though — see below.
 
 The screenshots above are two copies of **KOReader v2026.03** running the
 plugin: separate processes, separate settings directories, paired over a real
-socket, with Project Gutenberg's *Alice in Wonderland* paginated by KOReader's
-own crengine and page turns arriving as real key events through its input
-stack. The status line in the settings screenshot — `Master · Kindle-Right ·
-pages 7–8` — is the plugin reporting the live connection.
+socket, with Project Gutenberg's *Alice in Wonderland* — the EPUB, laid out
+by KOReader's own crengine in Noto Serif — and page turns arriving as real
+events through its input stack. The status line in the settings screenshot —
+`Master · Kindle-Right · pages 7–8` — is the plugin reporting the live
+connection.
 
 Both of the features above were checked there too, not only in the suite:
 
-- **Typography.** Raising the font size from 22 to 24 in the master's own
-  settings panel moved the slave with it. Both books reflowed from 256 pages
-  to 279, and the spread stayed intact.
+- **Typography.** Raising the font size in the master's own settings panel
+  moved the slave with it, on a real EPUB. The follower relaid the book out,
+  put itself back on the right page without waiting for a page turn, and the
+  prose still ran across the gap — with nothing said about the two devices
+  disagreeing while the change was in flight.
 - **Sending the book.** With the master's library hidden from the slave (a
   tmpfs over it in a private mount namespace, so the file really was
   missing), the slave asked for the book, received all 174,311 bytes —
