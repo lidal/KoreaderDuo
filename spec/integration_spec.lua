@@ -725,6 +725,58 @@ T.describe("two devices, when things go wrong", function()
             "the two devices should agree by now")
     end)
 
+    T.it("stays quiet while a font change is still on its way over", function()
+        --[[
+        The race a real font change runs into. The master repaginates the
+        instant the size changes, and its new page count reaches the slave
+        before Duo has even noticed the change to push it — so for a moment
+        the slave holds the old settings and a page count from the new ones.
+        It used to complain about that, and then fix it a second later.
+        ]]
+        callSlave("Core:stop('reset')")
+        callSlave("Core.settings.match_typography = true")
+        callMaster("Core.settings.match_typography = true")
+        connectPair()
+        setMasterPage(40)
+        callSlave("UIManager.shown_log = {}")
+        callSlave("Core.warned_pagination = false")
+        callSlave("Core.typography_applied_at = 0")
+
+        -- The master's layout changes, and only its page count arrives.
+        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 28))")
+        callMaster("Core:broadcastState()")
+        socket.sleep(1)
+        T.assertEquals(callSlave(WARNED), "false",
+            "it complained about a difference the font change was about to explain")
+
+        -- And once the change lands, the two agree and still say nothing.
+        controller:assertEventually(slave, "UI.document:getPageCount()",
+            controller:number(master, "UI.document:getPageCount()"),
+            "the slave never caught up with the new font size", 20)
+        T.assertEquals(callSlave(WARNED), "false")
+    end)
+
+    T.it("puts itself back on the right page as soon as the layout changes", function()
+        -- A font change moves every page number in the book. Until the
+        -- master next broadcasts, a device that only applied the settings
+        -- is on the page that number used to mean — so it asks.
+        callSlave("Core:stop('reset')")
+        callSlave("Core.settings.match_typography = true")
+        callMaster("Core.settings.match_typography = true")
+        connectPair()
+        setMasterPage(50)
+        controller:assertEventually(slave, "D:getPage()", 51)
+
+        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 26))")
+        -- No page turn from anyone: only the layout changed.
+        controller:assertEventually(slave, "UI.document:getPageCount()",
+            controller:number(master, "UI.document:getPageCount()"),
+            "the slave never took the new font size", 20)
+        controller:assertEventually(slave, "D:getPage()",
+            controller:number(master, "D:getPage()") + 1,
+            "the slave stayed on the page that number used to mean", 20)
+    end)
+
     T.it("warns when matching cannot fix it, because the screens differ", function()
         connectPair()
         -- Same settings on both, but this device still lays the book out
@@ -733,9 +785,13 @@ T.describe("two devices, when things go wrong", function()
         callSlave("Core.warned_pagination = false")
         callSlave("Core.typography_applied_at = 0")
         callSlave("UI.document.page_count = 412")
+        -- A length that has been sitting still for a while, which is what
+        -- tells a real difference apart from a book still being relaid out.
+        callSlave("Core.last_own_pages = 412")
+        callSlave("Core.own_pages_changed_at = 0")
         setMasterPage(80)
         controller:assertEventually(slave, WARNED, true,
-            "no warning when the pages genuinely cannot line up")
+            "no warning when the pages genuinely cannot line up", 20)
         T.assertEquals(callSlave(
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('between the screens') then return true end end return false end)()"),
             "true", "the warning should name the real cause")

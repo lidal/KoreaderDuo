@@ -684,6 +684,9 @@ function Core:sendStateTo(link)
         slot = link.slot,
         mode = options.mode,
         beyond = clamped,
+        -- What this device's layout looks like right now, so a page count
+        -- that disagrees can be told from settings that disagree.
+        typo = self:typographySignature(),
     })
 end
 
@@ -704,6 +707,7 @@ function Core:sendDocumentTo(link)
         title = document.title or "",
         digest = document.digest or "",
         pages = self.reader.getPageCount() or 0,
+        typo = self:typographySignature(),
     })
 end
 
@@ -1570,7 +1574,10 @@ local TYPOGRAPHY_POLL = 1.5
 
 -- How long to let a relayout settle before believing a page count. Real
 -- rendering engines finish repaginating a little after the event returns.
-local PAGINATION_SETTLE = 4
+--- How long the two devices are given to agree on a book's length after a
+--- layout change, before a difference is treated as real. Generous,
+--- because relaying out a long book is not quick.
+local PAGINATION_SETTLE = 8
 
 function Core:typographyEnabled()
     return self:get("match_typography") and self.reader ~= nil
@@ -1587,6 +1594,9 @@ function Core:pushTypography(reason)
         link:send(Protocol.TYPO, settings)
     end
     self:log("pushed typography:", reason)
+    -- The book is a different length than it was a moment ago, so the page
+    -- everyone should be on has moved too.
+    if self:isMaster() then self:broadcastState() end
 end
 
 function Core:sendTypographyTo(link)
@@ -1641,6 +1651,11 @@ function Core:applyTypography(msg, from_link)
         self.warned_pagination = false
         if self:isMaster() then
             self:broadcastState()
+        elseif from_link then
+            -- Every page number in this book just changed. Waiting for the
+            -- master's next broadcast means sitting on the wrong page until
+            -- somebody turns one; asking costs a single line.
+            from_link:send(Protocol.SYNC, {})
         end
     end
     if applied and applied.missing_font then
@@ -1717,7 +1732,7 @@ function Core:handleMessage(link, msg)
     if msg.type == Protocol.STATE then
         if self:isMaster() then return end -- only the master decides
         self.master_page = Protocol.num(msg, "master_page")
-        self:checkPagination(Protocol.num(msg, "pages"))
+        self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
         self:applyRemotePage(Protocol.num(msg, "page"))
     elseif msg.type == Protocol.TURN then
         if not self:isMaster() then return end
@@ -1779,7 +1794,7 @@ function Core:handleRemoteDocument(msg)
         local same = (document.file == file)
             or (msg.digest ~= "" and document.digest == msg.digest)
         if same then
-            self:checkPagination(Protocol.num(msg, "pages"))
+            self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
             return
         end
     end
@@ -1805,7 +1820,21 @@ the settings are known to agree and the relayout has settled. If the pages
 still do not line up then, the difference is in the screens themselves,
 which no setting can fix — and that is worth saying.
 --]]--
-function Core:checkPagination(master_pages)
+--- This device's layout as a short string, for comparing with the other's.
+function Core:typographySignature()
+    if not self.reader or not self.reader.getTypography then return nil end
+    local ok, snapshot = pcall(self.reader.getTypography)
+    if not ok or not snapshot then return nil end
+    return require("duo/typography").signature(snapshot)
+end
+
+--[[--
+Warns when the two devices paginate the same book differently.
+
+@int master_pages  how many pages the master says the book has
+@string[opt] master_typo  the master's layout fingerprint, when it sent one
+--]]--
+function Core:checkPagination(master_pages, master_typo)
     if self.warned_pagination or not master_pages or master_pages == 0 then return end
     if not self.reader then return end
     local own_pages = self.reader.getPageCount()
@@ -1814,8 +1843,41 @@ function Core:checkPagination(master_pages)
     if self:get("match_typography") then
         -- Nothing to say until matching has actually happened.
         if not self.typography_in_sync then return end
+        --[[
+        The page counts are being compared against settings that may not be
+        the ones that produced them. Change the font size on the master and
+        it repaginates at once, but Duo only notices a moment later, so the
+        new page count arrives here while both devices still hold the old
+        settings — and complaining then means complaining about a difference
+        that is about to fix itself.
+
+        The fingerprint settles it: the master stamps each page count with
+        the layout that produced it, so "we disagree because the settings
+        differ" and "we disagree even though they match" stop looking alike.
+        Only the second is worth saying, and only it gets said.
+        ]]
+        local own_typo = self:typographySignature()
+        if master_typo and master_typo ~= "" and own_typo and own_typo ~= ""
+                and master_typo ~= own_typo then
+            return
+        end
         if self.typography_applied_at
                 and Util.now() - self.typography_applied_at < PAGINATION_SETTLE then
+            return
+        end
+        --[[
+        And the count itself has to have stopped moving. Relaying out a
+        real book is not instant: crengine keeps handing back the old
+        length for a while afterwards, so a page count read too early says
+        the devices disagree when all it means is that this one has not
+        finished. Every change to our own length restarts the clock.
+        ]]
+        if own_pages ~= self.last_own_pages then
+            self.last_own_pages = own_pages
+            self.own_pages_changed_at = Util.now()
+            return
+        end
+        if Util.now() - (self.own_pages_changed_at or 0) < PAGINATION_SETTLE then
             return
         end
         self.warned_pagination = true

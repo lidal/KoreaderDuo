@@ -189,6 +189,36 @@ function Typography.snapshot(ui)
     return out
 end
 
+--[[--
+A short fingerprint of a whole snapshot.
+
+Two devices laying a book out identically produce the same string; change
+anything and it changes. Sent alongside the page count so the other device
+can tell "we disagree because the settings differ" from "we disagree even
+though they match", which are opposite problems: the first fixes itself a
+moment later, and only the second is worth telling anyone about.
+--]]--
+function Typography.signature(snapshot)
+    local keys = {}
+    for key in pairs(snapshot or {}) do keys[#keys+1] = key end
+    if #keys == 0 then return "" end
+    table.sort(keys)
+
+    local parts = {}
+    for _, key in ipairs(keys) do
+        parts[#parts+1] = key .. "=" .. tostring(snapshot[key])
+    end
+    local text = table.concat(parts, ";")
+
+    -- Small, stable, and not a secret: this only has to change when the
+    -- layout does.
+    local hash = 5381
+    for index = 1, #text do
+        hash = (hash * 33 + text:byte(index)) % 16777213
+    end
+    return ("%06x"):format(hash)
+end
+
 --- Keys whose values differ between two snapshots.
 function Typography.differences(mine, theirs)
     local changed = {}
