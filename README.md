@@ -186,7 +186,11 @@ in charge, in its own terms.
 travels with the page, so a device showing 2 × 3 covers puts the other one
 on the same grid and takes the next six books.
 
-![Two cover grids, the master showing the first six books and the slave the next](screenshots/mosaic-spread.png)
+![Two cover grids of real books, the master showing the first screenful and the slave the next](screenshots/mosaic-spread.png)
+
+Ten Project Gutenberg EPUBs at `/tmp/kolib`, seven of which the right-hand
+device did not have a minute earlier — it fetched them over the link, covers
+and all, and every file matched the sender's checksum.
 
 A grid can only be matched
 against another grid, though. Told only that the other device fits eight,
@@ -221,11 +225,24 @@ no cloud account involved. The status line shows the progress while it runs.
   and only moved into place once all of it has arrived and the size matches.
 - **There is a size limit** — 64 MB by default — so a mistyped tap cannot
   push a 2 GB scan down a slow link.
+- **A transfer that dies says so.** If a chunk cannot go out, the sender
+  tells the other device rather than stopping mid-book; and a book that goes
+  thirty seconds without a byte is written off at the receiving end, so one
+  bad transfer cannot wedge every book after it.
 
-Over Wi-Fi a normal EPUB arrives in a second or two. Over a serial link it
-will take as long as the line takes; the transfer is chunked and paced by
-how fast the other end drains it, so a slow link makes it slow rather than
-making it fail.
+Over Wi-Fi an EPUB of a few hundred kilobytes takes a handful of seconds —
+about 100 KB/s, since the bytes travel as text on the same line-based link
+the page numbers use. Over a serial line it will take as long as the line
+takes; the transfer is chunked and paced by how fast the other end drains
+it, so a slow link makes it slow rather than making it fail.
+
+A book travels base64-encoded, in the URL-safe alphabet rather than the
+usual one. That detail matters more than it looks: the protocol's lines
+carry a restricted character set and escape everything else, and `+` and `/`
+are not in it. A compressed file — which every EPUB is — produces enough of
+them to push a chunk past the line limit, and the transfer would fail part
+way through a real book while sailing through any test written with tidy
+data. Two characters' difference and nothing needs escaping at all.
 
 ## Matching typography
 
@@ -320,19 +337,19 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-178 tests, no mocking of the interesting parts:
+182 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 23 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 23 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 45 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `integration_spec` | 46 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 9 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
-| `booktransfer_spec` | 13 | Base64 against the published vectors, every byte value round-tripped, short and oversized transfers refused, and a peer that tries to name its own destination |
+| `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `directlink_spec` | 13 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
@@ -374,11 +391,15 @@ Both of the features above were checked there too, not only in the suite:
   sat on page 9.
 - **The whole library.** Same trick, one folder up: `/tmp/kolib` on the
   slave was a tmpfs in its own mount namespace holding three books, against
-  the master's ten at that same path. On connecting, the slave fetched the
-  seven it lacked in about two seconds, then moved itself to the second
-  screenful without being told — the master showing books 1–9 and the slave
-  book 10. It said nothing about the mismatch on the way, which is the
-  point: the warning is for a difference nothing is going to fix.
+  the master's ten at that same path — ten real Project Gutenberg EPUBs, not
+  test fixtures. On connecting, the slave fetched the seven it lacked, 4.2 MB
+  in forty seconds, every file matching the sender's MD5, and moved itself to
+  the second screenful without being told. It said nothing about the mismatch
+  on the way, which is the point: the warning is for a difference nothing is
+  going to fix.
+
+  Real books are also what turned up the transfer bug described below. A
+  library of fixtures would not have.
 - **Matching the screenful.** Checked against all three of the widgets that
   draw the list. With the plain browser the slave went from 6 items a screen
   to the master's 10; with the cover browser in list mode, where the global

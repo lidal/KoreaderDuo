@@ -473,13 +473,25 @@ T.describe("sending the book itself", function()
     -- what they are reading.
     local BOOK_DIR = LOG_DIR .. "/duo-book-src"
 
+    --[[--
+    Writes a book that looks like a real one on the wire.
+
+    An EPUB is a zip, so its bytes are compressed and behave like noise —
+    which matters more than it sounds. A tidy pattern encodes into tidy
+    base64, and a book made of one repeated byte, or of a short arithmetic
+    cycle, sails through a line-length limit that real books do not. So
+    this is a pseudorandom stream, and it still covers every byte value.
+    --]]--
     local function makeBook(name, size)
         os.execute("mkdir -p " .. BOOK_DIR)
         local path = ("%s/%s"):format(BOOK_DIR, name)
         local file = assert(io.open(path, "wb"))
-        -- Every byte value, so nothing can quietly mangle it in transit.
         local parts = {}
-        for index = 1, size do parts[index] = string.char((index * 13) % 256) end
+        local seed = 20260811
+        for index = 1, size do
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            parts[index] = string.char(math.floor(seed / 65536) % 256)
+        end
         file:write(table.concat(parts))
         file:close()
         return path
@@ -499,6 +511,9 @@ T.describe("sending the book itself", function()
         callSlave("Core.settings.sync_books = true")
         callMaster("Core.settings.sync_books = true")
         callSlave("UIManager.shown_log = {}")
+        -- Both processes share a disk, so without this the slave would open
+        -- the master's copy and the book would never go over the wire.
+        callSlave(("D:doesNotHave(%q)"):format(path))
 
         -- The master opens a book that exists only on its side.
         callMaster(("UI.document.file = %q"):format(path))
@@ -513,9 +528,49 @@ T.describe("sending the book itself", function()
         local landed = controller:call(slave,
             "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return m.text end end return '' end)()")
         T.assertMatch(landed, "sent%-book%.epub")
+        T.assertTrue(landed ~= path,
+            "the slave opened the master's own copy, so nothing was sent")
         T.assertEquals(readFile(landed), readFile(path),
             "the book that arrived is not the book that was sent")
         os.remove(landed)
+    end)
+
+    T.it("tells the other device when a send fails part way", function()
+        -- The failure that matters is the quiet one: give up mid-book
+        -- without a word and the other device sits on a half-written file
+        -- waiting for a chunk that is never coming.
+        local path = makeBook("broken-book.epub", 200000)
+        callSlave("Core:stop('reset')")
+        connectPair()
+        callSlave("Core.settings.sync_books = true")
+        callMaster("Core.settings.sync_books = true")
+        callSlave("UIManager.shown_log = {}")
+        callSlave(("D:doesNotHave(%q)"):format(path))
+
+        -- Armed before the slave asks, so the book cannot slip across
+        -- whole in the gap between two calls from here. Only the chunks
+        -- fail, the way an unsendable message does: the link itself is
+        -- fine, which is what makes staying silent inexcusable.
+        callMaster([[(function()
+            local link = Core:getReadyLinks()[1]
+            local real = link.send
+            link.send = function(self, msg_type, fields)
+                if msg_type == 'BOOK_DATA' then return false, 'the chunk would not fit' end
+                return real(self, msg_type, fields)
+            end
+        end)()]])
+
+        callMaster(("UI.document.file = %q"):format(path))
+        callMaster("UI.digest = 'digest-broken-book'")
+        callMaster("Core:broadcastDocument()")
+
+        controller:assertEventually(slave,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('could not fetch') then return true end end return false end)()",
+            true, "the slave was never told the transfer had failed", 20)
+        T.assertEquals(callMaster("tostring(Core.book_sender)"), "nil",
+            "the master should have given up on the book")
+        T.assertEquals(callSlave("tostring(Core.book_receiver)"), "nil",
+            "the slave was left holding a half-written book")
     end)
 
     T.it("will not hand over a book it does not have open", function()

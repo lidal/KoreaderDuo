@@ -54,6 +54,10 @@ Core.ROLE_SLAVE = "slave"
 local RECONNECT_MIN = 1
 local RECONNECT_MAX = 15
 
+--- How long a book may go without a byte before it is written off, in
+--- seconds. Generous: a slow link is not the same as a dead one.
+local BOOK_SILENCE = 30
+
 Core.TRANSPORT_TCP = "tcp"
 Core.TRANSPORT_SERIAL = "serial"
 
@@ -414,12 +418,33 @@ function Core:stop(reason)
         self.connector = nil
     end
     self.reconnect_at = nil
+    self:dropTransfers()
     if self.role ~= Core.ROLE_OFF then
         self.role = Core.ROLE_OFF
         self.settings.autostart_role = Core.ROLE_OFF
         self:save()
         self:changed()
     end
+end
+
+--[[--
+Throws away anything half-transferred.
+
+There is no link left to finish it on, and a book left on the asking list
+would block every book after it: only one is ever in flight, and nothing
+would come to clear this one.
+--]]--
+function Core:dropTransfers()
+    if self.book_receiver then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+    end
+    if self.book_sender then
+        self.book_sender.sender:close()
+        self.book_sender = nil
+    end
+    self.book_request = nil
+    self.library = nil
 end
 
 function Core:beginConnect()
@@ -540,6 +565,39 @@ function Core:poll()
     self:checkTypography()
     self:checkBrowser()
     self:pumpBookSender()
+    self:checkBookRequest()
+end
+
+--[[--
+Gives up on a book that stopped arriving.
+
+Only one book is asked for at a time, so a request that never gets an
+answer — the other device restarted, the reply went missing, a send failed
+somewhere it could not be reported — would otherwise sit there for good,
+and no book could ever be fetched again. Waiting is right; waiting forever
+is not.
+--]]--
+function Core:checkBookRequest()
+    local request = self.book_request
+    if not request then return end
+    local since = Util.now() - (request.progress_at or request.started or 0)
+    if since < BOOK_SILENCE then return end
+
+    local was_library = request.library
+    self.book_request = nil
+    if self.book_receiver then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+    end
+    self:log("gave up on", request.title or request.file, "after", math.floor(since), "seconds of silence")
+    self:changed()
+    if was_library then
+        -- One book going quiet is not a reason to abandon the rest.
+        self:pumpLibrary()
+        return
+    end
+    self:alert(("Duo could not fetch %s: the other device stopped sending."):format(
+        request.title ~= "" and request.title or "the book"))
 end
 
 --- Wraps a freshly opened stream in an authenticated link.
@@ -1218,13 +1276,29 @@ function Core:pumpBookSender()
             self:changed()
             return
         end
-        local ok = transfer.link:send(Protocol.BOOK_DATA, { b = chunk })
+        local ok, err = transfer.link:send(Protocol.BOOK_DATA, { b = chunk })
         if not ok then
-            transfer.sender:close()
-            self.book_sender = nil
+            -- Dropping this quietly would leave the other device holding a
+            -- half-written file and waiting for a chunk that is never
+            -- coming, which is worse than any transfer failing.
+            self:abortBookSend(err or "the chunk could not be sent")
             return
         end
     end
+    self:changed()
+end
+
+--- Gives up on the book being sent, and says so at both ends.
+function Core:abortBookSend(reason)
+    local transfer = self.book_sender
+    if not transfer then return end
+    self.book_sender = nil
+    transfer.sender:close()
+    if not transfer.link:isClosed() then
+        transfer.link:send(Protocol.BOOK_ERR, { reason = reason })
+    end
+    self:log("sending", transfer.name, "failed:", reason)
+    self:notify(("Duo: could not send %s"):format(transfer.name or "the book"))
     self:changed()
 end
 
@@ -1260,11 +1334,14 @@ function Core:handleBookHead(msg)
     end
     self.book_receiver = receiver
     self.book_title = msg.title ~= "" and msg.title or msg.name
+    if self.book_request then self.book_request.progress_at = Util.now() end
     self:changed()
 end
 
 function Core:handleBookData(msg)
     if not self.book_receiver then return end
+    -- Still coming, so the silence timer starts again from here.
+    if self.book_request then self.book_request.progress_at = Util.now() end
     local ok, err = self.book_receiver:write(msg.b or "")
     if not ok then
         self.book_receiver:abort()

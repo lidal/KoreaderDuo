@@ -120,6 +120,18 @@ function Instance:visibleBooks()
     return self.ui.file_chooser:visibleNames()
 end
 
+--[[--
+Makes this device genuinely not have a file.
+
+Two simulated devices share one filesystem, so a follower told to open the
+leader's book would otherwise just open it off the disk and nothing would
+ever be sent. This is how a test says "this book is not on this device":
+the path stops existing as far as this device can tell.
+--]]--
+function Instance:doesNotHave(path)
+    self.env.lfs.missing[path] = true
+end
+
 --- Runs the UI loop for `seconds`, or until `condition` becomes true.
 function Instance:pump(seconds, condition)
     local socket = require("socket")

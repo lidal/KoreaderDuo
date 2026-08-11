@@ -74,7 +74,7 @@ function Sender:next()
         return nil
     end
     self.sent = self.sent + #data
-    return Base64.encode(data)
+    return Base64.encodeUrl(data)
 end
 
 function Sender:progress()
@@ -143,7 +143,7 @@ end
 -- @treturn boolean true, or false plus an error message
 function Receiver:write(encoded)
     if not self.file then return false, "transfer already finished" end
-    local data, err = Base64.decode(encoded)
+    local data, err = Base64.decodeUrl(encoded)
     if not data then return false, err end
     if self.size > 0 and self.received + #data > self.size then
         return false, "the sender is sending more than it promised"

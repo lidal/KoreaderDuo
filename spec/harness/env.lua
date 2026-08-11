@@ -220,8 +220,13 @@ function Env.install(options)
     -- The file browser asks whether a path is a directory, so the stub has
     -- to be able to say yes. `directories` is the set this fake device has;
     -- everything else falls back to looking on the real disk.
-    local lfs_stub = { directories = {} }
+    -- `missing` is how a fake device says it genuinely does not hold a
+    -- book. The two devices in a test share one filesystem, so without it
+    -- the follower can simply open the leader's copy off the disk and no
+    -- book ever travels — which makes a transfer test prove nothing.
+    local lfs_stub = { directories = {}, missing = {} }
     function lfs_stub.attributes(path, what)
+        if lfs_stub.missing[path] then return nil end
         if lfs_stub.directories[path] then
             if what == "mode" then return "directory" end
             return { mode = "directory" }
@@ -321,6 +326,7 @@ function Env.install(options)
         Event = Event,
         WidgetContainer = WidgetContainer,
         modules = modules,
+        lfs = lfs_stub,
     }
 end
 

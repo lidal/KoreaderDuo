@@ -53,12 +53,63 @@ T.describe("base64", function()
         T.assertNil(Base64.decode("Zm9"))     -- truncated
     end)
 
-    T.it("stays inside the protocol's line limit", function()
+    T.it("has a URL-safe alphabet that differs in its last two characters", function()
+        -- Every other character is the same, so anything that avoids 62 and
+        -- 63 encodes identically under both.
+        T.assertEquals(Base64.encodeUrl("foobar"), Base64.encode("foobar"))
+        T.assertEquals(Base64.encode("\251\255\191"), "+/+/")
+        T.assertEquals(Base64.encodeUrl("\251\255\191"), "-_-_")
+        T.assertEquals(Base64.decodeUrl("-_-_"), "\251\255\191")
+    end)
+
+    T.it("round-trips every byte value through the URL-safe alphabet too", function()
+        local all_bytes = {}
+        for value = 0, 255 do all_bytes[#all_bytes+1] = string.char(value) end
+        all_bytes = table.concat(all_bytes)
+        T.assertEquals(Base64.decodeUrl(Base64.encodeUrl(all_bytes)), all_bytes)
+    end)
+
+    T.it("keeps the two alphabets apart", function()
+        T.assertNil(Base64.decodeUrl("+/+/"), "the standard alphabet is not URL-safe base64")
+        T.assertNil(Base64.decode("-_-_"), "and the URL-safe one is not standard base64")
+    end)
+
+    --[[--
+    A chunk has to fit in one line whatever the book is made of.
+
+    The obvious version of this test — a chunk of one repeated byte — is
+    the easiest possible case and passes on anything: its base64 is all
+    letters, and the protocol lets letters through untouched. A real book
+    is compressed, so its bytes look random, and roughly one base64
+    character in thirty comes out as `+` or `/`, which the protocol escapes
+    to three characters each. That is what used to push a chunk over the
+    limit partway through a real EPUB, and it is what this checks.
+    --]]--
+    T.it("stays inside the protocol's line limit, whatever the book holds", function()
         local Protocol = require("duo/protocol")
-        local chunk = string.rep("x", BookTransfer.CHUNK)
-        local line = Protocol.encode(Protocol.BOOK_DATA, { b = Base64.encode(chunk) })
-        T.assertTrue(line ~= nil, "a full chunk did not fit in one message")
-        T.assertTrue(#line <= Protocol.MAX_LINE, "a full chunk overflows the line limit")
+        local cases = {
+            -- Every single base64 character lands on 62 or 63: the worst
+            -- input that exists, not merely an awkward one.
+            ["all the awkward characters"] = string.rep("\251\255\191", BookTransfer.CHUNK / 3),
+            ["one repeated byte"] = string.rep("x", BookTransfer.CHUNK),
+        }
+        local sequence = {}
+        for index = 1, BookTransfer.CHUNK do
+            sequence[index] = string.char((index * 37 + index * index) % 256)
+        end
+        cases["bytes that do not repeat"] = table.concat(sequence)
+
+        for what, chunk in pairs(cases) do
+            T.assertEquals(#chunk, BookTransfer.CHUNK, what .. ": wrong size")
+            local line = Protocol.encode(Protocol.BOOK_DATA, { b = Base64.encodeUrl(chunk) })
+            T.assertTrue(line ~= nil, what .. ": a full chunk did not fit in one message")
+            T.assertTrue(#line <= Protocol.MAX_LINE,
+                ("%s: a full chunk came to %d bytes, over the %d limit")
+                    :format(what, line and #line or 0, Protocol.MAX_LINE))
+            -- And back out of the line unharmed.
+            local msg = Protocol.decode(line:sub(1, -2))
+            T.assertEquals(Base64.decodeUrl(msg.b), chunk, what .. ": did not survive the round trip")
+        end
     end)
 end)
 
