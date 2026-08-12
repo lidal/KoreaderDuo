@@ -110,6 +110,7 @@ installed — a machine running iwd or NetworkManager alone often has no
 `iw` to report modes for. A Kindle says yes where a much more capable
 computer says no, because a Kindle does its Wi-Fi with exactly the tools
 this script drives.
+
 Three ways are driven automatically, in the order they are worth having:
 access point mode where the driver has it, ad-hoc where it does not, and
 old-style ad-hoc through `iwconfig` for drivers that predate `iw`. A fourth
@@ -117,6 +118,7 @@ is only reported, not driven: if the device advertises Wi-Fi Direct
 (`P2P-GO`) and nothing else, the probe says so, because a P2P group is
 still a network Duo can pair across — but setting one up means agreeing an
 SSID and passphrase this script did not choose, so that part is yours.
+
 The same script does the work — `host`, `join`, `status`, `restore` — and
 takes `--dry-run` on any of them, so you can read the exact commands before
 running them. It takes Wi-Fi over while it is up; **restore** or a reboot
