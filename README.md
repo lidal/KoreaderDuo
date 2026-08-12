@@ -124,6 +124,21 @@ takes `--dry-run` on any of them, so you can read the exact commands before
 running them. It takes Wi-Fi over while it is up; **restore** or a reboot
 gives it back.
 
+**It checks that the link actually appeared** rather than trusting that the
+commands ran, because those are not the same thing: a driver can advertise
+access point mode while the `wpa_supplicant` on the device has no AP
+support built in, and nothing says so — wpa_supplicant forks into the
+background and the network simply never exists. So after setting up, the
+interface is watched until it really is an access point or an ad-hoc cell,
+and if it never gets there the script says so and quotes what
+wpa_supplicant complained about. If access point mode does not take and the
+driver also does ad-hoc, that is tried before giving up: two readers do not
+care which of the two they got.
+
+`status` is the quick check afterwards — it prints the interface's mode, so
+`Mode:Master` or `type AP` means the network is up and `Mode:Managed` means
+it is not.
+
 ### Bluetooth — not on a stock Kindle
 
 Kindles do not run bluez: there is no `rfcomm` and no `hciconfig`. Amazon's
@@ -489,7 +504,7 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-212 tests, no mocking of the interesting parts:
+215 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
@@ -503,7 +518,7 @@ make test LUA=lua5.1
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
 | `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 15 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
+| `directlink_spec` | 18 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
 Two tools double as documentation, and both print live data:

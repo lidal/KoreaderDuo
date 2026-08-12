@@ -268,6 +268,80 @@ bring_up_ibss_iw() {
     run_sh "iw dev $iface ibss join $SSID $FREQUENCY 2>/dev/null || true"
 }
 
+# What the interface says it is doing right now: AP, IBSS, managed, or
+# nothing at all. Two spellings, because old drivers have no `iw`.
+current_mode() {
+    iface="$1"
+    if has iw; then
+        iw dev "$iface" info 2>/dev/null | sed -n 's/^[[:space:]]*type[[:space:]]*//p'
+    elif has iwconfig; then
+        iwconfig "$iface" 2>/dev/null | sed -n 's/.*Mode:\([A-Za-z-]*\).*/\1/p'
+    fi
+}
+
+# True once the interface is doing what we asked. `iw` says AP/IBSS,
+# `iwconfig` says Master/Ad-Hoc, and a joiner on an access point is an
+# ordinary station that has to have associated.
+mode_reached() {
+    iface="$1"
+    want="$2"      # ap | ibss | client
+    mode=$(current_mode "$iface")
+    case "$want" in
+        ap)   case "$mode" in AP|Master) return 0 ;; esac ;;
+        ibss) case "$mode" in IBSS|Ad-Hoc) return 0 ;; esac ;;
+        client)
+            if has iw; then
+                iw dev "$iface" link 2>/dev/null | grep -qi "Connected to" && return 0
+            elif has iwconfig; then
+                iwconfig "$iface" 2>/dev/null | grep -q "ESSID:\"$SSID\"" && return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+#[[
+# Waits for the link to actually come up, and says so plainly when it does
+# not.
+#
+# Worth more than it looks. Every command here can succeed while the link
+# quietly fails to appear: wpa_supplicant forks into the background before
+# it discovers the driver will not do AP mode, `iw` prints nothing when a
+# join is refused, and the system's own Wi-Fi service may take the
+# interface straight back. Reporting success from "the commands ran" told
+# people the link was up when there was nothing to join.
+#]]
+await_link() {
+    iface="$1"
+    want="$2"
+    [ "$DRY_RUN" = "1" ] && return 0
+
+    waited=0
+    while [ "$waited" -lt 12 ]; do
+        if mode_reached "$iface" "$want"; then
+            log "verified: $iface is $(current_mode "$iface")"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
+link_failure() {
+    iface="$1"
+    want="$2"
+    reason="the interface never came up as $want (it says: $(current_mode "$iface" | tr '\n' ' '))"
+    if [ -s "$RUN_DIR/wpa.log" ]; then
+        reason="$reason; wpa_supplicant said: $(tail -n 3 "$RUN_DIR/wpa.log" | tr '\n' ' ')"
+    fi
+    echo "$reason"
+}
+
+verify_link() {
+    await_link "$1" "$2" || die "$(link_failure "$1" "$2")"
+}
+
 establish() {
     role="$1"      # host | join
     iface=$(detect_iface)
@@ -305,6 +379,37 @@ establish() {
             ;;
         ibss-wext)
             bring_up_ibss_wext "$iface"
+            ;;
+    esac
+
+    # Before claiming anything, check the radio actually did it.
+    case "$method" in
+        ap)
+            if [ "$role" = "host" ]; then
+                if ! await_link "$iface" ap; then
+                    #[[
+                    # A driver can advertise AP mode while the
+                    # wpa_supplicant on the device has no AP support built
+                    # in, and nothing says so until the network fails to
+                    # appear. Ad-hoc is just as good for two readers, so it
+                    # is worth trying before giving up on the whole idea.
+                    #]]
+                    failure=$(link_failure "$iface" ap)
+                    if [ "$(probe_value mode_ibss)" = yes ] && has iw; then
+                        warn "$failure"
+                        log "access point mode did not take; trying ad-hoc instead"
+                        bring_up_ibss_iw "$iface"
+                        await_link "$iface" ibss || die "$(link_failure "$iface" ibss)"
+                    else
+                        die "$failure"
+                    fi
+                fi
+            else
+                verify_link "$iface" client
+            fi
+            ;;
+        ibss|ibss-wext)
+            verify_link "$iface" ibss
             ;;
     esac
 

@@ -244,5 +244,74 @@ T.describe("bringing the link up", function()
     end)
 end)
 
+T.describe("checking the link actually came up", function()
+    --[[
+    The failure that sent somebody looking for a network that was not
+    there. Every command can succeed while the radio quietly does nothing:
+    wpa_supplicant forks into the background before it finds out the driver
+    will not do AP mode, and the script used to announce "this device is
+    hosting the link" on the strength of having run it.
+    ]]
+
+    --- An `iw` that reports the driver can do AP, but whose interface never
+    --- leaves managed mode — which is what a wpa_supplicant built without
+    --- AP support looks like from the outside.
+    local function iwThatSettlesOn(mode)
+        return ([[
+if [ "$1" = "dev" ] && [ "$3" = "info" ]; then printf '\ttype %s\n' "%s"; exit 0; fi
+if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
+]]):format("%s", mode) .. IW_LIST_AP
+    end
+
+    T.it("reports an error instead of a link that never appeared", function()
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("managed"),
+            wpa_supplicant = "exit 0",   -- forks happily, achieves nothing
+            ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertMatch(output, "error:", "a link that never came up must not read as success")
+        T.assertMatch(output, "never came up as ap")
+        T.assertTrue(not output:find("This device is hosting the link"),
+            "it announced a network nobody can see")
+    end)
+
+    T.it("falls back to ad-hoc when access point mode does not take", function()
+        -- The driver says it can be an access point; the interface says
+        -- otherwise until it is asked to be ad-hoc instead. Two readers do
+        -- not care which of the two they got.
+        local iw = [[
+if [ "$1" = "dev" ] && [ "$3" = "info" ]; then
+    if [ -f "$DUO_RUN_DIR/became-ibss" ]; then printf '\ttype IBSS\n'; else printf '\ttype managed\n'; fi
+    exit 0
+fi
+if [ "$1" = "dev" ] && [ "$2" = "wlan0" ] && [ "$3" = "set" ]; then
+    mkdir -p "$DUO_RUN_DIR"; : > "$DUO_RUN_DIR/became-ibss"; exit 0
+fi
+if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
+]] .. IW_LIST_AP
+        local environment = fakeEnvironment{
+            iw = iw, wpa_supplicant = "exit 0", ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertMatch(output, "trying ad%-hoc instead")
+        T.assertMatch(output, "verified: wlan0 is IBSS")
+        T.assertMatch(output, "This device is hosting the link")
+        T.assertTrue(not output:find("\nerror:"), "a link that came up must not report an error")
+    end)
+
+    T.it("says so plainly when the interface does come up", function()
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("AP"),
+            wpa_supplicant = "exit 0",
+            ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertTrue(not output:find("error:"), "a working link must not report an error")
+        T.assertMatch(output, "verified: wlan0 is AP")
+        T.assertMatch(output, "This device is hosting the link")
+    end)
+end)
+
 os.execute("rm -rf " .. FAKE_BIN)
 os.exit(T.run())
