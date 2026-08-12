@@ -111,6 +111,10 @@ probe() {
 
     echo "interface=$iface"
     echo "driver=$driver"
+    # What a device with no Duo on it would have to join by hand.
+    echo "ssid=$SSID"
+    echo "passphrase=$PASSPHRASE"
+    echo "host_ip=$HOST_IP"
     for tool in iw iwconfig wpa_supplicant hostapd ip ifconfig; do
         if has "$tool"; then echo "tool_$tool=yes"; else echo "tool_$tool=no"; fi
     done

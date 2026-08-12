@@ -77,9 +77,22 @@ and the other joins it:
 It asks the device what it can do before touching anything, and tells you
 plainly when the answer is no. Where it works, the hosting device becomes an
 access point if its driver supports one and an ad-hoc network otherwise,
-takes `169.254.13.1`, and starts Duo as master. The other device joins,
-takes `169.254.13.2`, and connects — the host address is fixed, so there is
-no DHCP server needed and no address for anyone to type.
+takes `169.254.13.1`, and starts Duo as master.
+
+**Then, on the other device**, and this is the step that is easy to miss:
+
+- **Another reader running Duo**: same menu, **Join the link, and be the
+  slave**. It joins the network, takes `169.254.13.2` and connects on its
+  own. Nothing to type, and no reason to touch the host's Wi-Fi settings.
+- **Anything else** — a laptop, a phone, a desktop running KOReader — joins
+  the network the ordinary way first, with whatever it normally uses for
+  Wi-Fi. The network is called **`KOReaderDuo`** and the passphrase is
+  **`koreaderduo`** (override with `DUO_SSID` and `DUO_PASSPHRASE`). Once
+  it is on, open Duo and tap **Connect to a master**; if the search finds
+  nothing, the host is always at `169.254.13.1`.
+
+The host's own screen says all of this once the link is up, network name and
+passphrase included, so there is nothing to remember.
 
 Whether a particular Kindle can do this comes down to its Wi-Fi driver.
 Check before you rely on it, over SSH:
@@ -89,6 +102,14 @@ Check before you rely on it, over SSH:
 ```
 
 That prints the interface, the driver, the modes it supports, and a verdict.
+Worth running on both devices, and worth reading rather than skimming: the
+`tool_*` lines are as decisive as the `mode_*` ones. A desktop whose card
+can plainly do access point mode still gets a no if `wpa_supplicant` is not
+installed — a machine running iwd or NetworkManager alone often has no
+`wpa_supplicant` at all — and a wired-only desktop has no wireless phy for
+`iw` to report modes for. A Kindle says yes where a much more capable
+computer says no, because a Kindle does its Wi-Fi with exactly the tools
+this script drives.
 Three ways are driven automatically, in the order they are worth having:
 access point mode where the driver has it, ad-hoc where it does not, and
 old-style ad-hoc through `iwconfig` for drivers that predate `iw`. A fourth
@@ -466,13 +487,13 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-211 tests, no mocking of the interesting parts:
+212 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 27 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
+| `plugin_spec` | 28 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
 | `integration_spec` | 51 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |

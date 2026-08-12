@@ -293,6 +293,35 @@ T.describe("pairing dialogs", function()
         Core.settings.port = 9970
     end)
 
+    T.it("names the network to join when it is hosting the link itself", function()
+        --[[
+        The ordinary sheet says "tap Connect to a master" and that is
+        enough, because both devices are already on the same network. When
+        this device *is* the network, anything that is not another reader
+        running Duo has to be told what to join — and being told to search a
+        network you are not on is no help at all.
+        ]]
+        reset()
+        Core.settings.token = "DIRECT1"
+        Core.settings.port = 19898
+        device.plugin:showPairingSheet{
+            direct = true,
+            report = { ssid = "KOReaderDuo", passphrase = "koreaderduo" },
+        }
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "KOReaderDuo", "the network has to be named")
+        T.assertMatch(shown, "koreaderduo", "and so does the passphrase")
+        T.assertMatch(shown, "Join the link", "another reader does it from the menu")
+        T.assertMatch(shown, "DIRECT1")
+
+        -- The ordinary sheet says none of that, because it does not apply.
+        device.plugin:showPairingSheet()
+        local plain = table.concat(device:drainMessages(), "\n")
+        T.assertTrue(not plain:find("Passphrase"),
+            "on a network both devices are already on there is nothing to join")
+        Core.settings.port = 9970
+    end)
+
     T.it("refuses an address that is not one", function()
         reset()
         local before = Core:get("peer_host")

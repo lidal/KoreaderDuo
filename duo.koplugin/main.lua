@@ -639,9 +639,41 @@ function Duo:startMaster()
 end
 
 --- The screen you read out to the other device.
-function Duo:showPairingSheet()
+--[[--
+What to do on the other device, now that this one is listening.
+
+The direct-link case needs more than the ordinary one. On a network both
+devices are already on, the other device only has to search. On a link this
+device is *hosting*, the other device has to get onto that network first —
+and only another reader running Duo can do that by itself, from the same
+menu. Anything else has to be told the name and the passphrase, so those
+are on the sheet rather than buried in a script.
+
+@tparam[opt] table options  direct=true when this device is hosting the link
+--]]--
+function Duo:showPairingSheet(options)
+    options = options or {}
     local address = NetUtil.getLocalIP() or _("unknown — check Wi-Fi")
-    local text = T(_([[
+    local text
+
+    if options.direct then
+        local DirectLink = require("duo/directlink")
+        local report = options.report or DirectLink.probe() or {}
+        text = T(_([[
+Duo master is running, on a link this device is hosting.
+
+On another reader: open Duo, tap "No Wi-Fi network? Link the two directly…", then "Join the link". It needs nothing typed.
+
+On anything else: join this Wi-Fi network first, then tap "Connect to a master".
+
+Network:    %1
+Passphrase: %2
+Address:    %3:%4
+Code:       %5]]),
+            report.ssid or "KOReaderDuo", report.passphrase or "koreaderduo",
+            address, Core:get("port"), Core:ensureToken())
+    else
+        text = T(_([[
 Duo master is running.
 
 On the other device, open Duo and tap "Connect to a master". It should find this device by itself.
@@ -649,8 +681,9 @@ On the other device, open Duo and tap "Connect to a master". It should find this
 Name:    %1
 Address: %2:%3
 Code:    %4]]),
-        Core:getDeviceName(), address, Core:get("port"), Core:ensureToken())
-    UIManager:show(InfoMessage:new{ text = text, timeout = 30 })
+            Core:getDeviceName(), address, Core:get("port"), Core:ensureToken())
+    end
+    UIManager:show(InfoMessage:new{ text = text, timeout = 60 })
 end
 
 --- Searches the network, then offers whatever it found.
@@ -886,7 +919,7 @@ function Duo:runDirectLink(role)
     Core:set("transport", Core.TRANSPORT_TCP)
     if role == "host" then
         if Core:start(Core.ROLE_MASTER) then
-            self:showPairingSheet()
+            self:showPairingSheet{ direct = true }
         end
     else
         -- The host is always at the same address, so there is nothing to
