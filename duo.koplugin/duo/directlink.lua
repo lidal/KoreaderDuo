@@ -80,6 +80,30 @@ function DirectLink.describe(report)
     return table.concat(lines, "\n")
 end
 
+--[[--
+Which kind of link actually came up: "ap", "ibss", or nil when the output
+does not say.
+
+The two are not interchangeable to anyone standing outside. An ad-hoc cell
+carries the spread between two readers perfectly well, but it is not a
+network a phone or a laptop will offer in its list — modern Wi-Fi daemons
+dropped ad-hoc support altogether. A device that quietly fell back to one
+and then told its owner to "join this Wi-Fi network" sent them looking for
+something they were never going to find.
+
+@tparam string output  what the script printed
+@treturn ?string  "ap", "ibss", or nil
+--]]--
+function DirectLink.modeOf(output)
+    if not output then return nil end
+    local mode = output:match("\nmode=([%w%-]+)") or output:match("^mode=([%w%-]+)")
+    if not mode then return nil end
+    mode = mode:lower()
+    if mode == "ap" or mode == "master" then return "ap" end
+    if mode == "ibss" or mode == "ad-hoc" then return "ibss" end
+    return mode
+end
+
 function DirectLink.host()
     return DirectLink.run("host")
 end

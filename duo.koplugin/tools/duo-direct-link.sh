@@ -415,11 +415,31 @@ establish() {
 
     set_address "$iface" "$address"
 
+    settled=$(current_mode "$iface")
     log ""
+    log "mode=$settled"
     if [ "$role" = "host" ]; then
         log "This device is hosting the link at $HOST_IP."
         log "On the other device run: $0 join"
         log "Then start Duo as master here, and as slave there."
+        case "$settled" in
+            IBSS|Ad-Hoc)
+                #[[
+                # Worth spelling out. An ad-hoc cell carries the spread
+                # perfectly well between two readers, but it is not an
+                # access point and most phones and laptops will not offer it
+                # in their list of networks — modern Linux Wi-Fi daemons
+                # dropped ad-hoc support altogether. Somebody scanning for
+                # the SSID and finding nothing has not got a broken link;
+                # they have got a client that cannot see this kind of one.
+                #]]
+                log ""
+                log "NOTE: this is an ad-hoc cell, not an access point."
+                log "The join above still works from another reader, but most"
+                log "phones and laptops will not list it when they scan, and"
+                log "some cannot join one even when told to by name."
+                ;;
+        esac
     else
         log "Joined the link as $address; the other device is at $HOST_IP."
         log "Start Duo as slave here and point it at $HOST_IP."

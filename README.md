@@ -94,6 +94,16 @@ takes `169.254.13.1`, and starts Duo as master.
 The host's own screen says all of this once the link is up, network name and
 passphrase included, so there is nothing to remember.
 
+**If the host fell back to ad-hoc, that second bullet does not apply**, and
+the screen says so instead. An ad-hoc cell carries the spread between two
+readers exactly as well as an access point does, but it is not a network
+other things will show you: modern Linux Wi-Fi daemons dropped ad-hoc
+support altogether, phones never had it, and a laptop scanning for
+`KOReaderDuo` will simply not find it. Nothing is broken when that happens —
+the client cannot see this kind of network at all. Another reader running
+Duo still joins it from the menu, because it joins by name rather than by
+picking from a list.
+
 Whether a particular Kindle can do this comes down to its Wi-Fi driver.
 Check before you rely on it, over SSH:
 
@@ -135,9 +145,13 @@ wpa_supplicant complained about. If access point mode does not take and the
 driver also does ad-hoc, that is tried before giving up: two readers do not
 care which of the two they got.
 
+Whichever way it ends up, the last thing it prints is `mode=`, so there is
+never any doubt about which kind of network is up — and when the answer is
+an ad-hoc cell it says outright that most other devices will not list it.
+
 `status` is the quick check afterwards — it prints the interface's mode, so
-`Mode:Master` or `type AP` means the network is up and `Mode:Managed` means
-it is not.
+`Mode:Master` or `type AP` means an access point is up, `Mode:Ad-Hoc` or
+`type IBSS` means an ad-hoc cell is, and `Mode:Managed` means neither.
 
 ### Bluetooth — not on a stock Kindle
 
@@ -504,13 +518,13 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-215 tests, no mocking of the interesting parts:
+219 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 28 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
+| `plugin_spec` | 30 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
 | `integration_spec` | 51 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
@@ -518,7 +532,7 @@ make test LUA=lua5.1
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
 | `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 18 | Driver capability probing against real `iw` output shapes, and the exact commands each method issues |
+| `directlink_spec` | 20 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
 Two tools double as documentation, and both print live data:

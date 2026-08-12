@@ -300,6 +300,30 @@ if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
         T.assertTrue(not output:find("\nerror:"), "a link that came up must not report an error")
     end)
 
+    T.it("warns that an ad-hoc cell will not show up in most Wi-Fi lists", function()
+        -- The complaint this exists for: the reader says it is hosting, the
+        -- laptop scans, and the network is nowhere. An ad-hoc cell is not
+        -- broken, it is simply invisible to most clients, and the device
+        -- that made one should say so rather than leave people hunting.
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertMatch(output, "mode=IBSS")
+        T.assertMatch(output, "not an access point")
+        T.assertMatch(output, "will not list it when they scan")
+    end)
+
+    T.it("says nothing about ad-hoc when it really is an access point", function()
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("AP"), wpa_supplicant = "exit 0", ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertMatch(output, "mode=AP")
+        T.assertTrue(not output:find("ad%-hoc cell"),
+            "an access point must not be described as an ad-hoc cell")
+    end)
+
     T.it("says so plainly when the interface does come up", function()
         local environment = fakeEnvironment{
             iw = iwThatSettlesOn("AP"),

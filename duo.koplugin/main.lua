@@ -659,18 +659,22 @@ function Duo:showPairingSheet(options)
     if options.direct then
         local DirectLink = require("duo/directlink")
         local report = options.report or DirectLink.probe() or {}
+        local others = _([[On anything else: join this Wi-Fi network first, then tap "Connect to a master".]])
+        if options.mode == "ibss" then
+            others = _([[This link is an ad-hoc cell, not an access point. Another reader joins it as above, but most phones and laptops will not list it when they scan, and some cannot join one even when told the name.]])
+        end
         text = T(_([[
 Duo master is running, on a link this device is hosting.
 
 On another reader: open Duo, tap "No Wi-Fi network? Link the two directly…", then "Join the link". It needs nothing typed.
 
-On anything else: join this Wi-Fi network first, then tap "Connect to a master".
+%1
 
-Network:    %1
-Passphrase: %2
-Address:    %3:%4
-Code:       %5]]),
-            report.ssid or "KOReaderDuo", report.passphrase or "koreaderduo",
+Network:    %2
+Passphrase: %3
+Address:    %4:%5
+Code:       %6]]),
+            others, report.ssid or "KOReaderDuo", report.passphrase or "koreaderduo",
             address, Core:get("port"), Core:ensureToken())
     else
         text = T(_([[
@@ -919,7 +923,7 @@ function Duo:runDirectLink(role)
     Core:set("transport", Core.TRANSPORT_TCP)
     if role == "host" then
         if Core:start(Core.ROLE_MASTER) then
-            self:showPairingSheet{ direct = true }
+            self:showPairingSheet{ direct = true, mode = DirectLink.modeOf(output) }
         end
     else
         -- The host is always at the same address, so there is nothing to

@@ -322,6 +322,38 @@ T.describe("pairing dialogs", function()
         Core.settings.port = 9970
     end)
 
+    T.it("does not send people scanning for an ad-hoc cell they cannot see", function()
+        --[[
+        A reader whose driver will not do access point mode falls back to an
+        ad-hoc cell. Two readers still pair over it, but no phone will show
+        it in a list of networks. Telling somebody to "join this Wi-Fi
+        network" then is worse than saying nothing: they go looking for a
+        name that is never going to appear and conclude the link is broken.
+        ]]
+        reset()
+        Core.settings.token = "ADHOC1"
+        device.plugin:showPairingSheet{
+            direct = true,
+            mode = "ibss",
+            report = { ssid = "KOReaderDuo", passphrase = "koreaderduo" },
+        }
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "ad%-hoc cell")
+        T.assertMatch(shown, "will not list it when they scan")
+        T.assertMatch(shown, "Join the link", "another reader can still join it")
+        T.assertTrue(not shown:find("join this Wi%-Fi network first"),
+            "nobody should be sent looking for a network their device will not show")
+    end)
+
+    T.it("reads back which kind of link came up", function()
+        local DirectLink = require("duo/directlink")
+        T.assertEquals(DirectLink.modeOf("verified: wlan0 is AP\nmode=AP\nhosting"), "ap")
+        T.assertEquals(DirectLink.modeOf("mode=IBSS\n"), "ibss")
+        T.assertEquals(DirectLink.modeOf("mode=Ad-Hoc\n"), "ibss")
+        T.assertNil(DirectLink.modeOf("nothing to say here"))
+        T.assertNil(DirectLink.modeOf(nil))
+    end)
+
     T.it("refuses an address that is not one", function()
         reset()
         local before = Core:get("peer_host")
