@@ -318,6 +318,23 @@ Duo will still spread the list, but it will only tell you the two libraries
 differ rather than doing anything about it — which is the left-hand screen
 above.
 
+**Only books are ever copied.** The shared folder is whichever one the
+master happens to be looking at, so a wrong turn into a downloads folder is
+an easy mistake to make — and the file browser hides what a reader cannot
+open only until somebody turns that setting off. Duo works from an
+allowlist of the formats KOReader itself opens: EPUB, MOBI, PDF, DjVu, CBZ,
+plain text and the rest. Anything else stays where it is. The check runs in
+three places — the master leaves non-books out of the listing it offers, the
+receiving device drops them from what it asks for, and the master refuses
+one even when asked for by name, since that last gate is the one that would
+otherwise open a file and put its bytes on the wire.
+
+There is a ceiling as well, **Most to copy in one go**, at 512 MB by
+default and settable to 128 MB, 2 GB or none at all. Over it, Duo says how
+many books and how many megabytes it was about to pull and stops, rather
+than starting a multi-gigabyte transfer over a link with no router on it
+and hoping somebody notices.
+
 ### Covers now, books when you open them
 
 Copying a whole library before anything can be read is a lot of waiting for
@@ -543,19 +560,19 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-230 tests, no mocking of the interesting parts:
+238 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 34 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
+| `plugin_spec` | 37 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
 | `integration_spec` | 56 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
-| `library_spec` | 12 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
+| `library_spec` | 14 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, no complaint about a mismatch it is busy repairing, and a firmware image in the folder that stays where it is |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
-| `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
+| `booktransfer_spec` | 19 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
 | `directlink_spec` | 21 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |

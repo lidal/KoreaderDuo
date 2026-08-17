@@ -1194,6 +1194,25 @@ When you connect, the master's settings win. Change anything afterwards, on eith
             callback = function() Core:set("sync_library", not Core:get("sync_library")) end,
         },
         {
+            text_func = function()
+                local limit = Core:get("max_library_mb")
+                if limit == 0 then return _("Most to copy in one go: no limit") end
+                return T(_("Most to copy in one go: %1 MB"), limit)
+            end,
+            help_text = _("A guard against copying the wrong folder. The shared folder is whichever one the master is looking at, so a wrong turn is easy to make, and a device pulling gigabytes over a link with no router on it is slow and expensive. Only books are ever copied, whatever else the folder holds."),
+            keep_menu_open = true,
+            callback = function()
+                local steps = { 128, 512, 2048, 0 }
+                local current = Core:get("max_library_mb")
+                local next_index = 1
+                for index, value in ipairs(steps) do
+                    if value == current then next_index = (index % #steps) + 1 end
+                end
+                Core:set("max_library_mb", steps[next_index])
+                Duo:refreshMenu()
+            end,
+        },
+        {
             text = _("Covers now, books when you open them"),
             help_text = _("Fill the shelf with stand-ins that carry the cover and the title, and fetch the book itself the first time you open it. Much less to copy, and the two halves of the list line up straight away. EPUB only — anything else is copied whole."),
             enabled_func = function() return Core:get("sync_library") end,

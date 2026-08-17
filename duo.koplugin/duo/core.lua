@@ -108,6 +108,7 @@ local DEFAULTS = {
     sync_library = true,
     covers_first = true,
     max_book_mb = 64,
+    max_library_mb = 512,
     device_name = "",
     autostart = false,
     autostart_role = "off",
@@ -1186,7 +1187,17 @@ function Core:handleLibraryRequest(link, msg)
         return
     end
 
-    local entries = self.browser.getFiles()
+    -- Books only, whatever else is sitting in the folder. The listing the
+    -- file browser shows is not a promise: "show unsupported files" is a
+    -- setting, and the shared folder is only ever whichever one this device
+    -- happens to be looking at.
+    local BookTransfer = require("duo/booktransfer")
+    local entries = {}
+    for _, entry in ipairs(self.browser.getFiles()) do
+        if BookTransfer.isBookName(entry.name) then
+            entries[#entries+1] = entry
+        end
+    end
     if #entries > MAX_LIBRARY_ENTRIES then
         link:send(Protocol.LIB_END, { count = 0, reason = "that folder holds too many files to copy" })
         return
@@ -1199,6 +1210,14 @@ end
 
 function Core:handleLibraryItem(msg)
     if not self.library or not self.library.collecting then return end
+    -- Checked at this end too. The other device filters, but what arrives
+    -- over a socket is not something to take on trust, and this is the
+    -- device that would be writing the file.
+    local BookTransfer = require("duo/booktransfer")
+    if not BookTransfer.isBookName(msg.name) then
+        self:log("not a book, skipping:", tostring(msg.name))
+        return
+    end
     self.library.index[#self.library.index+1] = {
         name = msg.name,
         size = Protocol.num(msg, "size", 0),
@@ -1242,6 +1261,23 @@ function Core:handleLibraryEnd(msg)
     if #wanted == 0 then
         self.library = nil
         self:changed()
+        return
+    end
+
+    --[[
+    A ceiling on one sync, because the folder being copied is whichever one
+    the master is looking at and a wrong turn is easy to make. Nothing here
+    is destructive, but a mistake would otherwise mean a device quietly
+    pulling gigabytes over a link that has no router on it, at a few hundred
+    kilobytes a second, with a battery to pay for it. Refusing and saying
+    the number is kinder than starting and hoping somebody notices.
+    ]]
+    local ceiling = self:get("max_library_mb") * 1024 * 1024
+    if ceiling > 0 and bytes > ceiling then
+        self.library = nil
+        self:changed()
+        self:alert(("That folder holds %d book%s this device does not have — %.0f MB, over Duo's %d MB limit for one sync.\n\nIf that really is the shelf you meant, raise the limit under Duo; otherwise open the folder you want copied and try again."):format(
+            #wanted, #wanted == 1 and "" or "s", bytes / 1048576, self:get("max_library_mb")))
         return
     end
 
@@ -1420,6 +1456,10 @@ function Core:resolveSharedFile(requested)
     local BookTransfer = require("duo/booktransfer")
     local name = BookTransfer.safeName(requested)
     if not name then return nil end
+    -- The gate that actually matters: this is the one that opens a file and
+    -- puts its bytes on the wire, so a name that is not a book stops here
+    -- no matter how it came to be asked for.
+    if not BookTransfer.isBookName(name) then return nil end
 
     local state = self.browser.getState()
     if not state or not state.path then return nil end

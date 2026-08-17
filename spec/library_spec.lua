@@ -214,6 +214,55 @@ T.describe("keeping the whole library in step", function()
             true, "the fallback to whole books happened without a word")
     end)
 
+    T.it("copies books and nothing else, whatever else is in the folder", function()
+        --[[
+        The shared folder is only ever whichever one the master happens to
+        be looking at, so a wrong turn into a downloads folder is an easy
+        mistake to make — and the file browser hides what a reader cannot
+        open only until somebody turns that setting off. Copying a firmware
+        image across an ad-hoc cell at a few hundred kilobytes a second is
+        not a mistake worth being able to make.
+
+        These land in the folder after the slave's namespace was built, so
+        only the master can see them: exactly the shape of the real case.
+        ]]
+        makeBook(SHARED, "update.bin", 7)
+        makeBook(SHARED, "holiday-photo.jpg", 8)
+
+        browseTogether()
+        callMaster("Core.browser.refresh()")
+        callMaster("Core:broadcastBrowser()")
+        controller:assertEventually(slave, "Core:isSyncingLibrary()", false,
+            "the sync never finished", 60)
+
+        T.assertMatch(booksOn(master), "update%.bin")
+        local on_slave = booksOn(slave)
+        T.assertTrue(not on_slave:find("update%.bin"),
+            "a firmware image was copied to the other device")
+        T.assertTrue(not on_slave:find("holiday%-photo"),
+            "a photograph was copied to the other device")
+        T.assertMatch(on_slave, "book06%.epub", "the books should still come across")
+
+        os.remove(SHARED .. "/update.bin")
+        os.remove(SHARED .. "/holiday-photo.jpg")
+    end)
+
+    T.it("refuses to hand one over even when asked for by name", function()
+        -- The listing is a courtesy; this is the gate. Whatever a peer
+        -- sends, the device that would open the file and put its bytes on
+        -- the wire checks for itself.
+        makeBook(SHARED, "update.bin", 7)
+        browseTogether()
+        callMaster("Core.browser.refresh()")
+        callSlave("UIManager.shown_log = {}")
+        callSlave("Core:getReadyLinks()[1]:send(Protocol.BOOK_REQ," ..
+            " { file = 'update.bin', digest = '', lib = 1 })")
+        socket.sleep(1)
+        T.assertEquals(callSlave(("tostring(D:sizeOf(%q))"):format(SHARED .. "/update.bin")),
+            "nil", "the master handed over a file that is not a book")
+        os.remove(SHARED .. "/update.bin")
+    end)
+
     T.it("will not hand over anything outside the shared folder", function()
         callSlave("UIManager.shown_log = {}")
         -- A traversal, and a name that is simply not in the folder.

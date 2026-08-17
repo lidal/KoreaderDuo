@@ -177,6 +177,65 @@ T.describe("master page stepping", function()
     end)
 end)
 
+T.describe("what a library sync will and will not copy", function()
+    local function pretendBrowsing(path)
+        reset()
+        Core.browser = {
+            getFiles = function() return {} end,
+            getState = function() return { path = path, page = 1, pages = 1, count = 0 } end,
+            refresh = function() return true end,
+        }
+        Core.library = { collecting = true, index = {}, path = path }
+        device:drainMessages()
+    end
+
+    T.it("stops before copying a folder far too big to be a shelf", function()
+        --[[
+        The shared folder is whichever one the master is looking at, so a
+        wrong turn is easy. Refusing and naming the number beats starting a
+        multi-gigabyte pull over a link with no router on it and hoping
+        somebody notices.
+        ]]
+        pretendBrowsing("/downloads")
+        Core.settings.max_library_mb = 1
+        Core:handleLibraryItem{ name = "enormous.epub", size = 40 * 1024 * 1024 }
+        Core:handleLibraryEnd{}
+
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "over Duo's 1 MB limit")
+        T.assertNil(Core.library, "it should not have started fetching")
+        Core.settings.max_library_mb = 512
+        Core.browser = nil
+    end)
+
+    T.it("leaves the ceiling off when it is set to no limit", function()
+        pretendBrowsing("/books")
+        Core.settings.max_library_mb = 0
+        Core:handleLibraryItem{ name = "enormous.epub", size = 40 * 1024 * 1024 }
+        Core:handleLibraryEnd{}
+        -- It gets as far as asking for the book, which with nothing
+        -- connected is where it stops; what matters is that the ceiling
+        -- never spoke up.
+        T.assertTrue(not table.concat(device:drainMessages(), "\n"):find("MB limit"),
+            "no limit should mean no limit")
+        Core.library = nil
+        Core.settings.max_library_mb = 512
+        Core.browser = nil
+    end)
+
+    T.it("drops anything that is not a book out of the other device's list", function()
+        -- Filtered at the sending end too, but what arrives over a socket
+        -- is not something to take on trust.
+        pretendBrowsing("/books")
+        Core:handleLibraryItem{ name = "update.bin", size = 100 }
+        Core:handleLibraryItem{ name = "photo.jpg", size = 100 }
+        Core:handleLibraryItem{ name = "real.epub", size = 100 }
+        T.assertEquals(#Core.library.index, 1, "only the book belongs on the list")
+        T.assertEquals(Core.library.index[1].name, "real.epub")
+        Core.library = nil
+        Core.browser = nil
+    end)
+end)
+
 T.describe("coming back after a sleep", function()
     --[[
     A device wakes before its network does. This used to be one attempt

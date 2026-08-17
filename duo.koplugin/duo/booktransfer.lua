@@ -28,6 +28,43 @@ BookTransfer.HIGH_WATER = 48 * 1024
 --- Refuse anything larger than this by default (bytes).
 BookTransfer.DEFAULT_MAX = 64 * 1024 * 1024
 
+--[[--
+What counts as a book, and so as something worth copying between devices.
+
+An allowlist rather than a filter on what to leave out. The file browser
+already hides what KOReader cannot open, but "already hides" is a setting
+somebody can turn off, and the folder being shared is whichever one the
+master happens to be looking at: point it at a downloads folder by mistake
+and a device that copies whatever it is shown will copy all of it, slowly,
+over a link with no router on it. The cost of an extension missing from
+this list is one book that has to be copied by hand; the cost of not having
+the list at all is a folder of firmware images crossing an ad-hoc cell.
+
+Formats are KOReader's own, from `DocumentRegistry`'s providers.
+--]]--
+BookTransfer.BOOK_EXTENSIONS = {
+    -- crengine
+    epub = true, fb2 = true, fbz = true, mobi = true, azw = true,
+    azw3 = true, prc = true, pdb = true, chm = true, htm = true,
+    html = true, xhtml = true, rtf = true, doc = true, docx = true,
+    odt = true, md = true, markdown = true, txt = true, tcr = true,
+    zip = true, opf = true,
+    -- mupdf and djvu
+    pdf = true, xps = true, cbz = true, cbt = true, cbr = true,
+    djvu = true, djv = true,
+}
+
+--[[--
+True when a name looks like something a reader would open.
+
+@tparam string name  a bare file name
+--]]--
+function BookTransfer.isBookName(name)
+    local extension = tostring(name or ""):match("%.([%a%d]+)$")
+    if not extension then return false end
+    return BookTransfer.BOOK_EXTENSIONS[extension:lower()] == true
+end
+
 --- Strips any directory part, so a peer cannot choose where a file lands.
 function BookTransfer.safeName(name)
     name = tostring(name or ""):gsub("^.*[/\\]", "")

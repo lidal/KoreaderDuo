@@ -128,6 +128,40 @@ T.describe("file names from the other device", function()
     end)
 end)
 
+T.describe("what counts as a book", function()
+    --[[
+    The shared folder is whichever one the master happens to be looking at,
+    and the file browser hides unsupported files only until somebody turns
+    that setting off. So an allowlist, not a guess: the wrong turn is a
+    downloads folder, and the wrong outcome is a device pulling firmware
+    images across an ad-hoc cell.
+    ]]
+    T.it("takes the formats a reader opens", function()
+        for _, name in ipairs({
+            "moby-dick.epub", "Alice.EPUB", "book.mobi", "scan.pdf",
+            "comic.cbz", "paper.djvu", "notes.txt", "manual.azw3",
+        }) do
+            T.assertTrue(BookTransfer.isBookName(name), name .. " should count as a book")
+        end
+    end)
+
+    T.it("leaves everything else alone", function()
+        for _, name in ipairs({
+            "update.bin", "firmware.gz", "photo.jpg", "podcast.mp3",
+            "backup.tar", "notes", "run.sh", "metadata.epub.lua",
+            ".hidden", "book.epub.tmp",
+        }) do
+            T.assertTrue(not BookTransfer.isBookName(name), name .. " is not a book")
+        end
+    end)
+
+    T.it("is not fooled by a name with no extension at all", function()
+        T.assertTrue(not BookTransfer.isBookName(""))
+        T.assertTrue(not BookTransfer.isBookName(nil))
+        T.assertTrue(not BookTransfer.isBookName("epub"))
+    end)
+end)
+
 T.describe("sending and receiving a file", function()
     T.it("carries the bytes across exactly", function()
         -- Something with every byte value in it, and not a round number of
