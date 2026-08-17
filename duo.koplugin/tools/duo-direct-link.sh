@@ -103,6 +103,26 @@ supported_modes() {
     fi
 }
 
+#[[
+# Whether the wpa_supplicant on this device can actually be an access
+# point, which is a different question from whether the driver can.
+#
+# `iw` reports the driver's capabilities and stops there. Kindle firmware
+# ships a stripped wpa_supplicant with CONFIG_AP left out — AP mode drags
+# in most of hostapd, so it is the first thing dropped — and the result is
+# a device that advertises AP, accepts the configuration, forks into the
+# background and then refuses, with the network never appearing.
+#
+# The build gives itself away. That error string is compiled in only by the
+# #else branch, so finding it in the binary means the feature is missing.
+#]]
+wpa_can_do_ap() {
+    binary=$(command -v wpa_supplicant 2>/dev/null) || return 1
+    [ -n "$binary" ] || return 1
+    grep -q "AP mode support not included" "$binary" 2>/dev/null && return 1
+    return 0
+}
+
 probe() {
     iface=$(detect_iface)
     [ -n "$iface" ] || die "no network interface found"
@@ -131,6 +151,12 @@ probe() {
     echo "mode_ibss=$ibss"
     echo "mode_p2p_go=$p2p_go"
 
+    # Ad-hoc is driven straight through `iw`, so it needs nothing from
+    # wpa_supplicant. Access point mode needs everything from it.
+    wpa_ap=no
+    if has wpa_supplicant && wpa_can_do_ap; then wpa_ap=yes; fi
+    echo "wpa_ap=$wpa_ap"
+
     # WEXT drivers report no modes to iw but can usually still do ad-hoc.
     wext=no
     if [ -z "$modes" ] && has iwconfig; then
@@ -138,12 +164,22 @@ probe() {
     fi
     echo "wext=$wext"
 
-    if [ "$ap" = yes ] && has wpa_supplicant; then
+    if [ "$ap" = yes ] && [ "$wpa_ap" = yes ]; then
         echo "method=ap"
         echo "verdict=This device can host the link by itself. Run: $0 host"
     elif [ "$ibss" = yes ] && has iw; then
         echo "method=ibss"
-        echo "verdict=No access point mode, but ad-hoc works, which is just as good for two readers. Run: $0 host"
+        if [ "$ap" = yes ]; then
+            #[[
+            # The confusing case, and the reason the check above exists. The
+            # driver says AP, so anyone reading `iw phy` concludes an access
+            # point is possible, and it is not. Saying which half is missing
+            # saves the next person the afternoon it cost the last one.
+            #]]
+            echo "verdict=The driver can do access point mode but the wpa_supplicant on this device was built without it, so ad-hoc it is. That works between two readers, and needs nothing from wpa_supplicant, but other devices will not list the network. Run: $0 host"
+        else
+            echo "verdict=No access point mode, but ad-hoc works, which is just as good for two readers. Run: $0 host"
+        fi
     elif [ "$wext" = yes ]; then
         echo "method=ibss-wext"
         echo "verdict=Old-style Wi-Fi driver; ad-hoc is worth trying. Run: $0 host"

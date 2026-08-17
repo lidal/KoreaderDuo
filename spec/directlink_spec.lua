@@ -100,6 +100,27 @@ T.describe("probing what a device can do", function()
         T.assertMatch(field(output, "verdict"), "host the link")
     end)
 
+    T.it("does not trust a driver's AP mode when wpa_supplicant cannot drive it", function()
+        --[[
+        The case that cost a real afternoon. `iw phy` lists AP, so the
+        device looks capable; the wpa_supplicant Kindle firmware ships was
+        built without CONFIG_AP, so the network never appears and nothing
+        says why. Choosing ad-hoc up front beats failing over to it after a
+        timeout, and the verdict has to name the half that is missing.
+        ]]
+        local environment = fakeEnvironment{
+            iw = IW_LIST_AP,
+            -- The giveaway: that message is compiled in only when the
+            -- feature is not.
+            wpa_supplicant = "# AP mode support not included in the build\nexit 0",
+        }
+        local output = runScript(environment, "probe")
+        T.assertEquals(field(output, "mode_ap"), "yes", "the driver really can")
+        T.assertEquals(field(output, "wpa_ap"), "no", "the software really cannot")
+        T.assertEquals(field(output, "method"), "ibss")
+        T.assertMatch(output, "built without it")
+    end)
+
     T.it("falls back to ad-hoc when there is no access point mode", function()
         local environment = fakeEnvironment{ iw = IW_LIST_IBSS_ONLY, wpa_supplicant = "exit 0" }
         local output = runScript(environment, "probe")

@@ -76,8 +76,9 @@ and the other joins it:
 
 It asks the device what it can do before touching anything, and tells you
 plainly when the answer is no. Where it works, the hosting device becomes an
-access point if its driver supports one and an ad-hoc network otherwise,
-takes `169.254.13.1`, and starts Duo as master.
+access point if the driver *and* the software on the device can both manage
+one, an ad-hoc network otherwise, takes `169.254.13.1`, and starts Duo as
+master.
 
 **Then, on the other device**, and this is the step that is easy to miss:
 
@@ -113,8 +114,21 @@ Check before you rely on it, over SSH:
 
 That prints the interface, the driver, the modes it supports, and a verdict.
 Worth running on both devices, and worth reading rather than skimming: the
-`tool_*` lines are as decisive as the `mode_*` ones. A desktop whose card
-can plainly do access point mode still gets a no if `wpa_supplicant` is not
+`tool_*` lines are as decisive as the `mode_*` ones, and `wpa_ap` is the
+one that catches the nastiest case of all. `iw phy phy0 info` reports what
+the *driver* can do; it says nothing about whether the software on the
+device can drive it. Kindle firmware ships a stripped `wpa_supplicant`
+built without `CONFIG_AP` — access point mode drags in most of hostapd, so
+it is the first thing dropped — and the result is a reader that advertises
+AP, accepts the configuration, forks into the background and then silently
+refuses. The probe reads the giveaway straight out of the binary (the
+string `AP mode support not included` is compiled in only when the feature
+is *missing*) and picks ad-hoc up front rather than failing over to it
+after a timeout. Ad-hoc needs nothing from `wpa_supplicant` at all: it is
+driven through `iw` and the kernel.
+
+The same gap cuts the other way off a Kindle. A desktop whose card can
+plainly do access point mode still gets a no if `wpa_supplicant` is not
 installed — a machine running iwd or NetworkManager alone often has no
 `wpa_supplicant` at all — and a wired-only desktop has no wireless phy for
 `iw` to report modes for. A Kindle says yes where a much more capable
@@ -518,7 +532,7 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-219 tests, no mocking of the interesting parts:
+220 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
@@ -532,7 +546,7 @@ make test LUA=lua5.1
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
 | `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 20 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
+| `directlink_spec` | 21 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
 Two tools double as documentation, and both print live data:
