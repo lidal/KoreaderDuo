@@ -177,6 +177,97 @@ T.describe("master page stepping", function()
     end)
 end)
 
+T.describe("coming back after a sleep", function()
+    --[[
+    A device wakes before its network does. This used to be one attempt
+    whose failure was final — the master's listen failed on an interface
+    with no address yet, an alert went up, and Duo stayed off until
+    somebody reconnected both devices by hand. A short lock worked because
+    the network never went away; a long one did not.
+    ]]
+    local real_start = Core.start
+
+    local function failingStart(fail_times)
+        local attempts = 0
+        Core.start = function(_self, _role, _options)
+            attempts = attempts + 1
+            return attempts > fail_times
+        end
+        return function() return attempts end
+    end
+
+    local function sleepAsMaster()
+        reset()
+        Core.role = Core.ROLE_MASTER
+        Core:suspend()
+        T.assertEquals(Core.paused_role, "master", "the role has to survive the sleep")
+    end
+
+    T.it("keeps trying until the network is really back", function()
+        sleepAsMaster()
+        local attempts = failingStart(2)
+
+        Core:resume()
+        T.assertEquals(attempts(), 1)
+        T.assertEquals(Core.paused_role, "master", "one failure must not be the end of it")
+
+        Core.resume_at = 0
+        Core:poll()
+        T.assertEquals(attempts(), 2)
+
+        Core.resume_at = 0
+        Core:poll()
+        T.assertEquals(attempts(), 3, "it should have tried again")
+        T.assertNil(Core.paused_role, "and stopped trying once it worked")
+        Core.start = real_start
+    end)
+
+    T.it("rebuilds a link it made itself, once the radio has had its chance", function()
+        -- A link with no router behind it does not survive a deep sleep:
+        -- the Kindle's own Wi-Fi daemon takes the interface back. Nothing
+        -- else will notice, and waiting politely means waiting for ever.
+        sleepAsMaster()
+        local revived = 0
+        Core.hooks.reviveDirectLink = function() revived = revived + 1 end
+        failingStart(99)
+
+        Core:resume()
+        T.assertEquals(revived, 0, "not on the first failure: radios are just slow")
+        for _ = 1, 4 do
+            Core.resume_at = 0
+            Core:poll()
+        end
+        T.assertEquals(revived, 1, "the link should be rebuilt exactly once")
+        Core.hooks.reviveDirectLink = nil
+        Core.start = real_start
+        Core:stop("test done")
+    end)
+
+    T.it("gives up in the end, and says so", function()
+        sleepAsMaster()
+        failingStart(99)
+        Core:resume()
+        for _ = 1, 40 do
+            Core.resume_at = 0
+            Core:poll()
+        end
+        T.assertNil(Core.paused_role, "retrying into a flat battery helps nobody")
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "could not start again")
+        Core.start = real_start
+    end)
+
+    T.it("does not come back after being switched off on purpose", function()
+        sleepAsMaster()
+        Core:stop("switched off by hand")
+        T.assertNil(Core.paused_role)
+        local attempts = failingStart(0)
+        Core.resume_at = 0
+        Core:poll()
+        T.assertEquals(attempts(), 0, "a deliberate stop outranks an unfinished sleep")
+        Core.start = real_start
+    end)
+end)
+
 T.describe("keeping the reader awake", function()
     --[[
     Duo is polled by the UI loop and has no timer of its own, so a device

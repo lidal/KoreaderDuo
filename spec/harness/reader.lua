@@ -455,7 +455,23 @@ function ReaderUI:registerPlugin(plugin)
     table.insert(self.modules, plugin)
 end
 
+--[[--
+Back to the file list, which is what KOReader's Home event does.
+
+The real ReaderUI tears itself down and puts the file manager up in its
+place. Recording it is enough here — a test asserts that the book was left,
+and the instance harness does the swap when it wants the browser as well.
+--]]--
+function ReaderUI:onHome()
+    if not self.document then return false end
+    self.went_home = true
+    return true
+end
+
 function ReaderUI:handleEvent(event)
+    if event.handler == "onHome" and self.onHome and self:onHome() then
+        return true
+    end
     for _, module in ipairs(self.modules) do
         if module:handleEvent(event) then return true end
     end

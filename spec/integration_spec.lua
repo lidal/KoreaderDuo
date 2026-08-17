@@ -220,6 +220,33 @@ T.describe("matching typography", function()
             "the two devices still disagree about how long the book is")
     end)
 
+    T.it("matches a book opened after the link came up", function()
+        --[[
+        The layout settings sent when the link comes up arrive while a
+        slave is still in the file list, with no book to apply them to, and
+        are dropped. If nothing sends them again, the two devices sit at
+        different font sizes until somebody changes one by hand — which is
+        exactly what it looked like on real hardware. A slave asks for its
+        place the moment it finishes opening a book; the answer has to
+        carry the typography as well as the page.
+        ]]
+        connectPair()
+        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 26))")
+        controller:assertEventually(slave, "UI.document.configurable.font_size", 26)
+
+        -- A fresh book on the slave, opened at a size of its own. All one
+        -- snippet: the device only touches its sockets between commands, so
+        -- there is no window for the answer to arrive early and make this
+        -- pass without ever having been mismatched.
+        callSlave("D:openDocument{ page_count = 300 }" ..
+            "; UI.document.configurable.font_size = 30; UI.document:repaginate()")
+
+        controller:assertEventually(slave, "UI.document.configurable.font_size", 26,
+            "a book opened on the slave kept its own font size")
+        T.assertEquals(pageCount(slave), pageCount(master),
+            "the two devices still disagree about how long the book is")
+    end)
+
     T.it("follows a change made on the master", function()
         connectPair()
         callMaster("UI:handleEvent(D.Event:new('SetFontSize', 26))")
@@ -867,6 +894,88 @@ T.describe("two devices, when things go wrong", function()
         T.assertEquals(controller:call(slave,
             "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return true end end return false end)()"),
             "false", "the slave reopened a book it was already reading")
+    end)
+
+    T.it("brings the slave back out to the list when the master leaves the book", function()
+        --[[
+        Going into a book was followed; coming back out was not, which left
+        the master in the file list and the slave still sitting in a book —
+        two devices doing different things, which is the one thing a spread
+        is not. Signalled from the file manager coming up rather than the
+        reader going down: switching straight from one book to another
+        tears a reader down too, and a slave sent home then would close the
+        book it is about to be told to open.
+        ]]
+        connectPair()
+        callSlave("Core.settings.follow_document = true")
+        T.assertEquals(callSlave("UI.document ~= nil"), "true", "the slave should start in a book")
+
+        callMaster("D:openFileManager{ path = '/books' }")
+        controller:assertEventually(slave, "UI.went_home == true", true,
+            "the slave stayed in the book after the master closed its own")
+        callMaster("D:openDocument{ page_count = 300 }")
+    end)
+
+    T.it("opens a book for the pair when the tap lands on the slave", function()
+        --[[
+        A slave may turn pages, so it would be strange if it could not
+        start one. It must not simply open the book by itself, though: the
+        master owns the page number, and a slave that wandered off into a
+        book on its own would leave the two devices reading different
+        things. The tap is forwarded, and the master's answer brings the
+        slave along the same way a tap on the master would.
+        ]]
+        local book = LOG_DIR .. "/duo-slave-opened.epub"
+        local handle = assert(io.open(book, "w"))
+        handle:write("not really an epub")
+        handle:close()
+
+        connectPair()
+        callMaster("Core.settings.follow_document = true")
+        callSlave("Core.settings.follow_document = true")
+        callSlave("D:openFileManager{ path = '/books' }")
+        callMaster("UIManager.shown_log = {}")
+
+        callSlave(("D:openFile(%q)"):format(book))
+        controller:assertEventually(master,
+            ("(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' and m.text == %q then return true end end return false end)()"):format(book),
+            true, "the master never opened the book the slave was tapped on")
+        os.remove(book)
+        callSlave("D:openDocument{ page_count = 300 }")
+    end)
+
+    T.it("locks the other device when either one is locked", function()
+        --[[
+        Two readers held side by side are one thing to their owner. Locking
+        the one in your right hand and finding the left still lit, still
+        burning battery on a page nobody is reading, is not what a spread
+        should mean.
+        ]]
+        connectPair()
+        callSlave("UIManager._suspends = 0")
+        callMaster("D.plugin:onSuspend()")
+        controller:assertEventually(slave, "UIManager._suspends", 1,
+            "the slave stayed awake when the master was locked")
+
+        -- And the other way round, since either device can be the one put
+        -- down first.
+        connectPair()
+        callMaster("UIManager._suspends = 0")
+        callSlave("D.plugin:onSuspend()")
+        controller:assertEventually(master, "UIManager._suspends", 1,
+            "the master stayed awake when the slave was locked")
+    end)
+
+    T.it("does not send a device that is only obeying back to bed", function()
+        -- Both sides suspend each other, so the one following an order must
+        -- not pass it on, or the two would take turns saying goodnight.
+        connectPair()
+        callSlave("UIManager._suspends = 0")
+        callMaster("D.plugin:onSuspend()")
+        controller:assertEventually(slave, "UIManager._suspends", 1)
+        socket.sleep(0.4)
+        T.assertEquals(controller:number(slave, "UIManager._suspends"), 1,
+            "the slave suspended more than once for one lock")
     end)
 
     T.it("keeps the connection across a document switch on the slave", function()

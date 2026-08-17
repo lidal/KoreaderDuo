@@ -72,6 +72,11 @@ function Duo:init()
             -- themselves, and text_func picks up the new state on reopening.
             onChanged = function() end,
             openDocument = function(file, msg) self:openRemoteDocument(file, msg) end,
+            -- `self`, not `Duo`: this one needs the live instance's `ui`,
+            -- and the module table has none.
+            closeDocument = function() self:closeRemoteDocument() end,
+            sleepDevice = function() Duo:sleepForPeer() end,
+            reviveDirectLink = function() Duo:reviveDirectLink() end,
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
             getTempDir = function() return Duo:getTempDir() end,
@@ -510,14 +515,32 @@ function Duo:unwrapFileOpening()
 end
 
 --[[--
-Turns opening a stand-in into fetching the book it stands for.
+Decides what a tap on a book in the list means on this device.
+
+On the master it means what it always did. On a slave there are two other
+possibilities: the file is a stand-in, and the real book has to be fetched
+before there is anything to open; or it is a real book, and the pair should
+open it together rather than this device wandering off into it alone.
 
 @treturn boolean true when Duo took the tap and the file manager should not
 --]]--
 function Duo:fetchBeforeOpening(file)
-    if type(file) ~= "string" or not file:lower():match("%.epub$") then return false end
+    if type(file) ~= "string" then return false end
     if not Core:isConnected() or Core:isMaster() then return false end
-    if not Core:isStub(file) then return false end
+
+    if not file:lower():match("%.epub$") or not Core:isStub(file) then
+        -- A book both devices can open: let the master lead the way in, so
+        -- it stays the one deciding what page everybody is on.
+        local name = select(2, util.splitFilePathName(file))
+        if not Core:requestOpen(file, name) then return false end
+        -- The book opens when the master's answer comes back, a moment
+        -- later. Saying so means the tap is never silent in between.
+        UIManager:show(InfoMessage:new{
+            text = T(_("Opening %1 on both devices…"), name),
+            timeout = 2,
+        })
+        return true
+    end
 
     local name = file:gsub("^.*/", "")
     if not Core:fetchBookFor(file, name) then
@@ -552,7 +575,7 @@ function Duo:openRemoteDocument(file, msg)
             return
         end
         UIManager:show(InfoMessage:new{
-            text = T(_("Duo: the master is reading a book this device does not have:\n%1"),
+            text = T(_("Duo: the other device is reading a book this one does not have:\n%1"),
                      msg and msg.title ~= "" and msg.title or file),
         })
         return
@@ -561,6 +584,53 @@ function Duo:openRemoteDocument(file, msg)
     UIManager:nextTick(function()
         ReaderUI:showReader(target)
     end)
+end
+
+--[[--
+Closes the book, because the other device closed its own.
+
+KOReader's own "back to the file list" is the Home event: the reader tears
+itself down and the file manager comes up in its place, which is exactly
+what the master just did. Doing it on the next tick because this arrives
+from inside the poll loop, and closing the widget that is polling from
+underneath itself does not end well.
+--]]--
+function Duo:closeRemoteDocument()
+    if not self.ui or not self.ui.document then return end
+    UIManager:nextTick(function()
+        local ui = self.ui
+        if ui and ui.document and ui.handleEvent then
+            ui:handleEvent(Event:new("Home"))
+        end
+    end)
+end
+
+--- Locks this device, because the other one is being locked.
+function Duo:sleepForPeer()
+    UIManager:nextTick(function()
+        UIManager:suspend()
+    end)
+end
+
+--[[--
+Rebuilds a Wi-Fi link this device set up itself.
+
+Only for a link Duo made: an ordinary network is the system's business and
+taking it over uninvited would be a rude way to recover from a nap. The
+script checks what the interface is doing before changing anything, so a
+link that survived the sleep costs a status call and nothing more.
+--]]--
+function Duo:reviveDirectLink()
+    local role = Core:get("direct_link")
+    if role ~= "host" and role ~= "join" then return end
+    local DirectLink = require("duo/directlink")
+    local status = DirectLink.run("status") or ""
+    if status:match("type AP") or status:match("type IBSS")
+        or status:match("Mode:Master") or status:match("Mode:Ad%-Hoc") then
+        return  -- still up; the hold-up is somewhere else
+    end
+    logger.dbg("Duo: direct link is gone after the sleep, rebuilding it")
+    if role == "host" then DirectLink.host() else DirectLink.join() end
 end
 
 --- Looks for the same book somewhere else on this device.
@@ -921,6 +991,9 @@ function Duo:runDirectLink(role)
     end
 
     Core:set("transport", Core.TRANSPORT_TCP)
+    -- Remembered so it can be rebuilt after a sleep, which is the one thing
+    -- a link nobody else is maintaining does not survive.
+    Core:set("direct_link", role)
     if role == "host" then
         if Core:start(Core.ROLE_MASTER) then
             self:showPairingSheet{ direct = true, mode = DirectLink.modeOf(output) }
@@ -1107,6 +1180,12 @@ When you connect, the master's settings win. Change anything afterwards, on eith
                 Core:set("share_browser", not Core:get("share_browser"))
                 if Core:get("share_browser") then Core:broadcastBrowser() end
             end,
+        },
+        {
+            text = _("Lock one, lock both"),
+            help_text = _("Putting either device to sleep puts the other one to sleep as well, so the pair does not sit half awake with one screen burning battery on a page nobody is reading."),
+            checked_func = function() return Core:get("sleep_together") end,
+            callback = function() Core:set("sleep_together", not Core:get("sleep_together")) end,
         },
         {
             text = _("Keep the whole library in step"),

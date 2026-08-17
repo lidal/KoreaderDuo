@@ -59,6 +59,21 @@ local RECONNECT_MAX = 15
 local BOOK_SILENCE = 30
 
 --[[--
+Coming back after a sleep, in seconds and attempts.
+
+Waking is gradual: the screen is back long before the radio is, and a
+device that binds a socket the instant it opens its eyes binds nothing.
+Retrying for a couple of minutes covers a Wi-Fi network reassociating, a
+link-local cell re-forming, and a peer that woke up later than this device
+did. Past that the network really is gone and saying so beats retrying into
+a flat battery.
+--]]--
+local RESUME_RETRY = 4
+local RESUME_MAX_ATTEMPTS = 30
+--- Attempts before a link this device built itself is presumed lost.
+local RESUME_REVIVE_AFTER = 3
+
+--[[--
 How long the pair stays up after the last page turn, in seconds.
 
 This is the one number that decides when two readers doze off together, and
@@ -88,6 +103,7 @@ local DEFAULTS = {
     follow_document = true,
     match_typography = true,
     share_browser = true,
+    sleep_together = true,
     sync_books = true,
     sync_library = true,
     covers_first = true,
@@ -381,6 +397,9 @@ function Core:start(role, options)
     self:ensureToken()
     self.last_error = nil
     self.reconnect_delay = RECONNECT_MIN
+    -- Starting is something an awake device does, so whatever this was
+    -- following the other one into is over.
+    self.sleeping_for_peer = false
 
     if self:usesSerial() then
         if role ~= Core.ROLE_MASTER and role ~= Core.ROLE_SLAVE then return false end
@@ -408,7 +427,9 @@ function Core:start(role, options)
         local server, err = TcpTransport.listen(port)
         if not server then
             self.last_error = err
-            self:alert(("Could not listen on port %d.\n%s"):format(port, tostring(err)))
+            if not options.quiet then
+                self:alert(("Could not listen on port %d.\n%s"):format(port, tostring(err)))
+            end
             self:changed()
             return false
         end
@@ -438,14 +459,19 @@ function Core:start(role, options)
         local host = tostring(options.host or self:get("peer_host") or ""):gsub("%s", "")
         local port = options.port or self:get("peer_port")
         if host == "" then
-            self:alert("No master address yet. Search for the master, or type its address.")
+            if not options.quiet then
+                self:alert("No master address yet. Search for the master, or type its address.")
+            end
             return false
         end
         -- Refuse an address we cannot reach *before* saving it, so a typo
         -- does not become a reconnect loop against a host that never existed.
         local resolved = NetUtil.resolve(host)
         if not resolved then
-            self:alert(("No device answers to \"%s\".\n\nCheck the address shown on the master."):format(host))
+            self.last_error = ("no device answers to %s"):format(host)
+            if not options.quiet then
+                self:alert(("No device answers to \"%s\".\n\nCheck the address shown on the master."):format(host))
+            end
             return false
         end
         host = resolved
@@ -490,6 +516,9 @@ function Core:stop(reason)
         self.connector = nil
     end
     self.reconnect_at = nil
+    -- Stopping is a decision, and it outranks a sleep this device has not
+    -- finished waking from.
+    self.paused_role = nil
     self:dropTransfers()
     self.peer_napping = false
     self:setAwake(false)
@@ -592,6 +621,7 @@ end
 --- Drives every socket. Called from KOReader's UI loop, ~20 times a second.
 function Core:poll()
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
+    self:checkResume() -- also while off: this is how a sleep is recovered from
     if self.role == Core.ROLE_OFF then return end
 
     if self.responder then self.responder:poll() end
@@ -877,6 +907,18 @@ function Core:attachBrowser(binding)
     self.warned_listing = false
     self:changed()
     if self:isActive() and self:isMaster() then
+        --[[
+        The file manager appearing on the master is the moment the book was
+        closed, and a better signal than the reader going away: switching
+        straight from one book to another tears a reader down too, and a
+        slave told to go home then would close the book it is about to be
+        told to open.
+        ]]
+        if self:get("follow_document") then
+            for _, link in ipairs(self:getReadyLinks()) do
+                link:send(Protocol.HOME, {})
+            end
+        end
         self:broadcastBrowser()
     end
 end
@@ -1429,7 +1471,20 @@ function Core:handleBookRequest(link, msg)
             path = stub_path
             sending_stub = true
         else
+            --[[
+            Falling back to the whole book is right — a book that arrives
+            slowly beats one that never arrives — but doing it in silence
+            is not. Somebody who asked for covers first asked precisely to
+            avoid sending a library over a link like this, and needs to
+            know they are getting the opposite. Once per run: this is per
+            book, and a shelf of them would be a wall of messages.
+            ]]
             self:log("no stand-in for", path, "-", tostring(stub_err), "- sending the book")
+            if not self.warned_no_stub then
+                self.warned_no_stub = true
+                self:alert(("Duo cannot build cover-only stand-ins on the other device (%s), so whole books are being sent instead. That works, but it is a great deal slower."):format(
+                    tostring(stub_err)))
+            end
         end
     end
 
@@ -1865,6 +1920,17 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.SYNC then
         if not self:isMaster() then return end
         self:sendDocumentTo(link)
+        --[[
+        Typography before the page, and never left out.
+
+        A slave asks for this the moment it finishes opening a book, which
+        is the one time it is certain to need it: the layout settings sent
+        when the link came up arrived while this device was still in the
+        file list with no book to apply them to, and were dropped. Leaving
+        them out here is what let two devices sit at different font sizes
+        until somebody changed one by hand.
+        ]]
+        self:sendTypographyTo(link)
         self:sendStateTo(link)
         self:sendBrowserTo(link)
     elseif msg.type == Protocol.TYPO then
@@ -1894,6 +1960,14 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.DOC then
         if self:isMaster() then return end
         self:handleRemoteDocument(msg)
+    elseif msg.type == Protocol.HOME then
+        if self:isMaster() then return end
+        self:handleRemoteHome()
+    elseif msg.type == Protocol.OPEN then
+        if not self:isMaster() then return end
+        self:handleRemoteOpen(msg)
+    elseif msg.type == Protocol.SLEEP then
+        self:handleRemoteSleep()
     elseif msg.type == Protocol.NOTE then
         self:notify(msg.text or "")
     end
@@ -1923,6 +1997,87 @@ function Core:handleRemoteDocument(msg)
     self.opening_since = Util.now()
     self:notify(("Duo: opening %s"):format(msg.title ~= "" and msg.title or file))
     self.hooks.openDocument(file, msg)
+end
+
+--[[--
+Follows the master out of a book and back to the list.
+
+The spread is a pair of screens showing one thing, and that has to hold for
+the book list as much as for the book: a master that has closed its book
+and a slave still sitting in one is not a spread, it is two devices doing
+different things. Going in was already followed; this is coming back out.
+--]]--
+function Core:handleRemoteHome()
+    if not self:get("follow_document") then return end
+    if not self.reader then return end        -- already out of the book
+    if not self.hooks or not self.hooks.closeDocument then return end
+    self.opening_file = nil
+    self:notify("Duo: back to the book list")
+    self.hooks.closeDocument()
+end
+
+--[[--
+Opens, for the whole pair, a book the user tapped on a slave.
+
+The slave may turn pages, so it would be strange if it could not start one.
+It cannot simply open the book itself, though: the master owns the page
+number, and a slave that went off and opened something on its own would
+leave the two devices in different books. So the tap is forwarded, the
+master opens it, and the master's own DOC brings the slave along — the same
+path as if the master had been tapped.
+--]]--
+function Core:requestOpen(file, title)
+    if not self:isActive() or self:isMaster() then return false end
+    if not self:get("follow_document") then return false end
+    if not self:get("slave_can_turn") then return false end
+    local link = self:getReadyLinks()[1]
+    if not link then return false end
+    link:send(Protocol.OPEN, { file = file, title = title or "" })
+    self:log("asked the master to open", file)
+    return true
+end
+
+function Core:handleRemoteOpen(msg)
+    if not self:get("slave_can_turn") then return end
+    local file = msg.file
+    if not file or file == "" then return end
+    -- Already reading it: the slave is only catching up, so say so rather
+    -- than reopening the book underneath the person holding it.
+    local document = self.reader and self.reader.getDocument() or nil
+    if document and document.file == file then
+        self:broadcastDocument()
+        self:broadcastState()
+        return
+    end
+    if not self.hooks or not self.hooks.openDocument then return end
+    self:notify(("Duo: opening %s"):format(msg.title ~= "" and msg.title or file))
+    self.hooks.openDocument(file, msg)
+end
+
+--[[--
+Puts this device to sleep because the other one is going.
+
+Two readers held side by side are one thing to their owner: locking the one
+in your right hand and finding the left still lit, still burning battery
+and still holding a page nobody is reading, is not what "a spread" should
+mean. Whichever device is locked, both go.
+--]]--
+function Core:announceSleep()
+    if not self:isActive() then return end
+    for _, link in ipairs(self:getReadyLinks()) do
+        link:send(Protocol.SLEEP, {})
+    end
+end
+
+function Core:handleRemoteSleep()
+    if not self:get("sleep_together") then return end
+    if self.sleeping_for_peer then return end
+    if not self.hooks or not self.hooks.sleepDevice then return end
+    -- Marked before asking, so that suspending does not bounce a SLEEP
+    -- straight back at the device that sent one.
+    self.sleeping_for_peer = true
+    self:log("following the other device to sleep")
+    pcall(self.hooks.sleepDevice)
 end
 
 --[[--
@@ -2070,18 +2225,94 @@ end
 function Core:suspend()
     if not self:isActive() then return end
     local role = self.role
+    -- Before the sockets go: the other device should be locking too, and
+    -- there is no way to tell it once the link is gone. Not when this
+    -- device is only doing as it was told, or the two would take turns
+    -- waking each other to say goodnight.
+    if self:get("sleep_together") and not self.sleeping_for_peer then
+        self:announceSleep()
+    end
     self:stop("the other device went to sleep")
     self.paused_role = role
     self.settings.autostart_role = role
     self:save()
 end
 
---- Called on wake-up, and whenever the network comes back.
+--[[--
+Called on wake-up, and whenever the network comes back.
+
+Waking up is not the same as being ready. A device that has been asleep for
+a while comes back with its Wi-Fi still down: the interface has no address,
+a link-local cell has not re-formed, and binding a socket to any of that
+fails. This used to be a single attempt whose failure was permanent — the
+role was cleared, the master's listen failed, an alert went up and nothing
+ever tried again, which is why a long sleep needed a disconnect and
+reconnect by hand while a short one did not.
+
+So the role is kept until a start actually succeeds, and the attempt is
+repeated from the poll loop. Quietly: this is the expected state of things
+for the first few seconds after waking, not something to interrupt reading
+with.
+--]]--
 function Core:resume()
+    self.sleeping_for_peer = false
+    if not self.paused_role then return end
+    self.resume_attempts = 0
+    self.resume_at = 0      -- try immediately; the poll loop takes it from there
+    self:checkResume()
+end
+
+--[[--
+Keeps trying to come back up after a sleep.
+
+Runs while Duo is off, which is the whole point: nothing else in the poll
+loop does.
+--]]--
+function Core:checkResume()
     local role = self.paused_role
     if not role then return end
+    if self.role ~= Core.ROLE_OFF then
+        -- Started some other way in the meantime; nothing left to resume.
+        self.paused_role = nil
+        return
+    end
+    local now = Util.now()
+    if self.resume_at and now < self.resume_at then return end
+
+    self.resume_attempts = (self.resume_attempts or 0) + 1
+    -- Cleared before trying rather than after: start() stops first, and
+    -- stopping cancels a pending resume. Put back when the attempt fails.
     self.paused_role = nil
-    self:start(role)
+    if self:start(role, { quiet = true }) then
+        self:log("came back after", self.resume_attempts, "attempt(s)")
+        return
+    end
+    self.paused_role = role
+
+    --[[
+    A link this device brought up itself does not survive a deep sleep:
+    the Kindle's own Wi-Fi daemon takes the interface back and puts it in
+    managed mode, so there is no network to bind to and there never will
+    be until somebody rebuilds it. Left to itself that looks exactly like
+    a peer that is still asleep, and waits for ever.
+
+    Not on the first failure, though — the ordinary case is a radio that
+    is a second or two behind the rest of the device, and rebuilding the
+    link would be a heavy answer to a problem that fixes itself.
+    ]]
+    if self.resume_attempts == RESUME_REVIVE_AFTER
+        and self.hooks and self.hooks.reviveDirectLink then
+        self:log("still no network; rebuilding the direct link")
+        pcall(self.hooks.reviveDirectLink)
+    end
+
+    if self.resume_attempts >= RESUME_MAX_ATTEMPTS then
+        self.paused_role = nil
+        self:alert(("Duo could not start again after waking up.\n\n%s\n\nConnect the two devices again when the network is back."):format(
+            tostring(self.last_error or "the network did not come back")))
+        return
+    end
+    self.resume_at = now + RESUME_RETRY
 end
 
 --- Object handed to UIManager so the sockets get polled by the UI loop.

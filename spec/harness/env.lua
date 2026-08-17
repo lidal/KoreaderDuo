@@ -148,6 +148,20 @@ local function makeUIManager(clock)
     end
 
     function UIManager:forceRePaint() end
+
+    --[[--
+    Locking the device, the way the power button does.
+
+    Recorded rather than simulated: what a test needs to know is whether
+    Duo asked for it, and — because both devices suspend each other — that
+    asking does not become an argument neither side can end.
+    ]]
+    UIManager._suspends = 0
+
+    function UIManager:suspend()
+        self._suspends = self._suspends + 1
+        table.insert(self.shown_log, { class = "Suspend", text = "" })
+    end
     function UIManager:broadcastEvent() end
     function UIManager:setDirty() end
 

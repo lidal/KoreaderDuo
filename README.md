@@ -52,7 +52,10 @@ On the other device:
 3. Pick the master, and type the pairing code if asked.
 
 That is it. Open a book on the master and the slave follows: same book, next
-page, and one tap moves the pair.
+page, and one tap moves the pair. Closing it takes both back to the book
+list, and a book tapped on the *slave* opens on both — the tap is handed to
+the master, which leads the way in, so the two never end up in different
+books.
 
 If the search finds nothing (some networks block broadcasts), choose **Type
 the address by hand** and enter the address shown on the master.
@@ -504,7 +507,15 @@ devices agree about it regardless, and Duo does not touch its settings.
 - **Keep Wi-Fi on.** If KOReader is set to drop Wi-Fi after a while, the
   link goes with it. Duo reconnects by itself, but the gap is visible.
 - **Sleep.** Duo shuts its sockets down cleanly on suspend and brings them
-  back on resume, rather than leaving the other device timing out.
+  back on resume, rather than leaving the other device timing out. Coming
+  back is a retry rather than a single attempt: a device wakes well before
+  its radio does, and a master that binds a socket the instant it opens its
+  eyes binds nothing. It keeps trying for about two minutes, quietly, and
+  only says something if the network really has not come back.
+- **Locking one locks both.** Whichever device is put down, the other goes
+  with it — two readers held side by side are one thing to their owner, and
+  leaving the second lit on a page nobody is reading is not what a spread
+  should mean. Under **Lock one, lock both**, and on by default.
 - **Kindle firewall.** Kindles drop incoming connections by default; the
   master opens the port with `iptables` while it runs and closes it again
   when it stops.
@@ -532,17 +543,17 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-220 tests, no mocking of the interesting parts:
+230 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 30 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
-| `integration_spec` | 51 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `plugin_spec` | 34 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding |
+| `integration_spec` | 56 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
-| `library_spec` | 10 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
+| `library_spec` | 12 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel, and no complaint about a mismatch it is busy repairing |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it — plain browser, cover-browser list, cover-browser grid — and refusing a folder the device does not have |
 | `booktransfer_spec` | 16 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |

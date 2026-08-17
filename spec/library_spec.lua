@@ -193,6 +193,27 @@ T.describe("keeping the whole library in step", function()
         callSlave("Core.isStub = nil")
     end)
 
+    T.it("says so when it cannot build the cover-only stand-ins that were asked for", function()
+        --[[
+        Covers-first exists so a shelf of books does not have to cross a
+        slow link. When the stand-in cannot be built — no archive library
+        in this build, a book that is not an EPUB — the whole book is sent
+        instead, which is the right fallback and the opposite of what was
+        asked for. Doing that in silence looked exactly like covers simply
+        not working.
+        ]]
+        browseTogether()
+        callMaster("Core.warned_no_stub = nil")
+        callMaster("UIManager.shown_log = {}")
+        callSlave("Core.settings.covers_first = true")
+        callSlave("Core:getReadyLinks()[1]:send(Protocol.BOOK_REQ," ..
+            " { file = 'book06.epub', digest = '', lib = 1, stub = 1 })")
+
+        controller:assertEventually(master,
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('cover%-only stand%-ins') then return true end end return false end)()",
+            true, "the fallback to whole books happened without a word")
+    end)
+
     T.it("will not hand over anything outside the shared folder", function()
         callSlave("UIManager.shown_log = {}")
         -- A traversal, and a name that is simply not in the folder.
