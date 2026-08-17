@@ -662,7 +662,7 @@ end
 function Duo:showConnectDialog()
     local dialog
     dialog = ButtonDialog:new{
-        title = _("Duo — two devices, one book\n\nStart one device as the master, then connect the other one to it."),
+        title = _("Duo — two devices, one book\n\nStart one as the master, then connect the other to it."),
         buttons = {
             {{
                 text = _("This is the master (left page)"),
@@ -729,14 +729,14 @@ function Duo:showPairingSheet(options)
     if options.direct then
         local DirectLink = require("duo/directlink")
         local report = options.report or DirectLink.probe() or {}
-        local others = _([[On anything else: join this Wi-Fi network first, then tap "Connect to a master".]])
+        local others = _([[Anything else: join this Wi-Fi network, then tap "Connect to a master".]])
         if options.mode == "ibss" then
-            others = _([[This link is an ad-hoc cell, not an access point. Another reader joins it as above, but most phones and laptops will not list it when they scan, and some cannot join one even when told the name.]])
+            others = _([[This is an ad-hoc cell, not an access point. Another reader still joins it as above, but most phones and laptops will not list it at all.]])
         end
         text = T(_([[
 Duo master is running, on a link this device is hosting.
 
-On another reader: open Duo, tap "No Wi-Fi network? Link the two directly…", then "Join the link". It needs nothing typed.
+Another reader: open Duo, tap "No Wi-Fi network? Link the two directly…", then "Join the link". Nothing to type.
 
 %1
 
@@ -750,7 +750,7 @@ Code:       %6]]),
         text = T(_([[
 Duo master is running.
 
-On the other device, open Duo and tap "Connect to a master". It should find this device by itself.
+On the other device, open Duo and tap "Connect to a master". It should find this one by itself.
 
 Name:    %1
 Address: %2:%3
@@ -817,7 +817,7 @@ function Duo:showSearchResults(results)
     self.search_dialog = ButtonDialog:new{
         title = #results > 0
             and _("Found these devices:")
-            or _("No master answered.\n\nMake sure Duo is running as master on the other device and that both are on the same Wi-Fi network."),
+            or _("No master answered.\n\nCheck that Duo is running as master on the other device, and that both are on the same network."),
         buttons = buttons,
     }
     UIManager:show(self.search_dialog)
@@ -916,7 +916,7 @@ This device cannot make a Wi-Fi link of its own.
 
 %1
 
-Any network will do instead: a home router, or a phone hotspot with no internet on it. Duo works the same over either.]]),
+Any network will do instead — a home router, or a phone hotspot with no internet on it.]]),
                 DirectLink.describe(report)),
         })
         return
@@ -927,11 +927,11 @@ Any network will do instead: a home router, or a phone hotspot with no internet 
         title = T(_([[
 Link the two devices directly, with no router.
 
-One device hosts the link and the other joins it. Do this on both, then they find each other by themselves.
+One hosts, the other joins. Do this on both and they find each other.
 
 %1
 
-This takes over Wi-Fi while it runs. "Restore normal Wi-Fi" or a reboot puts it back.]]),
+Takes over Wi-Fi while it runs; "Restore normal Wi-Fi" or a reboot puts it back.]]),
             DirectLink.describe(report)),
         buttons = {
             {{
@@ -1062,7 +1062,7 @@ function Duo:getMenuTable()
             sub_item_table = {
                 {
                     text = _("Two-page spread"),
-                    help_text = _("The master shows one page, the other device shows the next one. A page turn moves the pair forward by two."),
+                    help_text = _("Master shows page N, the other shows N+1. A turn moves the pair by two."),
                     checked_func = function() return Core:get("mode") == Spread.SPREAD end,
                     callback = function()
                         Core:set("mode", Spread.SPREAD)
@@ -1095,19 +1095,19 @@ function Duo:getMenuTable()
             sub_item_table = {
                 {
                     text = _("Wi-Fi (or any network link)"),
-                    help_text = _("Talk over TCP/IP. This also covers a Bluetooth PAN connection, which looks like an ordinary network to KOReader."),
+                    help_text = _("Talk over TCP/IP. Bluetooth PAN counts: KOReader sees an ordinary network."),
                     checked_func = function() return not Core:usesSerial() end,
                     callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
                 },
                 {
                     text = _("Set up a direct link (no router)…"),
-                    help_text = _("Make a Wi-Fi link between the two devices themselves, for reading somewhere with no network."),
+                    help_text = _("A Wi-Fi link between the two devices alone, for reading where there is no network."),
                     keep_menu_open = true,
                     callback = function() self:showDirectLinkDialog() end,
                 },
                 {
                     text = _("Serial line (RFCOMM or UART)"),
-                    help_text = _("Talk over a character device instead of a network: a bound RFCOMM channel, or a real serial line between the two devices. Set it up outside KOReader first — for Bluetooth, 'rfcomm bind /dev/rfcomm0 <address> 1'; for a wire, whatever the port is called, with nothing else using it."),
+                    help_text = _("Talk over a character device rather than a network: a bound RFCOMM channel or a serial line. Set it up outside KOReader first — for Bluetooth, 'rfcomm bind /dev/rfcomm0 <address> 1'; for a wire, the port's name, with nothing else using it."),
                     checked_func = function() return Core:usesSerial() end,
                     callback = function() self:setTransport(Core.TRANSPORT_SERIAL) end,
                     separator = true,
@@ -1125,11 +1125,11 @@ function Duo:getMenuTable()
         },
         {
             text = _("Match typography"),
-            help_text = _([[Keep both devices laying the book out the same way, so the pages line up.
+            help_text = _([[Keep both devices laying the book out alike, so the pages line up.
 
-Font, size, weight, line spacing, margins, columns and zoom are matched; brightness, rotation and night mode are left alone.
+Font, size, weight, spacing, margins, columns and zoom are matched; brightness, rotation and night mode are not.
 
-When you connect, the master's settings win. Change anything afterwards, on either device, and the others follow.]]),
+On connecting, the master's settings win. After that a change on either device moves the rest.]]),
             checked_func = function() return Core:get("match_typography") end,
             callback = function()
                 Core:set("match_typography", not Core:get("match_typography"))
@@ -1174,7 +1174,7 @@ When you connect, the master's settings win. Change anything afterwards, on eith
         },
         {
             text = _("Share the book list too"),
-            help_text = _("Spread the file browser across the devices as well: the first screenful of books here, the next one there. Both devices need the same books in the same folder for the halves to line up."),
+            help_text = _("Spread the file browser too: the first screenful of books here, the next one there. The halves only line up if both devices hold the same books."),
             checked_func = function() return Core:get("share_browser") end,
             callback = function()
                 Core:set("share_browser", not Core:get("share_browser"))
@@ -1183,13 +1183,13 @@ When you connect, the master's settings win. Change anything afterwards, on eith
         },
         {
             text = _("Lock one, lock both"),
-            help_text = _("Putting either device to sleep puts the other one to sleep as well, so the pair does not sit half awake with one screen burning battery on a page nobody is reading."),
+            help_text = _("Sleeping either device sleeps the other, rather than leaving one lit on a page nobody is reading."),
             checked_func = function() return Core:get("sleep_together") end,
             callback = function() Core:set("sleep_together", not Core:get("sleep_together")) end,
         },
         {
             text = _("Keep the whole library in step"),
-            help_text = _("When the shared folder does not hold the same books on both devices, fetch the missing ones. This is what makes a shared book list line up."),
+            help_text = _("Fetch whatever books the shared folder is missing here. This is what makes a shared book list line up."),
             checked_func = function() return Core:get("sync_library") end,
             callback = function() Core:set("sync_library", not Core:get("sync_library")) end,
         },
@@ -1199,7 +1199,7 @@ When you connect, the master's settings win. Change anything afterwards, on eith
                 if limit == 0 then return _("Most to copy in one go: no limit") end
                 return T(_("Most to copy in one go: %1 MB"), limit)
             end,
-            help_text = _("A guard against copying the wrong folder. The shared folder is whichever one the master is looking at, so a wrong turn is easy to make, and a device pulling gigabytes over a link with no router on it is slow and expensive. Only books are ever copied, whatever else the folder holds."),
+            help_text = _("A guard against copying the wrong folder, since the shared one is simply whichever the master is looking at. Only books are copied in any case, whatever else is in there."),
             keep_menu_open = true,
             callback = function()
                 local steps = { 128, 512, 2048, 0 }
@@ -1214,7 +1214,7 @@ When you connect, the master's settings win. Change anything afterwards, on eith
         },
         {
             text = _("Covers now, books when you open them"),
-            help_text = _("Fill the shelf with stand-ins that carry the cover and the title, and fetch the book itself the first time you open it. Much less to copy, and the two halves of the list line up straight away. EPUB only — anything else is copied whole."),
+            help_text = _("Fill the shelf with stand-ins carrying the cover and title, and fetch each book when you first open it. Far less to copy, and the list lines up at once. EPUB only; anything else is copied whole."),
             enabled_func = function() return Core:get("sync_library") end,
             checked_func = function() return Core:get("covers_first") end,
             callback = function() Core:set("covers_first", not Core:get("covers_first")) end,
@@ -1224,7 +1224,7 @@ When you connect, the master's settings win. Change anything afterwards, on eith
                 if Core:isSyncingLibrary() then return _("Stop fetching books") end
                 return _("Fetch any missing books now")
             end,
-            help_text = _("Compare this folder with the master's and pull over whatever is missing here. The master is the one holding the books, so this is for the other device to do."),
+            help_text = _("Compare this folder with the master's and pull over what is missing. Only the other device has anything to fetch."),
             -- The master is where the books come from; it has nothing to fetch.
             enabled_func = function() return Core:isConnected() and not Core:isMaster() end,
             keep_menu_open = true,
@@ -1244,7 +1244,7 @@ When you connect, the master's settings win. Change anything afterwards, on eith
         },
         {
             text = _("Send the book if the other device lacks it"),
-            help_text = _("When the master opens a book this device does not have, fetch it over the same link. Only the book the master actually has open can be sent."),
+            help_text = _("When the master opens a book this device lacks, fetch it over the same link. Only the book it actually has open can be sent."),
             checked_func = function() return Core:get("sync_books") end,
             callback = function() Core:set("sync_books", not Core:get("sync_books")) end,
         },
@@ -1311,7 +1311,7 @@ function Duo:setTransport(transport)
     Core:set("transport", transport)
     if transport == Core.TRANSPORT_SERIAL and not require("duo/transport_serial").isAvailable() then
         UIManager:show(InfoMessage:new{
-            text = _("This build of KOReader cannot open a serial device, so Duo will keep using the network."),
+            text = _("This build of KOReader cannot open a serial device, so Duo will stay on the network."),
         })
         Core:set("transport", Core.TRANSPORT_TCP)
         return
@@ -1326,7 +1326,7 @@ function Duo:showSerialDeviceDialog()
     local dialog
     dialog = InputDialog:new{
         title = _("Serial device"),
-        description = _("The device file for the Bluetooth channel. Both devices must be bound to each other before Duo can use it."),
+        description = _("The device file for the Bluetooth channel. Bind the two to each other first."),
         input = Core:get("serial_device"),
         input_hint = "/dev/rfcomm0",
         buttons = {{
@@ -1418,7 +1418,7 @@ function Duo:showPortDialog()
     local dialog
     dialog = InputDialog:new{
         title = _("Port"),
-        description = _("Both devices must use the same port. Change this only if something else is already using it."),
+        description = _("Both devices must use the same port. Change it only if something else has it."),
         input = tostring(Core:get("port")),
         input_type = "number",
         buttons = {{

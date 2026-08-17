@@ -820,7 +820,7 @@ T.describe("two devices, when things go wrong", function()
         controller:assertEventually(slave, WARNED, true,
             "no warning when the pages genuinely cannot line up", 20)
         T.assertEquals(callSlave(
-            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('between the screens') then return true end end return false end)()"),
+            "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('the screens themselves') then return true end end return false end)()"),
             "true", "the warning should name the real cause")
         callSlave("UI.document:repaginate()")
     end)

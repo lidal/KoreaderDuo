@@ -461,7 +461,7 @@ function Core:start(role, options)
         local port = options.port or self:get("peer_port")
         if host == "" then
             if not options.quiet then
-                self:alert("No master address yet. Search for the master, or type its address.")
+                self:alert("No master address yet. Search for one, or type its address.")
             end
             return false
         end
@@ -1039,14 +1039,14 @@ function Core:checkListing(msg)
     local their_signature = msg.sig
     if their_count and their_count ~= state.count then
         self.warned_listing = true
-        self:alert(("This folder holds %d items here and %d on the other device, so the two halves of the list will not line up.\n\nThe same books have to be on both."):format(
+        self:alert(("This folder holds %d items here and %d on the other device, so the halves will not line up.\n\nThe same books have to be on both."):format(
             state.count, their_count))
         return
     end
     if their_signature and their_signature ~= "" and state.signature
             and their_signature ~= state.signature then
         self.warned_listing = true
-        self:alert("Both devices show the same number of books but not the same ones, so the two halves of the list will not line up.")
+        self:alert("Both devices show the same number of books, but not the same ones, so the halves will not line up.")
         return
     end
     -- The same books, but cut into different sized screenfuls. Duo evens
@@ -1057,7 +1057,7 @@ function Core:checkListing(msg)
     if their_perpage and their_perpage > 0 and (state.perpage or 0) > 0
             and their_perpage ~= state.perpage then
         self.warned_listing = true
-        self:alert(("This device fits %d books on a screen and the other one %d, so the two halves of the list will not line up.\n\nThe two are showing the list differently. Putting both on the same display mode lets Duo even them up by itself."):format(
+        self:alert(("This device fits %d books on a screen and the other %d, so the halves will not line up.\n\nThey are drawing the list differently. Put both on the same display mode and Duo can even them up itself."):format(
             state.perpage, their_perpage))
     end
 end
@@ -1276,7 +1276,7 @@ function Core:handleLibraryEnd(msg)
     if ceiling > 0 and bytes > ceiling then
         self.library = nil
         self:changed()
-        self:alert(("That folder holds %d book%s this device does not have — %.0f MB, over Duo's %d MB limit for one sync.\n\nIf that really is the shelf you meant, raise the limit under Duo; otherwise open the folder you want copied and try again."):format(
+        self:alert(("That folder holds %d book%s this device lacks — %.0f MB, over Duo's %d MB limit for one sync.\n\nRaise the limit if that really is the shelf you meant; otherwise open the folder you want copied."):format(
             #wanted, #wanted == 1 and "" or "s", bytes / 1048576, self:get("max_library_mb")))
         return
     end
@@ -1522,7 +1522,7 @@ function Core:handleBookRequest(link, msg)
             self:log("no stand-in for", path, "-", tostring(stub_err), "- sending the book")
             if not self.warned_no_stub then
                 self.warned_no_stub = true
-                self:alert(("Duo cannot build cover-only stand-ins on the other device (%s), so whole books are being sent instead. That works, but it is a great deal slower."):format(
+                self:alert(("The other device cannot build cover-only stand-ins (%s), so whole books are being sent instead. That works, but it is much slower."):format(
                     tostring(stub_err)))
             end
         end
@@ -1867,7 +1867,7 @@ function Core:applyTypography(msg, from_link)
         end
     end
     if applied and applied.missing_font then
-        self:alert(("The other device is using a typeface this one does not have (%s), so the pages will not line up.\n\nInstall it here, or pick a font both devices have."):format(
+        self:alert(("The other device uses a typeface this one does not have (%s), so the pages will not line up.\n\nInstall it here, or pick a font both have."):format(
             tostring(applied.missing_font)))
     end
 
@@ -2191,11 +2191,11 @@ function Core:checkPagination(master_pages, master_typo)
             return
         end
         self.warned_pagination = true
-        self:alert(("Both devices are laying this book out with the same settings, but it still comes to %d pages here and %d on the master.\n\nThat is usually a difference between the screens themselves, which cannot be matched. The two halves of the spread will drift apart."):format(
+        self:alert(("Both devices lay this book out with the same settings, yet it comes to %d pages here and %d on the master.\n\nThat is usually the screens themselves, which cannot be matched, so the spread will drift apart."):format(
             own_pages, master_pages))
     else
         self.warned_pagination = true
-        self:alert(("This device paginates the book differently (%d pages here, %d on the master), so the spread will not line up.\n\nTurn on \"Match typography\", or set the same font, size, line spacing and margins on both devices."):format(
+        self:alert(("This device paginates the book differently (%d pages here, %d on the master), so the spread will not line up.\n\nTurn on \"Match typography\", or set the same font, size, spacing and margins on both."):format(
             own_pages, master_pages))
     end
 end
@@ -2348,7 +2348,7 @@ function Core:checkResume()
 
     if self.resume_attempts >= RESUME_MAX_ATTEMPTS then
         self.paused_role = nil
-        self:alert(("Duo could not start again after waking up.\n\n%s\n\nConnect the two devices again when the network is back."):format(
+        self:alert(("Duo could not start again after waking up.\n\n%s\n\nReconnect the two devices when the network is back."):format(
             tostring(self.last_error or "the network did not come back")))
         return
     end

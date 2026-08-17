@@ -489,9 +489,9 @@ T.describe("pairing dialogs", function()
         }
         local shown = table.concat(device:drainMessages(), "\n")
         T.assertMatch(shown, "ad%-hoc cell")
-        T.assertMatch(shown, "will not list it when they scan")
+        T.assertMatch(shown, "will not list it at all")
         T.assertMatch(shown, "Join the link", "another reader can still join it")
-        T.assertTrue(not shown:find("join this Wi%-Fi network first"),
+        T.assertTrue(not shown:find("join this Wi%-Fi network"),
             "nobody should be sent looking for a network their device will not show")
     end)
 
