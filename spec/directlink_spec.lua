@@ -90,12 +90,22 @@ Wiphy phy0
 EOF
 ]]
 
---- A fake `iw` whose interface reports the given mode once asked.
-local function iwThatSettlesOn(mode)
+--[[--
+A fake `iw` whose interface reports the given mode once asked.
+
+`info` carries an `ssid` line as the real one does when a cell has been
+joined, because that is the only thing telling a joined cell from an
+interface merely switched to ad-hoc — `set type ibss` reports `type IBSS`
+straight away, join or no join. Pass `joined = false` for the case that
+distinction exists for.
+--]]--
+local function iwThatSettlesOn(mode, joined)
+    local ssid = ""
+    if joined ~= false then ssid = "\n\tssid KOReaderDuo" end
     return ([[
-if [ "$1" = "dev" ] && [ "$3" = "info" ]; then printf '\ttype %s\n' "%s"; exit 0; fi
+if [ "$1" = "dev" ] && [ "$3" = "info" ]; then printf '\ttype %s%s\n' "%s" "%s"; exit 0; fi
 if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
-]]):format("%s", mode) .. IW_LIST_AP
+]]):format("%s", "%s", mode, ssid) .. IW_LIST_AP
 end
 
 T.describe("probing what a device can do", function()
@@ -245,6 +255,45 @@ T.describe("bringing the link up", function()
         T.assertMatch(output, "killall wpa_supplicant")
     end)
 
+    T.it("puts the interface back to managed, not just down", function()
+        --[[
+        The reason handing control back meant a reboot, or toggling
+        airplane mode by hand and restarting the reader. An interface left
+        in ad-hoc is one the system's Wi-Fi daemon cannot use, and it never
+        says so — it simply never connects.
+        ]]
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0", ["lipc-set-prop"] = "exit 0",
+        }
+        local output = runScript(environment, "restore --dry-run")
+        T.assertMatch(output, "ibss leave", "leave the cell before changing the mode")
+        T.assertMatch(output, "set type managed")
+        T.assertMatch(output, "link set wlan0 down", "nl80211 wants it down to change type")
+        T.assertMatch(output, "link set wlan0 up")
+    end)
+
+    T.it("flicks the device's own Wi-Fi switch, both properties and both ways", function()
+        -- The airplane-mode toggle, done for you. Two properties, not one,
+        -- and in KOReader's own order.
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0", ["lipc-set-prop"] = "exit 0",
+        }
+        local output = runScript(environment, "restore --dry-run")
+        T.assertMatch(output, "com%.lab126%.wifid enable 0")
+        T.assertMatch(output, "com%.lab126%.cmd wirelessEnable 0")
+        T.assertMatch(output, "com%.lab126%.wifid enable 1")
+        T.assertMatch(output, "com%.lab126%.cmd wirelessEnable 1")
+        T.assertTrue(output:find("wifid enable 0") < output:find("wifid enable 1"),
+            "off before on, or the toggle is not a toggle")
+    end)
+
+    T.it("says nothing about lipc on a device that has none", function()
+        local environment = fakeEnvironment{ iw = iwThatSettlesOn("IBSS"), ip = "exit 0" }
+        local output = runScript(environment, "restore --dry-run")
+        T.assertTrue(not output:find("lipc"), "a desktop has no Kindle switch to flick")
+        T.assertMatch(output, "set type managed", "but the interface still has to go back")
+    end)
+
     T.it("hands Wi-Fi back on restore", function()
         local environment = fakeEnvironment{
             iw = IW_LIST_AP, ip = "exit 0", iwconfig = "exit 0",
@@ -252,8 +301,19 @@ T.describe("bringing the link up", function()
         }
         local output = runScript(environment, "restore --dry-run")
         T.assertMatch(output, "killall wpa_supplicant")
-        T.assertMatch(output, "iwconfig wlan0 mode managed")
+        T.assertMatch(output, "iw dev wlan0 set type managed",
+            "iw is the right tool for the job where it exists")
         T.assertMatch(output, "start wifid")
+    end)
+
+    T.it("falls back to iwconfig on a device with no iw", function()
+        -- The WEXT world. `ip` comes from the test machine's own PATH here,
+        -- so only the wireless half of the fallback is what this checks.
+        local environment = fakeEnvironment{ iwconfig = "exit 0" }
+        local output = runScript(environment, "restore --dry-run")
+        T.assertMatch(output, "iwconfig wlan0 mode managed")
+        T.assertTrue(not output:find("set type managed"),
+            "there is no iw on this device to use")
     end)
 
     T.it("changes nothing at all in a dry run", function()
@@ -304,7 +364,7 @@ T.describe("checking the link actually came up", function()
         -- not care which of the two they got.
         local iw = [[
 if [ "$1" = "dev" ] && [ "$3" = "info" ]; then
-    if [ -f "$DUO_RUN_DIR/became-ibss" ]; then printf '\ttype IBSS\n'; else printf '\ttype managed\n'; fi
+    if [ -f "$DUO_RUN_DIR/became-ibss" ]; then printf '\ttype IBSS\n\tssid KOReaderDuo\n'; else printf '\ttype managed\n'; fi
     exit 0
 fi
 if [ "$1" = "dev" ] && [ "$2" = "wlan0" ] && [ "$3" = "set" ]; then

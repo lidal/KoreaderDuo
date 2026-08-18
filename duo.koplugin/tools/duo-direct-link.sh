@@ -308,17 +308,50 @@ bring_up_ibss_wext() {
     sleep_a_moment
 }
 
+#[[
+# Whether the interface has actually joined the cell, rather than merely
+# being willing to.
+#
+# Worth the separate check, and the reason a release once went out that
+# could not connect at all: `iw dev X set type ibss` makes the interface
+# report `type IBSS` immediately, before any join and whether or not one
+# ever succeeds. Anything reading the type therefore reads success the
+# moment the mode is set, and a join that failed looks exactly like one
+# that worked. The cell's name is the thing that only appears once there
+# really is a cell.
+#]]
+cell_joined() {
+    iface="$1"
+    if has iw; then
+        iw dev "$iface" link 2>/dev/null | grep -qi "SSID: *$SSID" && return 0
+        iw dev "$iface" info 2>/dev/null | grep -qi "ssid $SSID" && return 0
+    fi
+    if has iwconfig; then
+        iwconfig "$iface" 2>/dev/null | grep -q "ESSID:\"$SSID\"" && return 0
+    fi
+    return 1
+}
+
 bring_up_ibss_iw() {
     iface="$1"
     run_sh "ip link set $iface down 2>/dev/null || true"
     run iw dev "$iface" set type ibss
     run_sh "ip link set $iface up 2>/dev/null || true"
     sleep_a_moment
+    #[[
+    # Naming the cell keeps two readers rebuilding at the same moment out
+    # of two cells with the same name. Not every `iw` accepts a fixed
+    # BSSID, though, and one that does not simply refuses the join — so
+    # the plain form is tried after it, judged on whether a cell appeared
+    # rather than on what the interface calls itself.
+    #]]
     run_sh "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID 2>/dev/null || true"
-    # An `iw` too old for a fixed BSSID leaves the interface short of IBSS,
-    # so the plain form is worth one more try before giving up on it.
-    if [ "$DRY_RUN" != "1" ] && ! mode_reached "$iface" ibss; then
+    [ "$DRY_RUN" = "1" ] && return 0
+    sleep_a_moment
+    if ! cell_joined "$iface"; then
+        log "no cell with a fixed address; joining the ordinary way"
         run_sh "iw dev $iface ibss join $SSID $FREQUENCY 2>/dev/null || true"
+        sleep_a_moment
     fi
 }
 
@@ -342,7 +375,12 @@ mode_reached() {
     mode=$(current_mode "$iface")
     case "$want" in
         ap)   case "$mode" in AP|Master) return 0 ;; esac ;;
-        ibss) case "$mode" in IBSS|Ad-Hoc) return 0 ;; esac ;;
+        ibss)
+            # Both halves: the mode, and a cell actually joined in it.
+            case "$mode" in
+                IBSS|Ad-Hoc) cell_joined "$iface" && return 0 ;;
+            esac
+            ;;
         client)
             if has iw; then
                 iw dev "$iface" link 2>/dev/null | grep -qi "Connected to" && return 0
@@ -519,22 +557,79 @@ status() {
     fi
 }
 
+#[[
+# The Kindle's own Wi-Fi switch, in the order KOReader uses it.
+#
+# Two properties, not one, and the order matters in each direction: the
+# radio and the daemon that manages it are separate switches, and setting
+# only the first leaves wifid holding an interface it has not been told
+# about. This is the airplane-mode toggle people end up doing by hand.
+#]]
+kindle_wifi() {
+    has lipc-set-prop || return 0
+    if [ "$1" = "1" ]; then
+        run_sh "lipc-set-prop -i com.lab126.cmd wirelessEnable 1 >/dev/null 2>&1 || true"
+        run_sh "lipc-set-prop -i com.lab126.wifid enable 1 >/dev/null 2>&1 || true"
+    else
+        run_sh "lipc-set-prop -i com.lab126.wifid enable 0 >/dev/null 2>&1 || true"
+        run_sh "lipc-set-prop -i com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1 || true"
+    fi
+}
+
+#[[
+# Gives the interface back, properly.
+#
+# Undoing the setup is not the same as stopping it. An interface left in
+# ad-hoc mode is one the system's Wi-Fi daemon cannot use, and it will not
+# say so — it simply never connects, which is why handing control back used
+# to mean rebooting, or toggling airplane mode by hand and restarting the
+# reader. So the cell is left, the type put back to managed, and the
+# Kindle's own two-property switch flicked off and on again, which is the
+# thing that makes the framework pick the interface up as if nothing had
+# happened.
+#]]
 restore() {
     iface=$(detect_iface)
     run_sh "killall wpa_supplicant >/dev/null 2>&1 || true"
+
+    # Leave the cell before touching the mode: an interface still in one
+    # can refuse to change type.
+    if has iw; then
+        run_sh "iw dev $iface ibss leave >/dev/null 2>&1 || true"
+    fi
     if has ip; then
         run_sh "ip addr flush dev $iface 2>/dev/null || true"
+        run_sh "ip link set $iface down 2>/dev/null || true"
+    elif has ifconfig; then
+        run_sh "ifconfig $iface down 2>/dev/null || true"
     fi
-    if has iwconfig; then
+    # nl80211 wants the interface down for this; WEXT does not care.
+    if has iw; then
+        run_sh "iw dev $iface set type managed >/dev/null 2>&1 || true"
+    elif has iwconfig; then
         run_sh "iwconfig $iface mode managed 2>/dev/null || true"
     fi
+    if has ip; then
+        run_sh "ip link set $iface up 2>/dev/null || true"
+    elif has ifconfig; then
+        run_sh "ifconfig $iface up 2>/dev/null || true"
+    fi
+
     run_sh "rm -rf $RUN_DIR"
     for service in wifid cmd_wifid; do
         if has start; then
             run_sh "start $service >/dev/null 2>&1 || true"
         fi
     done
-    log "Wi-Fi handed back to the system. A reboot is the sure way if it misbehaves."
+
+    # Off, then on: the toggle that makes the framework take the interface
+    # back rather than assume it still knows its state.
+    kindle_wifi 0
+    sleep_a_moment
+    kindle_wifi 1
+
+    log "Wi-Fi handed back to the system."
+    log "It may take a few seconds to rejoin your usual network."
 }
 
 #--------------------------------------------------------------------------

@@ -837,13 +837,27 @@ A link with no router: one device makes the network, the other joins it.
 Which one is this? Takes over Wi-Fi while it runs.]]), DirectLink.describe(report)))
 end
 
---- Hands Wi-Fi back to the system and forgets the link Duo built.
+--[[--
+Hands Wi-Fi back to the system and forgets the link Duo built.
+
+The script puts the interface right and flicks the device's own Wi-Fi
+switch; this then tells KOReader to reconnect, so its idea of the network
+matches the one the device now actually has. Without that last step the
+reader sits believing itself offline until something else asks it to look
+again — which is why handing back used to mean restarting KOReader.
+--]]--
 function Duo:restoreWifi()
     local DirectLink = require("duo/directlink")
     Core:stop("restoring Wi-Fi")
     DirectLink.restore()
     Core:set("direct_link", nil)
-    UIManager:show(InfoMessage:new{ text = _("Wi-Fi handed back to the system.") })
+    UIManager:show(InfoMessage:new{
+        text = _("Wi-Fi handed back to the system.\n\nRejoining your usual network may take a few seconds."),
+        timeout = 5,
+    })
+    if NetworkMgr.restoreWifiAsync then
+        UIManager:nextTick(function() pcall(function() NetworkMgr:restoreWifiAsync() end) end)
+    end
 end
 
 function Duo:startLeader()

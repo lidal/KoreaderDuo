@@ -121,8 +121,15 @@ fourth is reported but not driven: a device advertising only Wi-Fi Direct
 choosing an SSID and passphrase, so that part is yours.
 
 The script also does `host`, `join`, `status` and `restore`, and takes
-`--dry-run` on any of them so you can read the commands first. It takes
-Wi-Fi over while up; **restore** or a reboot gives it back.
+`--dry-run` on any of them so you can read the commands first.
+
+**restore** gives Wi-Fi back, and does the whole job: it leaves the cell,
+puts the interface back to managed — an interface left in ad-hoc is one the
+system's Wi-Fi daemon cannot use, and it never says so, it simply never
+connects — and flicks the device's own Wi-Fi switch off and on, which is
+the airplane-mode toggle people otherwise end up doing by hand. Duo then
+asks KOReader to rejoin the usual network so its idea of things matches the
+device's.
 
 **It verifies the link appeared** rather than trusting that the commands
 ran. The interface is watched until it really is an AP or an ad-hoc cell;
@@ -516,7 +523,7 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-267 tests, no mocking of the interesting parts:
+271 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
@@ -531,7 +538,7 @@ make test LUA=lua5.1
 | `booktransfer_spec` | 19 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `frontlight_spec` | 17 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 23 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
+| `directlink_spec` | 27 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
 Two tools double as documentation, and both print live data:
