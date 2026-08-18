@@ -442,11 +442,16 @@ end
 -- Power and network
 --------------------------------------------------------------------------
 
+--- Whether this device is asleep or on its way, on the class rather than
+--- the instance: KOReader rebuilds the instance and the answer must not
+--- go with it.
 function Duo:onSuspend()
+    Duo.suspending = true
     Core:suspend()
 end
 
 function Duo:onResume()
+    Duo.suspending = false
     Core:resume()
 end
 
@@ -653,8 +658,22 @@ function Duo:applyFrontlight(wanted)
     return changes
 end
 
---- Locks this device, because the other one is being locked.
+--[[--
+Locks this device, because the other one is being locked.
+
+Refuses outright if this device is already asleep or on its way there.
+KOReader suspends a Kindle by asking its power daemon to press the power
+button, and a press is a toggle: on a sleeping device it does not sleep it
+harder, it wakes it up. Both readers being put down within a moment of each
+other is the ordinary case rather than a rare one, so without this the pair
+took turns waking each other.
+--]]--
 function Duo:sleepForPeer()
+    if Duo.suspending then
+        logger.dbg("Duo: already asleep or on the way; not pressing the button again")
+        return
+    end
+    Duo.suspending = true
     UIManager:nextTick(function()
         UIManager:suspend()
     end)

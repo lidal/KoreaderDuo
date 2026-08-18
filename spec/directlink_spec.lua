@@ -419,6 +419,42 @@ if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
     end)
 end)
 
+T.describe("getting the system's Wi-Fi out of the way", function()
+    T.it("uses initctl, which is the one every reader has", function()
+        --[[
+        Upstart's bare `start` and `stop` are conveniences that are not on
+        every device's PATH. Asking "do we have stop?" quietly answered no
+        on a reader without them, so the system's Wi-Fi daemon was never
+        stopped and went on managing the interface underneath a link that
+        looked like it had come up.
+        ]]
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0", initctl = "exit 0",
+        }
+        local output = runScript(environment, "host --dry-run")
+        T.assertMatch(output, "initctl stop wifid")
+        T.assertMatch(output, "initctl stop wifis", "there are two of them on a Kindle")
+    end)
+
+    T.it("falls back to the bare commands where those are what exist", function()
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0", stop = "exit 0",
+        }
+        local output = runScript(environment, "host --dry-run")
+        T.assertMatch(output, "stop wifid")
+        T.assertTrue(not output:find("initctl"), "there is no initctl on this device")
+    end)
+
+    T.it("starts them again in the order they expect", function()
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0", initctl = "exit 0",
+        }
+        local output = runScript(environment, "restore --dry-run")
+        T.assertTrue(output:find("initctl start wifis") < output:find("initctl start wifid"),
+            "the daemon expects the supplicant service to be there already")
+    end)
+end)
+
 T.describe("coming back after a sleep", function()
     T.it("reports the mode in the words the plugin reads", function()
         --[[

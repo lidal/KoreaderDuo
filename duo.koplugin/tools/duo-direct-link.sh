@@ -216,20 +216,50 @@ probe_value() {
 # Bringing the link up
 #--------------------------------------------------------------------------
 
-stop_system_wifi() {
-    # Amazon's Kindle daemons. Absent elsewhere, which is why failures here
-    # are ignored rather than fatal.
-    if has lipc-set-prop; then
-        run_sh "lipc-set-prop com.lab126.cmd wirelessEnable 1 >/dev/null 2>&1 || true"
+#[[
+# Starting and stopping one of the system's services.
+#
+# `initctl` first. Upstart's bare `start` and `stop` are conveniences that
+# are not on every device's PATH, and asking `has stop` on a reader without
+# them quietly answers no — so the system's Wi-Fi daemon was never stopped
+# at all, and it went on managing the interface underneath a link that
+# looked like it had come up.
+#]]
+service_control() {
+    action="$1"
+    service="$2"
+    if has initctl; then
+        run_sh "initctl $action $service >/dev/null 2>&1 || true"
+    elif has "$action"; then
+        run_sh "$action $service >/dev/null 2>&1 || true"
     fi
-    for service in wifid cmd_wifid; do
-        if has stop; then
-            run_sh "stop $service >/dev/null 2>&1 || true"
-        fi
+}
+
+#[[
+# Amazon's Wi-Fi daemons, which have to be out of the way before the
+# interface can be borrowed. `wifis` as well as `wifid`: it is the second
+# half of the pair on a Kindle and stopping only the first leaves something
+# still watching.
+#
+# Absent elsewhere, which is why failures are ignored rather than fatal —
+# but a daemon that is still running after being asked to stop is worth
+# saying out loud, because the link will appear to come up and then quietly
+# stop working when the daemon takes the interface back.
+#]]
+stop_system_wifi() {
+    if has lipc-set-prop; then
+        run_sh "lipc-set-prop -i com.lab126.cmd wirelessEnable 1 >/dev/null 2>&1 || true"
+    fi
+    for service in wifid wifis cmd_wifid; do
+        service_control stop "$service"
     done
     run_sh "killall wpa_supplicant >/dev/null 2>&1 || true"
     run_sh "killall dhclient udhcpc >/dev/null 2>&1 || true"
     sleep_a_moment
+    [ "$DRY_RUN" = "1" ] && return 0
+    if has pidof && pidof wifid >/dev/null 2>&1; then
+        warn "the system's Wi-Fi daemon is still running and will take the interface back"
+    fi
 }
 
 sleep_a_moment() {
@@ -616,10 +646,12 @@ restore() {
     fi
 
     run_sh "rm -rf $RUN_DIR"
+    # `wifis` first and `wifid` a moment later: the daemon expects the
+    # supplicant service to be there when it starts looking.
+    service_control start wifis
+    sleep_a_moment
     for service in wifid cmd_wifid; do
-        if has start; then
-            run_sh "start $service >/dev/null 2>&1 || true"
-        fi
+        service_control start "$service"
     done
 
     # Off, then on: the toggle that makes the framework take the interface

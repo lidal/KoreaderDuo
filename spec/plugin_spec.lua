@@ -312,6 +312,37 @@ T.describe("coming back after a sleep", function()
         Core.settings.direct_link = nil
     end)
 
+    T.it("checks the link again simply because the pair has been apart", function()
+        --[[
+        The check that does not wait to be told. A wake-up notification
+        travels through the reader's power daemon, its screensaver handling
+        and an event broadcast, and if any of that does not fire on a
+        particular firmware then nothing ever looks at the network again.
+        Being disconnected for a while is its own reason to look.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        local checked = 0
+        Core.hooks.reviveDirectLink = function() checked = checked + 1 end
+        Core.role = Core.ROLE_FOLLOWER          -- active, and not connected
+
+        Core:poll()
+        T.assertEquals(checked, 0, "not the instant the link drops")
+
+        Core.disconnected_since = 0             -- apart for a good while
+        Core:poll()
+        T.assertEquals(checked, 1, "the link was never looked at")
+
+        Core:poll()
+        T.assertEquals(checked, 1, "and not on every turn of the loop after that")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.disconnected_since = nil
+        Core.link_healed_at = nil
+    end)
+
     T.it("leaves an ordinary network alone", function()
         -- Taking over somebody's Wi-Fi uninvited is a rude way to recover
         -- from a nap; this only ever touches a link Duo built.

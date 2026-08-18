@@ -82,6 +82,30 @@ stopped talking.
 local LINK_CHECK_DELAY = 3
 
 --[[--
+Healing a link Duo built, without waiting to be told to, in seconds.
+
+The wake-up notification is a nice-to-have and not something to depend on:
+it travels through the reader's power daemon, its screensaver handling and
+an event broadcast, and if any of that does not fire on a particular
+firmware then nothing ever checks the network again. So the check also runs
+simply because the pair has been apart for a while. It costs one status
+call, and only rebuilds when the link really has gone.
+--]]--
+local LINK_HEAL_AFTER = 20
+local LINK_HEAL_EVERY = 60
+
+--[[--
+How close together two sleeps count as one decision, in seconds.
+
+Both readers get put down at once often enough that it is the ordinary
+case, not an edge one, and each tells the other. Pressing a power button
+that has just been pressed wakes the device back up, so a message that
+arrives inside this window is treated as the other person having done the
+same thing at the same moment rather than as an instruction.
+--]]--
+local SLEEP_RACE = 10
+
+--[[--
 How long the pair stays up after the last page turn, in seconds.
 
 This is the one number that decides when two readers doze off together, and
@@ -552,8 +576,11 @@ function Core:start(role, options)
     self.last_error = nil
     self.reconnect_delay = RECONNECT_MIN
     -- Starting is something an awake device does, so whatever this was
-    -- following the other one into is over.
+    -- following the other one into is over — including its own last word
+    -- on the subject, which would otherwise go on excusing it from the
+    -- next one.
     self.sleeping_for_peer = false
+    self.sleep_announced_at = nil
 
     if self:usesSerial() then
         if role ~= Core.ROLE_LEADER and role ~= Core.ROLE_FOLLOWER then return false end
@@ -824,6 +851,7 @@ function Core:poll()
     -- another plugin, and a poll every second and a half catches all of it.
     self:checkTypography()
     self:checkFrontlight()
+    self:checkLinkHealth()
     self:checkBrowser()
     self:pumpBookSender()
     self:checkBookRequest()
@@ -2379,14 +2407,36 @@ mean. Whichever device is locked, both go.
 --]]--
 function Core:announceSleep()
     if not self:isActive() then return end
+    self.sleep_announced_at = Util.now()
     for _, link in ipairs(self:getReadyLinks()) do
         link:send(Protocol.SLEEP, {})
     end
 end
 
+--[[--
+Follows the other device to sleep, when there is anything to follow.
+
+Sleeping a Kindle is not "go to sleep" — KOReader asks its power daemon to
+*press the power button*, and a press is a toggle. Press it on a device
+already asleep and it wakes up. So this has to be certain the device is
+awake and not on its way out before touching anything, which is three
+separate refusals rather than one:
+
+  * one already following an order does not need a second;
+  * one that just announced its own sleep is not being told anything it
+    did not already know — that is two people reaching for two power
+    buttons at the same moment, and relaying it would wake the device that
+    got there first;
+  * and one already asleep must never be prodded, since the prod is
+    exactly what wakes it.
+--]]--
 function Core:handleRemoteSleep()
     if not self:get("sleep_together") then return end
     if self.sleeping_for_peer then return end
+    if self.sleep_announced_at and Util.now() - self.sleep_announced_at < SLEEP_RACE then
+        self:log("we were going to sleep anyway; not passing that on")
+        return
+    end
     if not self.hooks or not self.hooks.sleepDevice then return end
     -- Marked before asking, so that suspending does not bounce a SLEEP
     -- straight back at the device that sent one.
@@ -2571,6 +2621,7 @@ with.
 --]]--
 function Core:resume()
     self.sleeping_for_peer = false
+    self.sleep_announced_at = nil
     -- Checked whatever happens next, and that is the point: see checkLink.
     if self:get("direct_link") then
         self.link_check_at = Util.now() + LINK_CHECK_DELAY
@@ -2640,6 +2691,38 @@ function Core:checkLink()
     self.link_check_at = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
+    pcall(self.hooks.reviveDirectLink)
+end
+
+--[[--
+Notices a link that has quietly gone, whether or not anything said so.
+
+The counterpart to checkLink, and the one that does not depend on being
+told. A device that has been disconnected for a while, on a link it built
+itself, has one of two problems: the other reader is away, or the network
+underneath them both is gone. The first needs no action and the second will
+never fix itself, and telling them apart costs a single status call — so it
+is worth making, over and over, rather than waiting for an event that may
+not arrive on every firmware.
+
+This is what a design like PagePair's gets for nothing by opening a fresh
+connection per page turn: there is no link to lose. Duo needs a stream —
+for the heartbeat, the typography, a book on its way across — so instead it
+keeps checking that the stream still has somewhere to be.
+--]]--
+function Core:checkLinkHealth()
+    if not self:isActive() or not self:get("direct_link") then return end
+    if self:isConnected() then
+        self.disconnected_since = nil
+        return
+    end
+    local now = Util.now()
+    self.disconnected_since = self.disconnected_since or now
+    if now - self.disconnected_since < LINK_HEAL_AFTER then return end
+    if self.link_healed_at and now - self.link_healed_at < LINK_HEAL_EVERY then return end
+    self.link_healed_at = now
+    if not self.hooks or not self.hooks.reviveDirectLink then return end
+    self:log("apart for a while; checking the link is still there")
     pcall(self.hooks.reviveDirectLink)
 end
 

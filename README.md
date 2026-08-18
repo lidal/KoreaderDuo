@@ -491,16 +491,28 @@ on either device afterwards moves the rest.
   with it. Duo reconnects by itself, but the gap is visible.
 - **Sleep.** Sockets are shut down cleanly on suspend rather than left to
   time out, and coming back is a retry rather than one attempt: a device
-  wakes well before its radio does. A router-free link gets its own check a
-  few seconds after waking, on **both** devices, because such a link does
-  not survive a deep sleep at all — the reader's own Wi-Fi daemon takes the
-  interface back into managed mode. That check cannot hang off a failed
-  start, which is what it used to do: starting a leader binds a listening
-  socket, and binding every interface succeeds perfectly well when there is
-  no network on any of them, so the leader came up believing itself fine
-  while the follower reconnected into silence.
+  wakes well before its radio does. A router-free link is checked a few
+  seconds after waking, on **both** devices, because such a link does not
+  survive a deep sleep at all — the reader's own Wi-Fi daemon takes the
+  interface back into managed mode.
+
+  That check also runs **without being asked**, whenever the pair has been
+  apart for twenty seconds or so. Waking is not something to depend on
+  being told about: the notification travels through the reader's power
+  daemon, its screensaver handling and an event broadcast, and if any of
+  that does not fire on a particular firmware then nothing would ever look
+  at the network again. Being disconnected is its own reason to look. It
+  costs one status call a minute and rebuilds only when the link really has
+  gone.
 - **Locking one locks both.** Whichever device is put down, the other
-  follows, rather than sitting lit on a page nobody is reading.
+  follows, rather than sitting lit on a page nobody is reading. Sleeping a
+  Kindle means asking its power daemon to press the power button, and a
+  press is a toggle — so a device already asleep is never prodded, and two
+  readers put down within a few seconds of each other are treated as one
+  decision rather than two instructions. Without both rules the pair take
+  turns waking each other. Switch it off under **Lock one, lock both** if
+  you would rather handle sleep yourself, with a magnetic cover or
+  otherwise.
 - **The pair dozes together.** Duo has no timer of its own — it is polled by
   the UI loop, and a reader in standby stops polling, so a sleeping follower
   stops following. Rather than hold two devices awake, only the leader
@@ -523,14 +535,14 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-271 tests, no mocking of the interesting parts:
+277 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 39 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
-| `integration_spec` | 64 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `plugin_spec` | 40 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
+| `integration_spec` | 66 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 14 | **The whole library brought into step**: the follower in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
@@ -538,7 +550,7 @@ make test LUA=lua5.1
 | `booktransfer_spec` | 19 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `frontlight_spec` | 17 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 27 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
+| `directlink_spec` | 30 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
 Two tools double as documentation, and both print live data:

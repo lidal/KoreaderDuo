@@ -1068,12 +1068,50 @@ T.describe("two devices, when things go wrong", function()
             "the follower stayed awake when the leader was locked")
 
         -- And the other way round, since either device can be the one put
-        -- down first.
+        -- down first. Waking first, as a real device would.
+        callLeader("D.plugin:onResume()")
+        callFollower("D.plugin:onResume()")
         connectPair()
         callLeader("UIManager._suspends = 0")
         callFollower("D.plugin:onSuspend()")
         controller:assertEventually(leader, "UIManager._suspends", 1,
             "the leader stayed awake when the follower was locked")
+    end)
+
+    T.it("does not wake a device that was already going to sleep", function()
+        --[[
+        The bug two people putting two readers down at once will find
+        every time. KOReader sleeps a Kindle by asking its power daemon to
+        press the power button, and a press is a toggle: on a device
+        already asleep it wakes it up. Both devices announce their own
+        sleep, so without a rule the two take turns waking each other.
+        ]]
+        connectPair()
+        callLeader("UIManager._suspends = 0")
+        callFollower("UIManager._suspends = 0")
+
+        -- Two thumbs, near enough the same moment.
+        callLeader("D.plugin:onSuspend()")
+        callFollower("D.plugin:onSuspend()")
+        socket.sleep(1)
+
+        T.assertEquals(controller:number(leader, "UIManager._suspends"), 0,
+            "the leader was prodded after deciding to sleep on its own")
+        T.assertEquals(controller:number(follower, "UIManager._suspends"), 0,
+            "the follower was prodded after deciding to sleep on its own")
+    end)
+
+    T.it("never presses the button on a device already asleep", function()
+        connectPair()
+        callFollower("UIManager._suspends = 0")
+        -- Asleep, and then told about somebody else's sleep.
+        callFollower("D.plugin:onSuspend()")
+        callFollower("Core.sleep_announced_at = nil")   -- long enough ago
+        callFollower("Core:handleRemoteSleep()")
+        socket.sleep(0.3)
+        T.assertEquals(controller:number(follower, "UIManager._suspends"), 0,
+            "pressing the button on a sleeping device wakes it")
+        callFollower("D.plugin:onResume()")
     end)
 
     T.it("does not send a device that is only obeying back to bed", function()
