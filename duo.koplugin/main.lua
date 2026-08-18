@@ -673,11 +673,8 @@ function Duo:reviveDirectLink()
     if role ~= "host" and role ~= "join" then return end
     local DirectLink = require("duo/directlink")
     local status = DirectLink.run("status") or ""
-    if status:match("type AP") or status:match("type IBSS")
-        or status:match("Mode:Master") or status:match("Mode:Ad%-Hoc") then
-        return  -- still up; the hold-up is somewhere else
-    end
-    logger.dbg("Duo: direct link is gone after the sleep, rebuilding it")
+    if DirectLink.isUp(status, role) then return end
+    logger.dbg("Duo: the direct link did not survive the sleep, rebuilding it")
     if role == "host" then DirectLink.host() else DirectLink.join() end
 end
 

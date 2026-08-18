@@ -90,6 +90,14 @@ Wiphy phy0
 EOF
 ]]
 
+--- A fake `iw` whose interface reports the given mode once asked.
+local function iwThatSettlesOn(mode)
+    return ([[
+if [ "$1" = "dev" ] && [ "$3" = "info" ]; then printf '\ttype %s\n' "%s"; exit 0; fi
+if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
+]]):format("%s", mode) .. IW_LIST_AP
+end
+
 T.describe("probing what a device can do", function()
     T.it("spots a driver that can be an access point", function()
         local environment = fakeEnvironment{ iw = IW_LIST_AP, wpa_supplicant = "exit 0" }
@@ -277,13 +285,6 @@ T.describe("checking the link actually came up", function()
     --- An `iw` that reports the driver can do AP, but whose interface never
     --- leaves managed mode — which is what a wpa_supplicant built without
     --- AP support looks like from the outside.
-    local function iwThatSettlesOn(mode)
-        return ([[
-if [ "$1" = "dev" ] && [ "$3" = "info" ]; then printf '\ttype %s\n' "%s"; exit 0; fi
-if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
-]]):format("%s", mode) .. IW_LIST_AP
-    end
-
     T.it("reports an error instead of a link that never appeared", function()
         local environment = fakeEnvironment{
             iw = iwThatSettlesOn("managed"),
@@ -355,6 +356,36 @@ if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
         T.assertTrue(not output:find("error:"), "a working link must not report an error")
         T.assertMatch(output, "verified: wlan0 is AP")
         T.assertMatch(output, "This device is hosting the link")
+    end)
+end)
+
+T.describe("coming back after a sleep", function()
+    T.it("reports the mode in the words the plugin reads", function()
+        --[[
+        The live bug. `status` printed the mode as its own reworded line,
+        while the plugin was looking for what `host` prints — so the check
+        for "did the link survive the sleep" could never match, whatever
+        the interface was actually doing.
+        ]]
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0",
+        }
+        local output = runScript(environment, "status")
+        T.assertMatch(output, "mode=IBSS")
+    end)
+
+    T.it("names the cell, so two readers rebuilding at once land in the same one", function()
+        --[[
+        An ad-hoc cell is identified by a BSSID, and a device forming one
+        invents a random address for it. Two readers waking together each
+        invent their own and sit in two cells of the same name that never
+        merge: both screens look right and no traffic passes.
+        ]]
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS"), ip = "exit 0",
+        }
+        local output = runScript(environment, "host --dry-run")
+        T.assertMatch(output, "ibss join KOReaderDuo 2437 fixed%-freq 02:44:55:4f:00:01")
     end)
 end)
 

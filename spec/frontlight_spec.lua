@@ -134,4 +134,44 @@ T.describe("deciding what to change", function()
     end)
 end)
 
+T.describe("deciding whether a direct link survived a sleep", function()
+    local DirectLink = require("duo/directlink")
+
+    local function status(mode, address)
+        return ("interface: wlan0\naddress:  %s\nmode=%s\nduo link: configured\n")
+            :format(address or "169.254.13.1", mode)
+    end
+
+    T.it("takes both the mode and the address as proof", function()
+        -- Either half can go on its own: a radio put back into managed mode
+        -- keeps its address for a moment, and an interface still in the
+        -- right mode can have its address flushed.
+        T.assertTrue(DirectLink.isUp(status("IBSS", "169.254.13.1"), "host"))
+        T.assertTrue(not DirectLink.isUp(status("managed", "169.254.13.1"), "host"))
+        T.assertTrue(not DirectLink.isUp(status("IBSS", "192.168.1.44"), "host"))
+    end)
+
+    T.it("knows which address each role should be holding", function()
+        T.assertTrue(DirectLink.isUp(status("IBSS", "169.254.13.2"), "join"))
+        T.assertTrue(not DirectLink.isUp(status("IBSS", "169.254.13.2"), "host"))
+    end)
+
+    T.it("reads the mode line the script actually prints", function()
+        --[[
+        The bug this is here for: the check looked for wording `status`
+        never used, so it could not tell a live link from a dead one and
+        answered "gone" every time.
+        ]]
+        T.assertEquals(DirectLink.modeOf("interface: wlan0\nmode=Ad-Hoc\n"), "ibss")
+        T.assertEquals(DirectLink.modeOf("interface: wlan0\nmode=Master\n"), "ap")
+        T.assertTrue(not DirectLink.isUp("interface: wlan0\nmode:     Ad-Hoc\n", "host"),
+            "the old spelling must not be mistaken for the new one")
+    end)
+
+    T.it("says no when it was handed nothing at all", function()
+        T.assertTrue(not DirectLink.isUp(nil, "host"))
+        T.assertTrue(not DirectLink.isUp(status("IBSS"), "over-wifi"))
+    end)
+end)
+
 os.exit(T.run())

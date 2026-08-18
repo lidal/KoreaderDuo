@@ -28,6 +28,19 @@ SSID="${DUO_SSID:-KOReaderDuo}"
 PASSPHRASE="${DUO_PASSPHRASE:-koreaderduo}"
 CHANNEL="${DUO_CHANNEL:-6}"
 FREQUENCY="${DUO_FREQUENCY:-2437}"     # channel 6
+#[[
+# The cell's own address, fixed rather than generated.
+#
+# An ad-hoc cell is identified by a BSSID, and a device that forms one
+# invents a random address for it. Two readers coming back from sleep at the
+# same moment therefore each invent their own, and end up in two cells with
+# the same name that never merge — everything looks right on both screens
+# and no traffic passes. Naming it removes the race entirely.
+#
+# Locally administered (the 02 prefix), so it cannot collide with real
+# hardware.
+#]]
+BSSID="${DUO_BSSID:-02:44:55:4f:00:01}"
 IFACE="${DUO_IFACE:-}"
 HOST_IP="${DUO_HOST_IP:-169.254.13.1}"
 JOIN_IP="${DUO_JOIN_IP:-169.254.13.2}"
@@ -301,7 +314,12 @@ bring_up_ibss_iw() {
     run iw dev "$iface" set type ibss
     run_sh "ip link set $iface up 2>/dev/null || true"
     sleep_a_moment
-    run_sh "iw dev $iface ibss join $SSID $FREQUENCY 2>/dev/null || true"
+    run_sh "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID 2>/dev/null || true"
+    # An `iw` too old for a fixed BSSID leaves the interface short of IBSS,
+    # so the plain form is worth one more try before giving up on it.
+    if [ "$DRY_RUN" != "1" ] && ! mode_reached "$iface" ibss; then
+        run_sh "iw dev $iface ibss join $SSID $FREQUENCY 2>/dev/null || true"
+    fi
 }
 
 # What the interface says it is doing right now: AP, IBSS, managed, or
@@ -490,9 +508,10 @@ status() {
     elif has ifconfig; then
         ifconfig "$iface" 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/address:  \1/p'
     fi
-    if has iwconfig; then
-        iwconfig "$iface" 2>/dev/null | sed -n 's/.*Mode:\([A-Za-z-]*\).*/mode:     \1/p'
-    fi
+    # `mode=` in the same spelling `host` ends with, because Duo reads this
+    # to decide whether a link it built itself survived a sleep. It used to
+    # print `mode:` with the value reworded, which matched nothing.
+    log "mode=$(current_mode "$iface")"
     if [ -f "$RUN_DIR/wpa_supplicant.conf" ]; then
         log "duo link: configured ($RUN_DIR)"
     else

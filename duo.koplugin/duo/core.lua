@@ -70,8 +70,16 @@ a flat battery.
 --]]--
 local RESUME_RETRY = 4
 local RESUME_MAX_ATTEMPTS = 30
---- Attempts before a link this device built itself is presumed lost.
-local RESUME_REVIVE_AFTER = 3
+
+--[[--
+How long after waking to check on a link Duo built itself, in seconds.
+
+Long enough for the radio to finish coming back — checking the instant the
+screen lights up reports whatever the driver happens to be doing mid-resume
+— and short enough that nobody is left staring at two devices that have
+stopped talking.
+--]]--
+local LINK_CHECK_DELAY = 3
 
 --[[--
 How long the pair stays up after the last page turn, in seconds.
@@ -768,6 +776,7 @@ end
 function Core:poll()
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
+    self:checkLink()   -- and this is how the network under it is
     if self.role == Core.ROLE_OFF then return end
 
     if self.responder then self.responder:poll() end
@@ -2562,6 +2571,10 @@ with.
 --]]--
 function Core:resume()
     self.sleeping_for_peer = false
+    -- Checked whatever happens next, and that is the point: see checkLink.
+    if self:get("direct_link") then
+        self.link_check_at = Util.now() + LINK_CHECK_DELAY
+    end
     if not self.paused_role then return end
     self.resume_attempts = 0
     self.resume_at = 0      -- try immediately; the poll loop takes it from there
@@ -2595,23 +2608,6 @@ function Core:checkResume()
     end
     self.paused_role = role
 
-    --[[
-    A link this device brought up itself does not survive a deep sleep:
-    the Kindle's own Wi-Fi daemon takes the interface back and puts it in
-    managed mode, so there is no network to bind to and there never will
-    be until somebody rebuilds it. Left to itself that looks exactly like
-    a peer that is still asleep, and waits for ever.
-
-    Not on the first failure, though — the ordinary case is a radio that
-    is a second or two behind the rest of the device, and rebuilding the
-    link would be a heavy answer to a problem that fixes itself.
-    ]]
-    if self.resume_attempts == RESUME_REVIVE_AFTER
-        and self.hooks and self.hooks.reviveDirectLink then
-        self:log("still no network; rebuilding the direct link")
-        pcall(self.hooks.reviveDirectLink)
-    end
-
     if self.resume_attempts >= RESUME_MAX_ATTEMPTS then
         self.paused_role = nil
         self:alert(("Duo could not start again after waking up.\n\n%s\n\nReconnect the two devices when the network is back."):format(
@@ -2619,6 +2615,32 @@ function Core:checkResume()
         return
     end
     self.resume_at = now + RESUME_RETRY
+end
+
+--[[--
+Rebuilds a link Duo made itself, when a sleep has taken it away.
+
+Separate from the resume retry, and deliberately so. A link with no router
+behind it does not survive a deep sleep — the reader's own Wi-Fi daemon
+takes the interface back and puts it in managed mode — and this used to be
+attempted only after starting Duo had failed several times. On a follower
+that worked. On a leader it never ran at all: starting a leader means
+binding a listening socket, `socket.bind` binds every interface, and binding
+every interface succeeds perfectly well when there are no interfaces worth
+having. So the leader came up believing itself fine, sat there with its
+radio back in managed mode and no address, and the follower reconnected into
+silence for as long as anyone cared to wait.
+
+So it is checked on both, on the way back from every sleep, whether or not
+anything failed.
+--]]--
+function Core:checkLink()
+    if not self.link_check_at then return end
+    if Util.now() < self.link_check_at then return end
+    self.link_check_at = nil
+    if not self.hooks or not self.hooks.reviveDirectLink then return end
+    self:log("checking the direct link survived the sleep")
+    pcall(self.hooks.reviveDirectLink)
 end
 
 --- Object handed to UIManager so the sockets get polled by the UI loop.

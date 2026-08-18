@@ -281,25 +281,49 @@ T.describe("coming back after a sleep", function()
         Core.start = real_start
     end)
 
-    T.it("rebuilds a link it made itself, once the radio has had its chance", function()
-        -- A link with no router behind it does not survive a deep sleep:
-        -- the Kindle's own Wi-Fi daemon takes the interface back. Nothing
-        -- else will notice, and waiting politely means waiting for ever.
-        sleepAsLeader()
-        local revived = 0
-        Core.hooks.reviveDirectLink = function() revived = revived + 1 end
-        failingStart(99)
+    T.it("checks a link it made itself on both devices, not only where a start failed", function()
+        --[[
+        The bug this exists for. A link with no router behind it does not
+        survive a deep sleep, and the rebuild used to hang off a failed
+        start — which happens on a follower and never on a leader, because
+        starting a leader binds a listening socket and binding every
+        interface succeeds fine when there is no network on any of them. So
+        the leader came up believing itself well, and the follower
+        reconnected into silence.
+        ]]
+        reset()
+        Core.settings.direct_link = "host"
+        local checked = 0
+        Core.hooks.reviveDirectLink = function() checked = checked + 1 end
 
+        -- Nothing paused, nothing failed: exactly the leader's situation.
+        Core.paused_role = nil
         Core:resume()
-        T.assertEquals(revived, 0, "not on the first failure: radios are just slow")
-        for _ = 1, 4 do
-            Core.resume_at = 0
-            Core:poll()
-        end
-        T.assertEquals(revived, 1, "the link should be rebuilt exactly once")
+        T.assertEquals(checked, 0, "not the instant the screen lights up")
+
+        Core.link_check_at = 0
+        Core:poll()
+        T.assertEquals(checked, 1, "the link was never checked")
+
+        Core:poll()
+        T.assertEquals(checked, 1, "and checking it is a one-off, not a loop")
+
         Core.hooks.reviveDirectLink = nil
-        Core.start = real_start
-        Core:stop("test done")
+        Core.settings.direct_link = nil
+    end)
+
+    T.it("leaves an ordinary network alone", function()
+        -- Taking over somebody's Wi-Fi uninvited is a rude way to recover
+        -- from a nap; this only ever touches a link Duo built.
+        reset()
+        Core.settings.direct_link = nil
+        local checked = 0
+        Core.hooks.reviveDirectLink = function() checked = checked + 1 end
+        Core:resume()
+        T.assertNil(Core.link_check_at, "nothing to check on a network Duo did not build")
+        Core:poll()
+        T.assertEquals(checked, 0)
+        Core.hooks.reviveDirectLink = nil
     end)
 
     T.it("gives up in the end, and says so", function()

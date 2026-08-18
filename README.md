@@ -483,11 +483,15 @@ on either device afterwards moves the rest.
 - **Keep Wi-Fi on.** If KOReader drops Wi-Fi after a while, the link goes
   with it. Duo reconnects by itself, but the gap is visible.
 - **Sleep.** Sockets are shut down cleanly on suspend rather than left to
-  time out. Coming back is a retry, not one attempt: a device wakes well
-  before its radio, and a leader that binds a socket the instant it opens
-  its eyes binds nothing. It keeps trying quietly for about two minutes, and
-  rebuilds a router-free link it set up itself, since that does not survive
-  a deep sleep — the system's own Wi-Fi daemon takes the interface back.
+  time out, and coming back is a retry rather than one attempt: a device
+  wakes well before its radio does. A router-free link gets its own check a
+  few seconds after waking, on **both** devices, because such a link does
+  not survive a deep sleep at all — the reader's own Wi-Fi daemon takes the
+  interface back into managed mode. That check cannot hang off a failed
+  start, which is what it used to do: starting a leader binds a listening
+  socket, and binding every interface succeeds perfectly well when there is
+  no network on any of them, so the leader came up believing itself fine
+  while the follower reconnected into silence.
 - **Locking one locks both.** Whichever device is put down, the other
   follows, rather than sitting lit on a page nobody is reading.
 - **The pair dozes together.** Duo has no timer of its own — it is polled by
@@ -512,22 +516,22 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-260 tests, no mocking of the interesting parts:
+267 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 38 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
+| `plugin_spec` | 39 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
 | `integration_spec` | 64 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 14 | **The whole library brought into step**: the follower in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it, and refusing a folder the device does not have |
 | `booktransfer_spec` | 19 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
-| `frontlight_spec` | 13 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
+| `frontlight_spec` | 17 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 21 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
+| `directlink_spec` | 23 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
 
 Two tools double as documentation, and both print live data:

@@ -20,6 +20,34 @@ local DirectLink = {}
 -- zero-configuration: the joining device already knows where to look.
 DirectLink.HOST_ADDRESS = "169.254.13.1"
 
+--- And the address the joining device takes, for the same reason.
+DirectLink.JOIN_ADDRESS = "169.254.13.2"
+
+--- The address this device should be holding, given the role it took.
+function DirectLink.addressFor(role)
+    if role == "host" then return DirectLink.HOST_ADDRESS end
+    if role == "join" then return DirectLink.JOIN_ADDRESS end
+    return nil
+end
+
+--[[--
+Whether a link this device built itself is still standing.
+
+Both halves have to hold. A radio can be in the right mode with its address
+flushed, and an address can survive on an interface the system has quietly
+taken back into managed mode; either way there is nothing to talk over.
+
+@tparam string status  what `duo-direct-link.sh status` printed
+@tparam string role    "host" or "join"
+--]]--
+function DirectLink.isUp(status, role)
+    if not status then return false end
+    local mode = DirectLink.modeOf(status)
+    if mode ~= "ap" and mode ~= "ibss" then return false end
+    local address = DirectLink.addressFor(role)
+    return address ~= nil and status:find(address, 1, true) ~= nil
+end
+
 local function pluginDirectory()
     -- .../duo.koplugin/duo/directlink.lua -> .../duo.koplugin
     local source = debug.getinfo(1, "S").source:gsub("^@", "")
