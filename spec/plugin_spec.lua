@@ -6,6 +6,7 @@ integration_spec.lua, which runs two real processes.
 
 local T = require("spec/testrunner")
 local Instance = require("spec/harness/instance")
+local Util = require("duo/util")
 
 local device = Instance.new{ name = "Kindle-A", page_count = 300 }
 local Core = device.Core
@@ -310,6 +311,58 @@ T.describe("coming back after a sleep", function()
 
         Core.hooks.reviveDirectLink = nil
         Core.settings.direct_link = nil
+    end)
+
+    T.it("dials again the moment the network is back, not after the backoff", function()
+        --[[
+        The backoff had grown while the link was broken, and it was about a
+        network that no longer exists. Waiting it out after fixing the very
+        thing it was backing off from added several seconds to every
+        recovery, on top of the wait to notice and the wait to rebuild.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        Core.settings.peer_host = "169.254.13.1"
+        Core.hooks.reviveDirectLink = function() return "rebuilt" end
+        Core.role = Core.ROLE_FOLLOWER
+        Core.reconnect_delay = 4
+        Core.reconnect_at = Util.now() + 4
+
+        Core.disconnected_since = 0
+        Core.has_connected = true
+        Core:poll()
+
+        T.assertEquals(Core.reconnect_delay, 1, "the backoff was about the old network")
+        T.assertTrue(Core.reconnect_at <= Util.now(), "and there is no reason to wait")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.settings.peer_host = ""
+        Core.role = Core.ROLE_OFF
+        Core.disconnected_since, Core.link_healed_at, Core.has_connected = nil, nil, nil
+    end)
+
+    T.it("is patient with a pair that has never managed to connect", function()
+        -- Somebody reading a code off one screen and typing it into the
+        -- other does not need the network pulled out from under them.
+        reset()
+        Core.settings.direct_link = "join"
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "rebuilt" end
+        Core.role = Core.ROLE_FOLLOWER
+        Core.has_connected = nil
+        Core.disconnected_since = Util.now() - 5   -- broken, but never worked
+        Core:poll()
+        T.assertEquals(rebuilt, 0, "five seconds into a first pairing is not a fault")
+
+        Core.disconnected_since = 0                -- now it really has been a while
+        Core:poll()
+        T.assertEquals(rebuilt, 1)
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.disconnected_since, Core.link_healed_at = nil, nil
     end)
 
     T.it("checks the link again simply because the pair has been apart", function()

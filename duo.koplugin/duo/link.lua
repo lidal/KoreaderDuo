@@ -27,10 +27,23 @@ local Util = require("duo/util")
 local Link = {}
 Link.__index = Link
 
---- Seconds between heartbeats once the link is up.
-Link.PING_INTERVAL = 4
---- Seconds of complete silence after which we give up on the peer.
-Link.PEER_TIMEOUT = 15
+--[[--
+Seconds between heartbeats, and seconds of silence before giving up.
+
+Tuned for how long it takes to *notice* a link has died rather than for
+politeness. A sleeping device's socket is not closed, it is simply
+abandoned — no reset comes back, because the network it would come back
+over is what went away — so nothing here learns the link is dead except by
+waiting for silence. That wait used to be fifteen seconds, and it was the
+largest part of the twenty a pair took to find each other again after a
+sleep.
+
+Three missed beats, on a link where a round trip is milliseconds. The cost
+of being wrong is a reconnect that takes well under a second; the cost of
+being slow is the pair sitting there not working.
+--]]--
+Link.PING_INTERVAL = 2
+Link.PEER_TIMEOUT = 6
 --- Seconds allowed for the handshake.
 Link.HANDSHAKE_TIMEOUT = 10
 --- Seconds between repeated challenges on a link with no connect step.

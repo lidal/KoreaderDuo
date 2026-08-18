@@ -513,9 +513,15 @@ on either device afterwards moves the rest.
   walks back in. It is only a link Duo built itself that has nobody else to
   put it back.
 
-  That check also runs **without being asked**, whenever the pair has been
-  apart for twenty seconds or so — and at that point it rebuilds rather
-  than asking whether it needs to. Running the setup script by hand fixes
+  That check also runs **without being asked**, a couple of seconds after
+  the pair stops being able to reach each other — and at that point it
+  rebuilds rather than asking whether it needs to. Three separate waits
+  used to stack up here and made recovery take twenty seconds: how long
+  before a dead link is noticed at all, how long before the network is
+  rebuilt, and how long the reconnect backoff had grown to meanwhile. All
+  three are now sized for a link with exactly one device on the other end.
+  A pair that has *never* connected is left alone for longer, since that is
+  usually somebody midway through setting it up. Running the setup script by hand fixes
   this every time, and the only difference is that the script does not
   first talk itself out of the work. A link that still looks well after
   twenty seconds of silence plainly is not. Waking is not something to depend on
@@ -546,7 +552,7 @@ on either device afterwards moves the rest.
   and the follower asks where it belongs the moment it comes back.
 - **Kindle firewall.** Kindles drop incoming connections; the leader opens
   the port with `iptables` while it runs and closes it after.
-- **Battery.** The heartbeat is one small packet every four seconds on an
+- **Battery.** The heartbeat is one small packet every two seconds on an
   open socket. Wi-Fi being on at all is the real cost.
 
 ## Tests
@@ -556,13 +562,13 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-277 tests, no mocking of the interesting parts:
+279 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 40 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
+| `plugin_spec` | 42 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
 | `integration_spec` | 66 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |

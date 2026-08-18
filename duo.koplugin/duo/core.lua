@@ -50,9 +50,16 @@ Core.ROLE_OFF = "off"
 Core.ROLE_LEADER = "leader"
 Core.ROLE_FOLLOWER = "follower"
 
---- Reconnection backoff, in seconds.
+--[[--
+Reconnection backoff, in seconds.
+
+Backing off protects a server from a crowd. There is no crowd here: one
+device is dialling exactly one other, on a network with nothing else on it,
+and a fifteen-second wait between attempts protected nothing while costing
+the pair the time they were most obviously broken.
+--]]--
 local RECONNECT_MIN = 1
-local RECONNECT_MAX = 15
+local RECONNECT_MAX = 4
 
 --- How long a book may go without a byte before it is written off, in
 --- seconds. Generous: a slow link is not the same as a dead one.
@@ -79,7 +86,7 @@ screen lights up reports whatever the driver happens to be doing mid-resume
 — and short enough that nobody is left staring at two devices that have
 stopped talking.
 --]]--
-local LINK_CHECK_DELAY = 3
+local LINK_CHECK_DELAY = 2
 
 --[[--
 Healing a link Duo built, without waiting to be told to, in seconds.
@@ -91,8 +98,18 @@ firmware then nothing ever checks the network again. So the check also runs
 simply because the pair has been apart for a while. It costs one status
 call, and only rebuilds when the link really has gone.
 --]]--
-local LINK_HEAL_AFTER = 20
-local LINK_HEAL_EVERY = 60
+local LINK_HEAL_AFTER = 2
+local LINK_HEAL_EVERY = 20
+
+--[[--
+How long to leave a pair alone that has never managed to connect at all.
+
+A link that has worked and stopped is broken and worth rebuilding at once.
+One that has never worked is usually somebody midway through setting it up
+— reading a code off the other screen, typing it in — and tearing the
+network down under them would be its own kind of unhelpful.
+--]]--
+local LINK_HEAL_FIRST = 30
 
 --[[--
 How close together two sleeps count as one decision, in seconds.
@@ -2692,7 +2709,8 @@ function Core:checkLink()
     self.link_check_at = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
-    pcall(self.hooks.reviveDirectLink, true)
+    local ok, outcome = pcall(self.hooks.reviveDirectLink, true)
+    if ok and outcome == "rebuilt" then self:dialNow() end
 end
 
 --[[--
@@ -2715,11 +2733,15 @@ function Core:checkLinkHealth()
     if not self:isActive() then return end
     if self:isConnected() then
         self.disconnected_since = nil
+        self.has_connected = true
         return
     end
     local now = Util.now()
     self.disconnected_since = self.disconnected_since or now
-    if now - self.disconnected_since < LINK_HEAL_AFTER then return end
+    -- A link that has worked and stopped is broken now; one that has never
+    -- worked is probably still being set up by somebody.
+    local patience = self.has_connected and LINK_HEAL_AFTER or LINK_HEAL_FIRST
+    if now - self.disconnected_since < patience then return end
     if self.link_healed_at and now - self.link_healed_at < LINK_HEAL_EVERY then return end
     self.link_healed_at = now
     if not self.hooks or not self.hooks.reviveDirectLink then return end
@@ -2733,7 +2755,23 @@ function Core:checkLinkHealth()
     few seconds; not rebuilding it costs the feature.
     ]]
     self:log("apart for a while; rebuilding the link rather than asking after it")
-    pcall(self.hooks.reviveDirectLink, true, true)
+    local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true)
+    if ok and outcome == "rebuilt" then self:dialNow() end
+end
+
+--[[--
+Tries the other device again straight away.
+
+The network was just put back, so whatever the backoff had grown to is
+about a link that no longer exists. Waiting it out after fixing the very
+thing it was backing off from is how several seconds got added to every
+recovery.
+--]]--
+function Core:dialNow()
+    self.reconnect_delay = RECONNECT_MIN
+    if self:isFollower() and not self.connector then
+        self.reconnect_at = 0
+    end
 end
 
 --- Object handed to UIManager so the sockets get polled by the UI loop.
