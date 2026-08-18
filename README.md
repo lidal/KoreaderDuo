@@ -209,6 +209,7 @@ is greyed out because this is the device the books come **from**.
 | **Layout → This device holds the right-hand page** | Swaps the sides: the slave shows the *earlier* page. |
 | **Link** | Wi-Fi (any IP network, including Bluetooth PAN), a direct router-free link, or a Bluetooth/serial device. |
 | **Match typography** | Keep both devices laying the book out identically. On by default. |
+| **Match the frontlight** | Keep both at the same brightness, and warmth where they have it. On by default. |
 | **Share the book list too** | Spread the file browser across the devices as well. On by default. |
 | **Lock one, lock both** | Sleeping either device sleeps the other. On by default. |
 | **Keep the whole library in step** | Fetch whatever books the shared folder is missing here. On by default. |
@@ -224,6 +225,24 @@ is greyed out because this is the device the books come **from**.
 
 Two Dispatcher actions are registered for gestures and hardware keys: **Duo:
 start/stop** and **Duo: resync now**.
+
+**The settings above are shared, and the master is the tiebreaker.** Every
+row that describes how the *pair* behaves — the layout, page turns from the
+other device, the book list, typography, the frontlight, library syncing and
+its limits — crosses the link. On connecting, the master's values win, so
+two devices configured differently end up agreeing rather than racing.
+Change one afterwards on either device and the other follows; a slave hands
+its change to the master, which applies it and passes it on.
+
+Not shared, deliberately: the port, the pairing code, the peer address, the
+device name and the transport. Those are what let the two find each other,
+and levelling them would be a fine way for a pair to talk itself into
+silence.
+
+This matters more than it sounds. Several features are checked on *both*
+devices — page turns from the slave for one — so switching such a thing off
+on one device used to disable it silently, and which device you had to look
+at differed from feature to feature.
 
 ## The book list, spread too
 
@@ -314,6 +333,29 @@ put the devices on unrelated parts of it.
 Switch it off with **Share the book list too** to browse independently and
 share only the reading.
 
+### Only KOReader's own file browser, for now
+
+The shared book list works in KOReader's file browser and nowhere else.
+Duo binds to the `FileChooser` the file manager builds, so alternative home
+screens — [SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin)
+and the like — are not covered: their home screen, flat library and cover
+decks are their own widgets, not a file chooser, and Duo will not spread
+them. Nothing breaks; the listing simply is not shared while you are on
+those screens, and dropping into the real file browser (SimpleUI's
+**Library** action, for instance) brings it back.
+
+One consequence is worth knowing, because it is not obvious. Such plugins
+usually open books by calling `ReaderUI:showReader` directly rather than
+going through the file manager, which is the point Duo intercepts. So on
+the slave, a book tapped on one of those screens opens **locally only** —
+it is not handed to the master, and the two devices end up in different
+books. With *covers now, books when you open them* on, tapping a stand-in
+there opens the placeholder rather than fetching the real book.
+
+Reading itself is unaffected: none of these plugins touches the reader's
+page turns, so the spread, typography, the frontlight and book transfer all
+work normally once a book is open.
+
 ## Sending the book
 
 Following someone's reading is no use if you cannot open what they are
@@ -383,6 +425,27 @@ Two caveats:
 
 Reflowable formats only: a PDF has the pages the file says it has.
 
+## Matching the frontlight
+
+Two readers held side by side as one book look wrong when one is brighter
+than the other — more obviously wrong than a mismatched font size, since
+the eye compares the two halves directly. So **Match the frontlight** keeps
+them level, warmth included on the devices that have it.
+
+Brightness is not a number two devices can agree on, though. KOReader drives
+a Kindle's light from 0 to 24 and a Kobo's from 0 to 100, so nothing here
+sends a level: it sends a *proportion* of each device's own range, and each
+end scales it back to whatever hardware it has. A Kindle and a Kobo agree
+about "three quarters" without either knowing what the other's numbers mean.
+A reader with no warm light quietly ignores the warmth and still matches the
+brightness, and one that cannot turn its light off is given its lowest step
+instead of darkness.
+
+Percentages rounded onto a 24-step light rarely land exactly, so a
+step-either-way tolerance stops the two devices politely correcting each
+other for ever. As with typography, the master wins on connect and a change
+on either device afterwards moves the rest.
+
 ## How it works
 
 - **One authority.** Only the master decides what page anything shows. A tap
@@ -443,19 +506,20 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-238 tests, no mocking of the interesting parts:
+258 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 37 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
-| `integration_spec` | 56 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `integration_spec` | 64 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 14 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it, and refusing a folder the device does not have |
 | `booktransfer_spec` | 19 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
+| `frontlight_spec` | 13 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
 | `directlink_spec` | 21 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
@@ -555,6 +619,7 @@ duo.koplugin/
     browser.lua             the book list, spread across the devices
     booktransfer.lua        sending the book file itself, a chunk at a time
     epubstub.lua            cover-only stand-ins, for covers-first syncing
+    frontlight.lua          matching brightness across different light ranges
     base64.lua              so a book fits down a line-based link
     link.lua                one authenticated connection: handshake, heartbeat
     protocol.lua            message framing

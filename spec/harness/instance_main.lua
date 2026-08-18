@@ -37,6 +37,8 @@ local sandbox = setmetatable({
     Core = device.Core,
     UIManager = device.UIManager,
     Protocol = Protocol,
+    -- The stubbed KOReader Device, so a test can read and move the light.
+    Device = package.loaded["device"],
 }, {
     __index = function(_, key)
         if key == "UI" then return device.ui end

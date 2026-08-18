@@ -468,10 +468,32 @@ function ReaderUI:onHome()
     return true
 end
 
+--[[--
+The frontlight, moved the way KOReader moves it.
+
+Duo never writes to powerd directly — it fires the same events a gesture or
+the brightness slider does, so everything else watching the light hears
+about the change too. These are the stand-ins for that, and they write to
+the fake powerd so a test can read back what actually happened.
+--]]--
+function ReaderUI:onSetFlIntensity(value)
+    local powerd = package.loaded["device"].getPowerDevice()
+    powerd.fl_intensity = value
+    return true
+end
+
+function ReaderUI:onSetFlWarmth(value)
+    local powerd = package.loaded["device"].getPowerDevice()
+    powerd.fl_warmth = value
+    return true
+end
+
 function ReaderUI:handleEvent(event)
     if event.handler == "onHome" and self.onHome and self:onHome() then
         return true
     end
+    if event.handler == "onSetFlIntensity" then return self:onSetFlIntensity(event.args[1]) end
+    if event.handler == "onSetFlWarmth" then return self:onSetFlWarmth(event.args[1]) end
     for _, module in ipairs(self.modules) do
         if module:handleEvent(event) then return true end
     end

@@ -320,6 +320,116 @@ T.describe("matching typography", function()
     end)
 end)
 
+T.describe("agreeing on the settings", function()
+    --[[
+    Nothing about the configuration used to cross the link, and several
+    features are checked on both devices — page turns from the slave, for
+    one. Switching such a thing off on one device silently disabled it, and
+    which device you had to look at differed from feature to feature.
+    ]]
+    T.it("takes the master's settings on connect, whatever the slave had", function()
+        callMaster("Core:stop('reset')")
+        callSlave("Core:stop('reset')")
+        -- Configured differently, and deliberately in both directions so a
+        -- test that simply set everything true could not pass.
+        callSlave("Core.settings.share_browser = false")
+        callSlave("Core.settings.covers_first = false")
+        callSlave("Core.settings.max_library_mb = 64")
+        callMaster("Core.settings.share_browser = true")
+        callMaster("Core.settings.covers_first = true")
+        callMaster("Core.settings.max_library_mb = 512")
+
+        connectPair()
+        controller:assertEventually(slave, "Core:get('share_browser')", true,
+            "the slave kept its own setting")
+        T.assertEquals(callSlave("Core:get('covers_first')"), "true")
+        T.assertEquals(callSlave("Core:get('max_library_mb')"), "512",
+            "a number has to survive the trip as a number")
+    end)
+
+    T.it("follows a change made on either device afterwards", function()
+        connectPair()
+        callMaster("Core:set('slave_can_turn', false)")
+        controller:assertEventually(slave, "Core:get('slave_can_turn')", false,
+            "the slave did not follow the master")
+
+        -- And back the other way: a slave asks, the master decides, and the
+        -- answer comes back round.
+        callSlave("Core:set('slave_can_turn', true)")
+        controller:assertEventually(master, "Core:get('slave_can_turn')", true,
+            "a change on the slave never reached the master")
+        controller:assertEventually(slave, "Core:get('slave_can_turn')", true)
+    end)
+
+    T.it("never levels the things that make the two devices different", function()
+        --[[
+        Ports, codes, addresses and names are what let these two find each
+        other at all. Pushing them across would be a fine way for a pair to
+        talk itself into silence.
+        ]]
+        connectPair()
+        local before = callSlave("Core:get('peer_port') .. ',' .. Core:get('device_name')")
+        callMaster("Core:pushSettings('test')")
+        socket.sleep(0.5)
+        T.assertEquals(callSlave("Core:get('peer_port') .. ',' .. Core:get('device_name')"),
+            before, "the slave adopted something that identifies the other device")
+        T.assertEquals(callSlave("Core.role"), "slave", "and it is still the slave")
+    end)
+end)
+
+T.describe("matching the frontlight", function()
+    local function light(device) return controller:number(device, "Device.getPowerDevice().fl_intensity") end
+
+    T.it("brings a mismatched slave to the master's brightness on connect", function()
+        callMaster("Core:stop('reset')")
+        callSlave("Core:stop('reset')")
+        callMaster("Device.getPowerDevice().fl_intensity = 18")
+        callSlave("Device.getPowerDevice().fl_intensity = 3")
+        T.assertNotEquals(light(slave), light(master), "the fixture is not actually mismatched")
+
+        connectPair()
+        controller:assertEventually(slave, "Device.getPowerDevice().fl_intensity", 18,
+            "the slave stayed at its own brightness")
+    end)
+
+    T.it("follows a change made on the master", function()
+        connectPair()
+        callMaster("Device.getPowerDevice().fl_intensity = 6")
+        controller:assertEventually(slave, "Device.getPowerDevice().fl_intensity", 6,
+            "the slave did not follow", 15)
+    end)
+
+    T.it("follows a change made on the slave", function()
+        connectPair()
+        callSlave("Device.getPowerDevice().fl_intensity = 21")
+        controller:assertEventually(master, "Device.getPowerDevice().fl_intensity", 21,
+            "a change on the slave never reached the master", 15)
+    end)
+
+    T.it("settles rather than correcting each other for ever", function()
+        -- Both devices watch their own light and share what they find, so a
+        -- value that rounds a step either way could have them chasing it up
+        -- and down between them without ever stopping.
+        connectPair()
+        callMaster("Device.getPowerDevice().fl_intensity = 13")
+        controller:assertEventually(slave, "Device.getPowerDevice().fl_intensity", 13, nil, 15)
+        socket.sleep(3)
+        T.assertEquals(light(master), 13, "the master's light moved on its own")
+        T.assertEquals(light(slave), 13, "the two never settled")
+    end)
+
+    T.it("leaves the light alone when the option is off", function()
+        connectPair()
+        callMaster("Core:set('sync_frontlight', false)")
+        controller:assertEventually(slave, "Core:get('sync_frontlight')", false)
+        callSlave("Device.getPowerDevice().fl_intensity = 2")
+        callMaster("Device.getPowerDevice().fl_intensity = 20")
+        socket.sleep(2.5)
+        T.assertEquals(light(slave), 2, "the light was matched with matching switched off")
+        callMaster("Core:set('sync_frontlight', true)")
+    end)
+end)
+
 T.describe("one book list across two screens", function()
     -- The same spread idea, one level up: the first screenful of the folder
     -- here, the next screenful there.

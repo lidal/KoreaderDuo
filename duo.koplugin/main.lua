@@ -81,6 +81,10 @@ function Duo:init()
             getBookDir = function() return Duo:getBookDir() end,
             getTempDir = function() return Duo:getTempDir() end,
             setAwake = function(awake) Duo:setAwake(awake) end,
+            getFrontlight = function() return Duo:getFrontlight() end,
+            -- `self`, not `Duo`: the events go to the live UI, which is
+            -- where KOReader registers the DeviceListener that answers them.
+            applyFrontlight = function(wanted) return self:applyFrontlight(wanted) end,
             openFirewall = function(port)
                 if Device:isKindle() then NetUtil.openFirewall(port) end
             end,
@@ -603,6 +607,50 @@ function Duo:closeRemoteDocument()
             ui:handleEvent(Event:new("Home"))
         end
     end)
+end
+
+--[[--
+This device's frontlight, as proportions of its own range.
+
+Proportions rather than levels because the ranges differ: KOReader drives a
+Kindle's light from 0 to 24 and a Kobo's from 0 to 100, so a number that
+means "bright" on one is nearly off on the other.
+--]]--
+function Duo:getFrontlight()
+    if not Device.hasFrontlight or not Device:hasFrontlight() then return nil end
+    local powerd = Device:getPowerDevice()
+    if not powerd then return nil end
+    return require("duo/frontlight").snapshot(powerd, Device)
+end
+
+--[[--
+Sets the light to match the other device.
+
+Through KOReader's own events rather than powerd directly, so whatever else
+is watching the light — the status bar, a profile, the frontlight dialog —
+finds out about the change the same way it would from a gesture.
+
+@treturn ?table what was actually changed, in device levels
+--]]--
+function Duo:applyFrontlight(wanted)
+    if not Device.hasFrontlight or not Device:hasFrontlight() then return nil end
+    local powerd = Device:getPowerDevice()
+    if not powerd then return nil end
+
+    local changes = require("duo/frontlight").differences(wanted, powerd, Device)
+    if not changes then return nil end
+
+    local target = self.ui or (UIManager.getTopWidget and UIManager:getTopWidget())
+    local function fire(name, value)
+        if target and target.handleEvent then
+            target:handleEvent(Event:new(name, value))
+        else
+            UIManager:broadcastEvent(Event:new(name, value))
+        end
+    end
+    if changes.intensity then fire("SetFlIntensity", changes.intensity) end
+    if changes.warmth then fire("SetFlWarmth", changes.warmth) end
+    return changes
 end
 
 --- Locks this device, because the other one is being locked.
@@ -1179,6 +1227,16 @@ On connecting, the master's settings win. After that a change on either device m
             callback = function()
                 Core:set("share_browser", not Core:get("share_browser"))
                 if Core:get("share_browser") then Core:broadcastBrowser() end
+            end,
+        },
+        {
+            text = _("Match the frontlight"),
+            help_text = _("Keep both devices at the same brightness, and the same warmth where they have it. Sent as a proportion, so readers with different ranges still agree about what half means."),
+            enabled_func = function() return Device:hasFrontlight() end,
+            checked_func = function() return Core:get("sync_frontlight") end,
+            callback = function()
+                Core:set("sync_frontlight", not Core:get("sync_frontlight"))
+                if Core:get("sync_frontlight") then Core:pushFrontlight("switched on") end
             end,
         },
         {

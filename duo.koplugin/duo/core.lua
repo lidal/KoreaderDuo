@@ -104,6 +104,7 @@ local DEFAULTS = {
     match_typography = true,
     share_browser = true,
     sleep_together = true,
+    sync_frontlight = true,
     sync_books = true,
     sync_library = true,
     covers_first = true,
@@ -169,10 +170,129 @@ function Core:get(key)
     return value
 end
 
+--[[--
+The settings that describe how the pair behaves, as opposed to what this
+particular device is.
+
+Everything here is a decision about the two devices together — whether a
+turn on the slave counts, whether the book list is shared, how big a
+library may be — and a pair that disagrees about one of them misbehaves in
+a way that looks like a bug rather than a setting. Switching page turns off
+on one device silently disabled them, and which device you had to look at
+differed from feature to feature.
+
+Deliberately not in the list: anything that identifies this device or says
+how to reach the other one. A port, a pairing code, a peer address or a
+device name are exactly the things that must *not* be levelled, and pushing
+a transport across the link would be a fine way to hang up on yourself.
+--]]--
+local SHARED_SETTINGS = {
+    "mode",
+    "reverse",
+    "slave_can_turn",
+    "follow_document",
+    "match_typography",
+    "share_browser",
+    "sleep_together",
+    "sync_books",
+    "sync_library",
+    "covers_first",
+    "sync_frontlight",
+    "max_book_mb",
+    "max_library_mb",
+}
+
+local IS_SHARED = {}
+for _, key in ipairs(SHARED_SETTINGS) do IS_SHARED[key] = true end
+
 function Core:set(key, value)
+    local changed = self.settings[key] ~= value
     self.settings[key] = value
     self:save()
     self:changed()
+    -- Told, rather than discovered by polling: every route into a setting —
+    -- the menu, a gesture, a profile — comes through here.
+    if changed and IS_SHARED[key] and not self.applying_settings then
+        self:pushSettings(key)
+    end
+end
+
+--- This device's half of the shared configuration, ready for the wire.
+function Core:settingsPayload()
+    local payload = {}
+    for _, key in ipairs(SHARED_SETTINGS) do
+        local value = self:get(key)
+        if type(value) == "boolean" then
+            payload[key] = value and 1 or 0
+        else
+            payload[key] = value
+        end
+    end
+    return payload
+end
+
+function Core:sendSettingsTo(link)
+    link:send(Protocol.CONF, self:settingsPayload())
+end
+
+--[[--
+Shares a setting somebody just changed on this device.
+
+The master tells everyone. A slave can only ask: it hands the change to the
+master, which applies it and passes it on, so there is one account of what
+the pair is doing rather than two devices talking over each other.
+--]]--
+function Core:pushSettings(reason)
+    if not self:isActive() or not self:isConnected() then return end
+    self:log("sharing settings:", reason)
+    for _, link in ipairs(self:getReadyLinks()) do
+        self:sendSettingsTo(link)
+    end
+end
+
+--[[--
+Takes the shared settings from the other device.
+
+On connect this arrives from the master and the master wins, which is what
+makes it a tiebreaker rather than a race: two devices that were configured
+differently end up agreeing, and agreeing on the one that is leading.
+--]]--
+function Core:applySettings(msg, from_link)
+    local adopted = {}
+    self.applying_settings = true
+    for _, key in ipairs(SHARED_SETTINGS) do
+        local raw = msg[key]
+        if raw ~= nil then
+            local current = self:get(key)
+            local value
+            if type(current) == "boolean" then
+                value = raw == "1"
+            elseif type(current) == "number" then
+                value = tonumber(raw)
+            else
+                value = raw
+            end
+            if value ~= nil and value ~= current then
+                self.settings[key] = value
+                adopted[#adopted+1] = key
+            end
+        end
+    end
+    self.applying_settings = false
+
+    if #adopted > 0 then
+        self:save()
+        self:changed()
+        self:log("adopted settings:", table.concat(adopted, ", "))
+        if self:isMaster() then
+            -- A change made on a slave has to reach the other slaves, and
+            -- the master is the only device that talks to all of them.
+            self:broadcastState()
+            for _, link in ipairs(self:getReadyLinks()) do
+                if link ~= from_link then self:sendSettingsTo(link) end
+            end
+        end
+    end
 end
 
 --- The pairing token, generated on first use so pairing is secure by default.
@@ -669,6 +789,7 @@ function Core:poll()
     -- user can reach these from the config dialog, a gesture, a profile or
     -- another plugin, and a poll every second and a half catches all of it.
     self:checkTypography()
+    self:checkFrontlight()
     self:checkBrowser()
     self:pumpBookSender()
     self:checkBookRequest()
@@ -751,10 +872,15 @@ function Core:onLinkReady(link)
         -- The master pushes; the slave does not need to ask. Asking as well
         -- would have it told twice, and a second DOC can mean opening the
         -- same book twice.
+        -- Settings first of all: they decide whether the rest of this is
+        -- wanted at all, and the master is the tiebreaker when the two
+        -- devices were configured differently.
+        self:sendSettingsTo(link)
         self:sendDocumentTo(link)
         -- Typography before the page: the layout decides what page numbers
         -- even mean, so sending the page first would only move it twice.
         self:sendTypographyTo(link)
+        self:sendFrontlightTo(link)
         self:sendStateTo(link)
         self:broadcastBrowser()
     end
@@ -1915,6 +2041,116 @@ function Core:checkTypography()
     end
 end
 
+--------------------------------------------------------------------------
+-- The frontlight
+--------------------------------------------------------------------------
+
+function Core:frontlightEnabled()
+    return self:get("sync_frontlight")
+        and self.hooks ~= nil and self.hooks.getFrontlight ~= nil
+end
+
+--- What this device's light is set to, as proportions of its own range.
+function Core:frontlightSnapshot()
+    if not self:frontlightEnabled() then return nil end
+    local ok, snapshot = pcall(self.hooks.getFrontlight)
+    if not ok then return nil end
+    return snapshot
+end
+
+function Core:sendFrontlightTo(link)
+    local snapshot = self:frontlightSnapshot()
+    if not snapshot then return end
+    self.frontlight_snapshot = snapshot
+    link:send(Protocol.LIGHT, {
+        intensity = snapshot.intensity,
+        warmth = snapshot.warmth,
+    })
+end
+
+function Core:pushFrontlight(reason)
+    if not self:isConnected() then return end
+    local snapshot = self:frontlightSnapshot()
+    if not snapshot then return end
+    self.frontlight_snapshot = snapshot
+    self:log("sharing the frontlight:", reason)
+    for _, link in ipairs(self:getReadyLinks()) do
+        self:sendFrontlightTo(link)
+    end
+end
+
+--[[--
+Matches the other device's light.
+
+Percentages rather than levels, so a reader with 24 steps and one with 100
+mean the same thing by "half". Applying is followed by taking a fresh
+snapshot, so the change this device just made to itself is not read back a
+moment later as a change somebody made by hand.
+--]]--
+function Core:applyFrontlight(msg, from_link)
+    if not self:frontlightEnabled() then return end
+    if not self.hooks.applyFrontlight then return end
+
+    local wanted = {
+        intensity = Protocol.num(msg, "intensity"),
+        warmth = Protocol.num(msg, "warmth"),
+    }
+    self.applying_frontlight = true
+    local ok, applied = pcall(self.hooks.applyFrontlight, wanted)
+    self.applying_frontlight = false
+    self.frontlight_snapshot = self:frontlightSnapshot()
+
+    if ok and applied then
+        local Frontlight = require("duo/frontlight")
+        self:notify(("Duo: matched %s"):format(Frontlight.describe(applied)))
+    end
+
+    -- A change made on a slave has to reach the other slaves too.
+    if self:isMaster() then
+        for _, link in ipairs(self:getReadyLinks()) do
+            if link ~= from_link then self:sendFrontlightTo(link) end
+        end
+    end
+end
+
+--[[--
+Notices the light being changed on this device and shares it.
+
+Polled rather than hooked: the frontlight is moved by a gesture, a slider,
+a profile, the system's own auto-brightness and half a dozen other things,
+none of which pass through Duo.
+--]]--
+function Core:checkFrontlight()
+    if not self:frontlightEnabled() or not self:isConnected() then return end
+    if self.applying_frontlight then return end
+    local now = Util.now()
+    if self.frontlight_checked_at and now - self.frontlight_checked_at < TYPOGRAPHY_POLL then
+        return
+    end
+    self.frontlight_checked_at = now
+
+    local current = self:frontlightSnapshot()
+    if not current then return end
+    local previous = self.frontlight_snapshot
+    if not previous then
+        self.frontlight_snapshot = current
+        return
+    end
+
+    local Frontlight = require("duo/frontlight")
+    if Frontlight.same(previous.intensity, current.intensity)
+            and Frontlight.same(previous.warmth, current.warmth) then
+        return
+    end
+    self.frontlight_snapshot = current
+    if self:isMaster() then
+        self:pushFrontlight("changed on the master")
+    else
+        local link = self:getReadyLinks()[1]
+        if link then self:sendFrontlightTo(link) end
+    end
+end
+
 --- Puts back the settings this device had before it ever matched another.
 function Core:restoreTypography()
     if not self.typography_backup or not self.reader or not self.reader.applyTypography then
@@ -1971,10 +2207,15 @@ function Core:handleMessage(link, msg)
         until somebody changed one by hand.
         ]]
         self:sendTypographyTo(link)
+        self:sendFrontlightTo(link)
         self:sendStateTo(link)
         self:sendBrowserTo(link)
     elseif msg.type == Protocol.TYPO then
         self:applyTypography(msg, link)
+    elseif msg.type == Protocol.CONF then
+        self:applySettings(msg, link)
+    elseif msg.type == Protocol.LIGHT then
+        self:applyFrontlight(msg, link)
     elseif msg.type == Protocol.BROWSE then
         self:applyBrowser(msg)
     elseif msg.type == Protocol.BTURN then

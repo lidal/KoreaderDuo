@@ -307,12 +307,31 @@ function Env.install(options)
                 return options.data_dir or ("/tmp/duo-data-" .. (options.device_name or "device"))
             end,
         },
-        ["device"] = {
-            model = options.device_name or "TestReader",
-            isKindle = function() return false end,
-            hasWifiToggle = function() return true end,
-            hasKeys = function() return false end,
-        },
+        ["device"] = (function()
+            --[[--
+            A reader with a frontlight, on a deliberately awkward scale.
+
+            KOReader drives a Kindle's light from 0 to 24 and a Kobo's from
+            0 to 100, so a test on a 0-100 device would let a plain level
+            through unnoticed and never catch a proportion being sent as a
+            number. Warmth is off by default, as it is on most hardware.
+            ]]
+            local powerd = {
+                fl_min = 0, fl_max = 24, fl_intensity = 12,
+                fl_warmth_min = 0, fl_warmth_max = 24, fl_warmth = 0,
+            }
+            return {
+                model = options.device_name or "TestReader",
+                isKindle = function() return false end,
+                hasWifiToggle = function() return true end,
+                hasKeys = function() return false end,
+                hasFrontlight = function() return options.no_frontlight ~= true end,
+                hasNaturalLight = function() return options.warm_light == true end,
+                canTurnFrontlightOff = function() return true end,
+                getPowerDevice = function() return powerd end,
+                powerd = powerd,
+            }
+        end)(),
         ["dispatcher"] = { registerAction = function() end },
         ["ui/network/manager"] = {
             isConnected = function() return true end,
