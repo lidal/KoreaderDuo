@@ -123,6 +123,12 @@ choosing an SSID and passphrase, so that part is yours.
 The script also does `host`, `join`, `status` and `restore`, and takes
 `--dry-run` on any of them so you can read the commands first.
 
+It does not matter whether the link was set up from the menu or by hand
+over SSH: Duo works out which side it is on from the addresses, which are
+fixed and used by nothing else. A link built over SSH used to leave nothing
+behind saying so, and every automatic check politely decided it was none of
+its business.
+
 **Duo → Link → Check the direct link now** asks the same question from the
 menu and answers on screen: whether the link is still there, that it is
 rebuilding one that has gone, and the script's own words if the rebuild
@@ -508,7 +514,11 @@ on either device afterwards moves the rest.
   put it back.
 
   That check also runs **without being asked**, whenever the pair has been
-  apart for twenty seconds or so. Waking is not something to depend on
+  apart for twenty seconds or so — and at that point it rebuilds rather
+  than asking whether it needs to. Running the setup script by hand fixes
+  this every time, and the only difference is that the script does not
+  first talk itself out of the work. A link that still looks well after
+  twenty seconds of silence plainly is not. Waking is not something to depend on
   being told about: the notification travels through the reader's power
   daemon, its screensaver handling and an event broadcast, and if any of
   that does not fire on a particular firmware then nothing would ever look

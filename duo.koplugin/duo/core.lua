@@ -2623,9 +2623,10 @@ function Core:resume()
     self.sleeping_for_peer = false
     self.sleep_announced_at = nil
     -- Checked whatever happens next, and that is the point: see checkLink.
-    if self:get("direct_link") then
-        self.link_check_at = Util.now() + LINK_CHECK_DELAY
-    end
+    -- Not conditional on the setting: whether this is a link Duo has to
+    -- look after is the plugin's question, and it can answer it without a
+    -- setting having been recorded.
+    self.link_check_at = Util.now() + LINK_CHECK_DELAY
     if not self.paused_role then return end
     self.resume_attempts = 0
     self.resume_at = 0      -- try immediately; the poll loop takes it from there
@@ -2711,7 +2712,7 @@ for the heartbeat, the typography, a book on its way across — so instead it
 keeps checking that the stream still has somewhere to be.
 --]]--
 function Core:checkLinkHealth()
-    if not self:isActive() or not self:get("direct_link") then return end
+    if not self:isActive() then return end
     if self:isConnected() then
         self.disconnected_since = nil
         return
@@ -2722,8 +2723,17 @@ function Core:checkLinkHealth()
     if self.link_healed_at and now - self.link_healed_at < LINK_HEAL_EVERY then return end
     self.link_healed_at = now
     if not self.hooks or not self.hooks.reviveDirectLink then return end
-    self:log("apart for a while; checking the link is still there")
-    pcall(self.hooks.reviveDirectLink, true)
+    --[[
+    Forced, not checked. Running the setup script by hand fixes this every
+    time, and the only difference between that and what happens here is
+    that the script does not first ask itself whether the work is needed.
+    Once the two have been unable to reach each other for this long, a link
+    that still looks well plainly is not, and asking can only talk us out
+    of the one thing that works. Rebuilding a link nobody is using costs a
+    few seconds; not rebuilding it costs the feature.
+    ]]
+    self:log("apart for a while; rebuilding the link rather than asking after it")
+    pcall(self.hooks.reviveDirectLink, true, true)
 end
 
 --- Object handed to UIManager so the sockets get polled by the UI loop.

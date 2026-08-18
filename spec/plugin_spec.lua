@@ -343,18 +343,27 @@ T.describe("coming back after a sleep", function()
         Core.link_healed_at = nil
     end)
 
-    T.it("leaves an ordinary network alone", function()
-        -- Taking over somebody's Wi-Fi uninvited is a rude way to recover
-        -- from a nap; this only ever touches a link Duo built.
+    T.it("works out which side of a link built by hand this device is", function()
+        --[[
+        The script is meant to be run over SSH, and a link built that way
+        left nothing behind saying so — so every automatic check decided
+        the link was none of its business and did nothing at all, which is
+        exactly what "it never reconnects" looked like. The addresses give
+        it away; nothing else uses them.
+        ]]
         reset()
         Core.settings.direct_link = nil
-        local checked = 0
-        Core.hooks.reviveDirectLink = function() checked = checked + 1 end
-        Core:resume()
-        T.assertNil(Core.link_check_at, "nothing to check on a network Duo did not build")
-        Core:poll()
-        T.assertEquals(checked, 0)
-        Core.hooks.reviveDirectLink = nil
+        Core.settings.peer_host = "169.254.13.1"
+        T.assertEquals(device.plugin:directLinkRole(), "join")
+        T.assertEquals(Core:get("direct_link"), "join", "and it is remembered")
+
+        -- An ordinary network is somebody else's business.
+        reset()
+        Core.settings.direct_link = nil
+        Core.settings.peer_host = "192.168.1.44"
+        T.assertNil(device.plugin:directLinkRole(),
+            "taking over a network Duo did not build would be rude")
+        Core.settings.peer_host = ""
     end)
 
     T.it("gives up in the end, and says so", function()

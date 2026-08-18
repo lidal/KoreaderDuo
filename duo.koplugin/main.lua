@@ -76,7 +76,7 @@ function Duo:init()
             -- and the module table has none.
             closeDocument = function() self:closeRemoteDocument() end,
             sleepDevice = function() Duo:sleepForPeer() end,
-            reviveDirectLink = function(quiet) return Duo:reviveDirectLink(quiet) end,
+            reviveDirectLink = function(quiet, force) return Duo:reviveDirectLink(quiet, force) end,
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
             getTempDir = function() return Duo:getTempDir() end,
@@ -688,29 +688,69 @@ script checks what the interface is doing before changing anything, so a
 link that survived the sleep costs a status call and nothing more.
 --]]--
 --[[--
+Which side of a direct link this device is, or nil for an ordinary network.
+
+Normally recorded when the link is set up from the menu. Not everybody does
+that, though — the script is meant to be run over SSH, and a link built
+that way left nothing behind saying so, which meant every automatic check
+politely decided the link was none of its business and did nothing at all.
+
+The addresses give it away. They are fixed, and nothing but this
+arrangement uses them.
+--]]--
+function Duo:directLinkRole()
+    local stored = Core:get("direct_link")
+    if stored == "host" or stored == "join" then return stored end
+
+    local DirectLink = require("duo/directlink")
+    local role
+    if Core:get("peer_host") == DirectLink.HOST_ADDRESS then
+        role = "join"
+    elseif NetUtil.getLocalIP() == DirectLink.HOST_ADDRESS then
+        role = "host"
+    end
+    if role then
+        logger.dbg("Duo: this looks like a direct link set up by hand:", role)
+        Core:set("direct_link", role)
+    end
+    return role
+end
+
+--[[--
 Puts a link Duo built back up, and says out loud what it found.
 
 Deliberately noisy. Everything here happens while nobody is looking — a
 device wakes, checks its own network, and either finds it or does not — and
-a silent failure is indistinguishable from a plugin that simply does not
-work. One line when it rebuilds, one when it succeeds, and the script's own
-words when it does not.
+a silent failure is indistinguishable from a plugin that does not work. One
+line when it rebuilds, one when it succeeds, and the script's own words
+when it does not.
 
+`force` skips asking whether the link looks well and simply rebuilds it,
+which is what running the script by hand does and what actually works. The
+check is worth having when the pair is merely waking; it is worth nothing
+once they have been unable to reach each other for a while, because by
+then a link that looks up plainly is not, and the only thing the check can
+do is talk you out of the fix.
+
+@tparam[opt] boolean quiet  do not say anything about a link that is fine
+@tparam[opt] boolean force  rebuild without asking whether it is needed
 @treturn string  "up", "rebuilt", "failed", or "not-ours"
 --]]--
-function Duo:reviveDirectLink(quiet)
-    local role = Core:get("direct_link")
-    if role ~= "host" and role ~= "join" then return "not-ours" end
+function Duo:reviveDirectLink(quiet, force)
+    local role = self:directLinkRole()
+    if not role then return "not-ours" end
 
     local DirectLink = require("duo/directlink")
-    local status = DirectLink.run("status") or ""
-    if DirectLink.isUp(status, role) then
-        logger.dbg("Duo: the direct link is still up")
-        if not quiet then Core:notify(_("Duo: the direct link is up")) end
-        return "up"
+    if not force then
+        local status = DirectLink.run("status") or ""
+        if DirectLink.isUp(status, role) then
+            logger.dbg("Duo: the direct link is still up")
+            if not quiet then Core:notify(_("Duo: the direct link is up")) end
+            return "up"
+        end
     end
 
-    logger.dbg("Duo: the direct link is gone, rebuilding it")
+    logger.dbg("Duo: rebuilding the direct link, role", role, "forced", tostring(force))
     Core:notify(_("Duo: rebuilding the direct link…"))
     local output = (role == "host" and DirectLink.host() or DirectLink.join()) or ""
     local failure = output:match("\nerror: ([^\n]*)") or output:match("^error: ([^\n]*)")
@@ -1250,7 +1290,7 @@ function Duo:getMenuTable()
                 {
                     text = _("Check the direct link now"),
                     help_text = _("Ask whether the link Duo built is still there, and rebuild it if not. The same check that runs by itself when the two have been apart for a while — this one just says what it found straight away."),
-                    enabled_func = function() return Core:get("direct_link") ~= nil end,
+                    enabled_func = function() return Duo:directLinkRole() ~= nil end,
                     keep_menu_open = true,
                     callback = function()
                         local found = self:reviveDirectLink()
