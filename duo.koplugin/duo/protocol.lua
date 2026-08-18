@@ -18,41 +18,44 @@ wrong.
 local Protocol = {}
 
 --- Bumped when the message grammar changes incompatibly.
-Protocol.VERSION = 1
+--- 2: the roles became leader and follower, and `master_page` with them.
+--- A pair mid-upgrade is refused at the handshake, which beats one device
+--- reading a field the other never sends and quietly showing page nil.
+Protocol.VERSION = 2
 
 --- A single message may not exceed this (a book path plus a title fits easily).
 Protocol.MAX_LINE = 4096
 
 -- Message types.
-Protocol.CHALLENGE = "CHALLENGE" -- master -> peer, on accept: nonce for the token proof
-Protocol.HELLO     = "HELLO"     -- peer -> master: identity + proof of the shared token
-Protocol.WELCOME   = "WELCOME"   -- master -> peer: accepted, here is my own proof + your slot
-Protocol.DENY      = "DENY"      -- master -> peer: rejected (bad token, wrong version, full)
+Protocol.CHALLENGE = "CHALLENGE" -- leader -> peer, on accept: nonce for the token proof
+Protocol.HELLO     = "HELLO"     -- peer -> leader: identity + proof of the shared token
+Protocol.WELCOME   = "WELCOME"   -- leader -> peer: accepted, here is my own proof + your slot
+Protocol.DENY      = "DENY"      -- leader -> peer: rejected (bad token, wrong version, full)
 Protocol.PING      = "PING"
 Protocol.PONG      = "PONG"
-Protocol.STATE     = "STATE"     -- master -> peer: the page this peer must display
-Protocol.TURN      = "TURN"      -- peer -> master: user turned the page on the slave
-Protocol.GOTO      = "GOTO"      -- peer -> master: user jumped to an absolute page
-Protocol.DOC       = "DOC"       -- master -> peer: open this document
-Protocol.HOME      = "HOME"      -- master -> peer: I closed the book; come back to the list
-Protocol.OPEN      = "OPEN"      -- peer -> master: open this book for the pair
+Protocol.STATE     = "STATE"     -- leader -> peer: the page this peer must display
+Protocol.TURN      = "TURN"      -- peer -> leader: user turned the page on the follower
+Protocol.GOTO      = "GOTO"      -- peer -> leader: user jumped to an absolute page
+Protocol.DOC       = "DOC"       -- leader -> peer: open this document
+Protocol.HOME      = "HOME"      -- leader -> peer: I closed the book; come back to the list
+Protocol.OPEN      = "OPEN"      -- peer -> leader: open this book for the pair
 Protocol.TYPO      = "TYPO"      -- either way: lay the book out like this
 Protocol.CONF      = "CONF"      -- either way: these are the shared settings
 Protocol.LIGHT     = "LIGHT"     -- either way: set the frontlight to this
-Protocol.BROWSE    = "BROWSE"    -- master -> peer: show this part of the book list
-Protocol.BTURN     = "BTURN"     -- peer -> master: user swiped the book list
-Protocol.LIB_REQ   = "LIB_REQ"   -- peer -> master: what is in the shared folder?
-Protocol.LIB_ITEM  = "LIB_ITEM"  -- master -> peer: one book in it
-Protocol.LIB_END   = "LIB_END"   -- master -> peer: that is the whole folder
-Protocol.BOOK_REQ  = "BOOK_REQ"  -- peer -> master: I do not have that book
-Protocol.BOOK_HEAD = "BOOK_HEAD" -- master -> peer: here it comes
-Protocol.BOOK_DATA = "BOOK_DATA" -- master -> peer: a chunk of it
-Protocol.BOOK_DONE = "BOOK_DONE" -- master -> peer: that was all of it
+Protocol.BROWSE    = "BROWSE"    -- leader -> peer: show this part of the book list
+Protocol.BTURN     = "BTURN"     -- peer -> leader: user swiped the book list
+Protocol.LIB_REQ   = "LIB_REQ"   -- peer -> leader: what is in the shared folder?
+Protocol.LIB_ITEM  = "LIB_ITEM"  -- leader -> peer: one book in it
+Protocol.LIB_END   = "LIB_END"   -- leader -> peer: that is the whole folder
+Protocol.BOOK_REQ  = "BOOK_REQ"  -- peer -> leader: I do not have that book
+Protocol.BOOK_HEAD = "BOOK_HEAD" -- leader -> peer: here it comes
+Protocol.BOOK_DATA = "BOOK_DATA" -- leader -> peer: a chunk of it
+Protocol.BOOK_DONE = "BOOK_DONE" -- leader -> peer: that was all of it
 Protocol.BOOK_ERR  = "BOOK_ERR"  -- either way: the transfer failed
-Protocol.NAP       = "NAP"       -- master -> peer: I am dozing off / I am back
+Protocol.NAP       = "NAP"       -- leader -> peer: I am dozing off / I am back
 Protocol.SLEEP     = "SLEEP"     -- either way: I am going to sleep, do the same
 Protocol.NOTE      = "NOTE"      -- either way: show this text to the user
-Protocol.SYNC      = "SYNC"      -- peer -> master: (re)send me the current state
+Protocol.SYNC      = "SYNC"      -- peer -> leader: (re)send me the current state
 Protocol.BYE       = "BYE"       -- either way: closing on purpose
 
 local SAFE = {}

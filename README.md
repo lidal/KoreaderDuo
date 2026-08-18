@@ -2,20 +2,20 @@
 
 Two e-readers, side by side, showing one book as a two-page spread.
 
-One device is the **master**: it owns the page number and tells the other
-what to show. The other is the **slave**: it displays the page it is given
-and can pass page turns back. A single tap moves both.
+One device is the **leader**: it owns the page number and tells the other
+what to show. The other is the **follower**: it displays the page it is
+given and can pass page turns back. A single tap moves both.
 
-![One tap on the master moves both devices on by two](screenshots/page-turn.png)
+![One tap on the leader moves both devices on by two](screenshots/page-turn.png)
 
 Two copies of KOReader reading *Alice's Adventures in Wonderland*. The
-master is on page 13, the slave on 14, and the prose runs straight across
+leader is on page 13, the follower on 14, and the prose runs straight across
 the gap — the left screen ends *"she was now the right size for going"* and
 the right picks up *"through the little door into that lovely garden."* One
 tap takes the pair to 15 and 16, so no page is read twice or skipped.
 
 **Mirror mode** shows the same page on both, for reading along with someone
-else. A third device joins as slot 2 and shows the page after the slave's.
+else. A third device joins as slot 2 and shows the page after the follower's.
 
 ## Installing
 
@@ -33,16 +33,25 @@ and in the file manager.
 
 ## Pairing
 
-On the device holding the **left** page: **Duo → Connect the two devices… →
-This is the master (left page)**. Note the pairing code it shows.
+Two questions, in that order, on each device: **how** the pair should reach
+each other, then **which** device this one is.
 
-On the other: **Duo → Connect the two devices… → Connect to a master (right
-page)**. It searches the network, so there is normally no address to type —
-pick the master and enter the code if asked.
+**Duo → Connect the two devices…**
 
-That is it. Open a book on the master and the slave follows. Closing it
-takes both back to the book list, and a book tapped on the *slave* opens on
-both: the tap goes to the master, which leads the way in, so the two never
+1. **Over a Wi-Fi network** — both already on the same router or hotspot —
+   or **Directly, with no router**, where one device makes the network
+   itself.
+2. **This device leads (left page)** on one, **This device follows (right
+   page)** on the other.
+
+The leader shows a pairing code. The follower searches and lists what it
+finds, so there is normally no address to type — pick the leader and enter
+the code if asked. Over a direct link there is nothing to pick at all: the
+leader is always at a fixed address and the follower goes straight there.
+
+That is it. Open a book on the leader and the follower follows. Closing it
+takes both back to the book list, and a book tapped on the *follower* opens on
+both: the tap goes to the leader, which leads the way in, so the two never
 end up in different books.
 
 If the search finds nothing — some networks block broadcasts — use **Type
@@ -59,21 +68,20 @@ This is the best-tested path.
 
 ### The two devices, direct — no router, no DHCP
 
-For reading somewhere with no network at all:
+For reading somewhere with no network at all: **Duo → Connect the two
+devices… → Directly, with no router**, then pick which device this is.
 
-**Duo → Connect the two devices… → No Wi-Fi network? Link the two directly…**
-
-The hosting device becomes an access point where it can and an ad-hoc cell
-otherwise, takes `169.254.13.1`, and starts Duo as master.
+The leading device makes the network — an access point where it can, an
+ad-hoc cell otherwise — takes `169.254.13.1`, and starts Duo.
 
 **Then, on the other device** — the step that is easy to miss:
 
-- **Another reader running Duo**: same menu, **Join the link, and be the
-  slave**. It takes `169.254.13.2` and connects on its own, nothing typed.
+- **Another reader running Duo**: same two taps, choosing **This device
+  follows**. It takes `169.254.13.2` and connects on its own, nothing typed.
 - **Anything else** — laptop, phone, desktop KOReader — joins the network
   first, the ordinary way. It is called **`KOReaderDuo`**, passphrase
   **`koreaderduo`** (override with `DUO_SSID` and `DUO_PASSPHRASE`). Then
-  **Connect to a master**; the host is always at `169.254.13.1`.
+  pair as a follower; the leader is always at `169.254.13.1`.
 
 The host's screen says all of this once the link is up.
 
@@ -139,7 +147,7 @@ rfcomm bind /dev/rfcomm0 AA:BB:CC:DD:EE:FF 1     # where rfcomm exists
 ```
 
 Then on both devices: **Duo → Link → Serial line (RFCOMM or UART)**, set
-**Serial device**, and start one as master. There is no address — the line
+**Serial device**, and start one as leader. There is no address — the line
 *is* the connection — and the pairing code still applies. This is tested
 end to end against a pseudo-terminal pair, which is what an RFCOMM channel
 looks like, so it works on anything exposing one.
@@ -197,16 +205,16 @@ It is a soldering job, with three things to get right:
 Everything is under **☰ → Network → Duo (two-device spread)**. The top line
 is the live connection: role, peer, and the pages on show.
 
-![Both pages of Duo's menu, with the status line "Master · Kindle-Right · pages 7–8"](screenshots/duo-menu.png)
+![Both pages of Duo's menu, with the status line "Leader · Kindle-Right · pages 7–8"](screenshots/duo-menu.png)
 
-Taken on the master of a pair reading *Alice*. *Fetch any missing books now*
+Taken on the leader of a pair reading *Alice*. *Fetch any missing books now*
 is greyed out because this is the device the books come **from**.
 
 | Setting | What it does |
 | --- | --- |
-| **Layout → Two-page spread** | Master shows page N, slave shows N+1. A turn moves by two. |
+| **Layout → Two-page spread** | Leader shows page N, follower shows N+1. A turn moves by two. |
 | **Layout → Mirror the same page** | Both show the same page. A turn moves by one. |
-| **Layout → This device holds the right-hand page** | Swaps the sides: the slave shows the *earlier* page. |
+| **Layout → This device holds the right-hand page** | Swaps the sides: the follower shows the *earlier* page. |
 | **Link** | Wi-Fi (any IP network, including Bluetooth PAN), a direct router-free link, or a Bluetooth/serial device. |
 | **Match typography** | Keep both devices laying the book out identically. On by default. |
 | **Match the frontlight** | Keep both at the same brightness, and warmth where they have it. On by default. |
@@ -215,8 +223,8 @@ is greyed out because this is the device the books come **from**.
 | **Keep the whole library in step** | Fetch whatever books the shared folder is missing here. On by default. |
 | **Most to copy in one go** | Ceiling on a single library sync: 512 MB by default. |
 | **Covers now, books when you open them** | Fill the shelf with covers and titles, fetch each book when first opened. On by default. EPUB only. |
-| **Page turns from the other device** | Off makes the slave a display only. |
-| **Follow the master's book** | When the master opens a book, open it here too. |
+| **Page turns from the other device** | Off makes the follower a display only. |
+| **Follow the leader's book** | When the leader opens a book, open it here too. |
 | **Send the book if the other device lacks it** | Hand the file over the same link. On by default. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role used. |
 | **Pairing code** | Shared secret. Empty means any device may connect. |
@@ -226,13 +234,13 @@ is greyed out because this is the device the books come **from**.
 Two Dispatcher actions are registered for gestures and hardware keys: **Duo:
 start/stop** and **Duo: resync now**.
 
-**The settings above are shared, and the master is the tiebreaker.** Every
+**The settings above are shared, and the leader is the tiebreaker.** Every
 row that describes how the *pair* behaves — the layout, page turns from the
 other device, the book list, typography, the frontlight, library syncing and
-its limits — crosses the link. On connecting, the master's values win, so
+its limits — crosses the link. On connecting, the leader's values win, so
 two devices configured differently end up agreeing rather than racing.
-Change one afterwards on either device and the other follows; a slave hands
-its change to the master, which applies it and passes it on.
+Change one afterwards on either device and the other follows; a follower hands
+its change to the leader, which applies it and passes it on.
 
 Not shared, deliberately: the port, the pairing code, the peer address, the
 device name and the transport. Those are what let the two find each other,
@@ -240,13 +248,13 @@ and levelling them would be a fine way for a pair to talk itself into
 silence.
 
 This matters more than it sounds. Several features are checked on *both*
-devices — page turns from the slave for one — so switching such a thing off
+devices — page turns from the follower for one — so switching such a thing off
 on one device used to disable it silently, and which device you had to look
 at differed from feature to feature.
 
 ## The book list, spread too
 
-The same idea one level up: the master shows the first screenful of a
+The same idea one level up: the leader shows the first screenful of a
 folder, the next device the screenful after, and one swipe moves the row.
 Twice the library in view.
 
@@ -257,19 +265,19 @@ fetches what is missing**. The device that is behind asks for the other's
 listing, works out what it lacks, and pulls those books across one at a
 time, counted off in the status line.
 
-![The slave with three books, then with the master's ten, on the second screenful](screenshots/library-sync.png)
+![The follower with three books, then with the leader's ten, on the second screenful](screenshots/library-sync.png)
 
 That is **Keep the whole library in step**, on by default. Off, Duo still
 spreads the list but only reports the difference — the left-hand screen
 above.
 
 **Only books are ever copied.** The shared folder is whichever one the
-master is looking at, so a wrong turn into a downloads folder is easy, and
+leader is looking at, so a wrong turn into a downloads folder is easy, and
 the file browser hides unopenable files only until someone turns that
 setting off. Duo works from an allowlist of the formats KOReader opens —
 EPUB, MOBI, PDF, DjVu, CBZ, plain text and the rest — checked in three
-places: the master leaves non-books out of the listing, the receiver drops
-them from what it asks for, and the master refuses one asked for by name.
+places: the leader leaves non-books out of the listing, the receiver drops
+them from what it asks for, and the leader refuses one asked for by name.
 That last gate is the one that would otherwise put a file's bytes on the
 wire.
 
@@ -314,7 +322,7 @@ mode has only a grid. Duo tells whichever is in charge, in its own terms.
 device showing 2 × 3 covers puts the other on the same grid with the next
 six books.
 
-![Two cover grids of real books, the master showing the first screenful and the slave the next](screenshots/mosaic-spread.png)
+![Two cover grids of real books, the leader showing the first screenful and the follower the next](screenshots/mosaic-spread.png)
 
 Ten Gutenberg EPUBs at `/tmp/kolib`, seven of which the right-hand device
 did not have a minute earlier.
@@ -335,36 +343,34 @@ share only the reading.
 
 ### Only KOReader's own file browser, for now
 
-The shared book list works in KOReader's file browser and nowhere else.
-Duo binds to the `FileChooser` the file manager builds, so alternative home
-screens — [SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin)
-and the like — are not covered: their home screen, flat library and cover
-decks are their own widgets, not a file chooser, and Duo will not spread
-them. Nothing breaks; the listing simply is not shared while you are on
-those screens, and dropping into the real file browser (SimpleUI's
-**Library** action, for instance) brings it back.
+The shared book list works in KOReader's file browser and nowhere else. Duo
+binds to the `FileChooser` the file manager builds, so plugins that replace
+the browser with a home screen or a library grid of their own are not
+covered: those are their own widgets, not a file chooser, and Duo will not
+spread them. Nothing breaks — the listing simply is not shared while you are
+on such a screen, and stepping into the real file browser brings it back.
 
 One consequence is worth knowing, because it is not obvious. Such plugins
 usually open books by calling `ReaderUI:showReader` directly rather than
-going through the file manager, which is the point Duo intercepts. So on
-the slave, a book tapped on one of those screens opens **locally only** —
-it is not handed to the master, and the two devices end up in different
-books. With *covers now, books when you open them* on, tapping a stand-in
-there opens the placeholder rather than fetching the real book.
+going through the file manager, which is the point Duo intercepts. So on the
+follower, a book tapped on one of those screens opens **locally only** — it
+is not handed to the leader, and the two devices end up in different books.
+With *covers now, books when you open them* on, tapping a stand-in there
+opens the placeholder rather than fetching the real book.
 
-Reading itself is unaffected: none of these plugins touches the reader's
-page turns, so the spread, typography, the frontlight and book transfer all
-work normally once a book is open.
+Reading itself is unaffected: such plugins do not touch the reader's page
+turns, so the spread, typography, the frontlight and book transfer all work
+normally once a book is open.
 
 ## Sending the book
 
 Following someone's reading is no use if you cannot open what they are
-reading. When the master opens a book the other device lacks, that device
+reading. When the leader opens a book the other device lacks, that device
 asks for it, the file comes down the same link as the page numbers, and it
 opens at the right page. On by default; no server, cable or account. The
 status line shows progress.
 
-- **Only the open book can be asked for.** The master answers a request only
+- **Only the open book can be asked for.** The leader answers a request only
   if it names the book it actually has open. No arbitrary paths.
 - **Books land in a `Duo` folder** inside your library.
 - **Half a book is never left behind.** Written to a part-file, moved into
@@ -392,9 +398,9 @@ Two characters' difference, and nothing needs escaping at all.
 A spread only works if both devices break lines in the same places, and
 "please set the same font size on both" is an instruction nobody follows.
 
-**On connecting, the master's settings win.** Afterwards a change on
-*either* device moves the rest, master included — a slave hands its change
-over and the master applies it and passes it on, so the master is still the
+**On connecting, the leader's settings win.** Afterwards a change on
+*either* device moves the rest, leader included — a follower hands its change
+over and the leader applies it and passes it on, so the leader is still the
 only device deciding.
 
 Matched — everything that moves a line break:
@@ -416,7 +422,7 @@ that never happened.
 
 Two caveats:
 
-- **A typeface has to exist on both devices.** If the master uses one this
+- **A typeface has to exist on both devices.** If the leader uses one this
   device lacks, Duo says so rather than leaving the pages misaligned.
 - **Different screen sizes cannot be matched.** Two Kindle models paginate
   differently whatever the settings. Duo warns about it once, after matching
@@ -443,13 +449,13 @@ instead of darkness.
 
 Percentages rounded onto a 24-step light rarely land exactly, so a
 step-either-way tolerance stops the two devices politely correcting each
-other for ever. As with typography, the master wins on connect and a change
+other for ever. As with typography, the leader wins on connect and a change
 on either device afterwards moves the rest.
 
 ## How it works
 
-- **One authority.** Only the master decides what page anything shows. A tap
-  on the slave is a *request*: it goes to the master, which moves and then
+- **One authority.** Only the leader decides what page anything shows. A tap
+  on the follower is a *request*: it goes to the leader, which moves and then
   tells everyone where they stand. The screens cannot drift apart because
   only one of them is ever deciding.
 - **Page turns are intercepted, not simulated.** Every tap, swipe, gesture
@@ -460,7 +466,7 @@ on either device afterwards moves the rest.
   instance every time you open a book, so the engine lives in a module
   singleton (`duo/core.lua`) and the instance only attaches a binding to the
   current document.
-- **Pairing without sending the secret.** The master challenges with a
+- **Pairing without sending the secret.** The leader challenges with a
   nonce; each side answers `SHA-256(nonce:code)`. The code never goes on the
   wire and a captured proof is useless next time. This keeps the wrong
   device out; it is not protection against someone who controls your
@@ -478,7 +484,7 @@ on either device afterwards moves the rest.
   with it. Duo reconnects by itself, but the gap is visible.
 - **Sleep.** Sockets are shut down cleanly on suspend rather than left to
   time out. Coming back is a retry, not one attempt: a device wakes well
-  before its radio, and a master that binds a socket the instant it opens
+  before its radio, and a leader that binds a socket the instant it opens
   its eyes binds nothing. It keeps trying quietly for about two minutes, and
   rebuilds a router-free link it set up itself, since that does not survive
   a deep sleep — the system's own Wi-Fi daemon takes the interface back.
@@ -494,7 +500,7 @@ on either device afterwards moves the rest.
   A sleeping follower cannot be woken by the leader — nothing arrives to
   wake it, which is the point of being asleep. Waking them is a tap each,
   and the follower asks where it belongs the moment it comes back.
-- **Kindle firewall.** Kindles drop incoming connections; the master opens
+- **Kindle firewall.** Kindles drop incoming connections; the leader opens
   the port with `iptables` while it runs and closes it after.
 - **Battery.** The heartbeat is one small packet every four seconds on an
   open socket. Wi-Fi being on at all is the real cost.
@@ -506,17 +512,17 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-258 tests, no mocking of the interesting parts:
+260 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 37 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
+| `plugin_spec` | 38 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
 | `integration_spec` | 64 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 7 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel |
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
-| `library_spec` | 14 | **The whole library brought into step**: the slave in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
+| `library_spec` | 14 | **The whole library brought into step**: the follower in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it, and refusing a folder the device does not have |
 | `booktransfer_spec` | 19 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `frontlight_spec` | 13 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
@@ -545,36 +551,36 @@ The harness is not the last word, though — see below.
 The screenshots are two copies of **KOReader v2026.03** running the plugin:
 separate processes and settings directories, paired over a real socket,
 reading Gutenberg's *Alice in Wonderland* laid out by crengine, with page
-turns arriving as real events. The status line — `Master · Kindle-Right ·
+turns arriving as real events. The status line — `Leader · Kindle-Right ·
 pages 7–8` — is the plugin reporting the live connection.
 
 Checked there, not only in the suite:
 
-- **Typography.** Raising the font size on the master moved the slave with
+- **Typography.** Raising the font size on the leader moved the follower with
   it. The follower relaid the book out, put itself back on the right page
   without waiting for a turn, and said nothing about the disagreement while
   the change was in flight.
-- **Sending the book.** With the master's library hidden from the slave (a
+- **Sending the book.** With the leader's library hidden from the follower (a
   tmpfs over it in a private mount namespace, so the file really was
-  missing), the slave asked, received all 174,311 bytes — identical MD5 —
-  and opened it as page 10 against the master's 9.
-- **The whole library.** Same trick one folder up: three books on the slave
-  against the master's ten real Gutenberg EPUBs at the same path. The slave
+  missing), the follower asked, received all 174,311 bytes — identical MD5 —
+  and opened it as page 10 against the leader's 9.
+- **The whole library.** Same trick one folder up: three books on the follower
+  against the leader's ten real Gutenberg EPUBs at the same path. The follower
   fetched the seven it lacked, 4.2 MB in forty seconds, every MD5 matching,
   and moved to the second screenful unprompted. Real books are also what
   turned up the base64 bug above; fixtures would not have.
 - **Paging the grid.** Thirty books in a 2 × 3 grid, six screenfuls. One tap
   took the pair from 1 and 2 to 3 and 4, then 5 and 6, then stopped rather
-  than wrapping. A swipe on the *slave* moved the row back.
+  than wrapping. A swipe on the *follower* moved the row back.
 - **Covers first.** Ten books arrived as stand-ins — 2.2 MB against 6.2 MB —
   covers drawn by KOReader's own cover browser out of files holding no book
   at all. Tapping *Wuthering Heights* fetched the real 587,526 bytes in five
   seconds and opened at page 1 of 705.
 - **Matching the screenful.** Against all three widgets that draw the list.
-  Plain browser: the slave went from 6 items a screen to the master's 10.
+  Plain browser: the follower went from 6 items a screen to the leader's 10.
   Cover browser list mode, where the global setting does nothing: 6 to 10
   through that plugin's own `files_per_page`. Mosaic: a 2 × 2 grid to the
-  master's 2 × 3, taking books 6–10. Given a screen too short for ten rows
+  leader's 2 × 3, taking books 6–10. Given a screen too short for ten rows
   the widget overrode the count back to nine, and Duo said so rather than
   pretending the halves lined up.
 

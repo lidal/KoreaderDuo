@@ -31,45 +31,45 @@ local function pumpUntil(objects, condition, timeout)
     return false
 end
 
---- Brings up a connected master/slave pair on loopback.
-local function connectedPair(master_token, slave_token)
+--- Brings up a connected leader/follower pair on loopback.
+local function connectedPair(leader_token, follower_token)
     local port = freePort()
     local server = assert(TcpTransport.listen(port, "127.0.0.1"))
     local connector = assert(TcpTransport.connect("127.0.0.1", port, 3))
 
-    local slave_stream, master_stream
+    local follower_stream, leader_stream
     local deadline = socket.gettime() + 3
-    while socket.gettime() < deadline and not (slave_stream and master_stream) do
-        master_stream = master_stream or server:accept()
-        if not slave_stream then
+    while socket.gettime() < deadline and not (follower_stream and leader_stream) do
+        leader_stream = leader_stream or server:accept()
+        if not follower_stream then
             local result = connector:poll()
-            if result then slave_stream = result end
+            if result then follower_stream = result end
         end
         socket.sleep(0.005)
     end
-    assert(slave_stream and master_stream, "sockets did not connect")
+    assert(follower_stream and leader_stream, "sockets did not connect")
 
-    local events = { master = {}, slave = {} }
-    local master = Link.new{
-        stream = master_stream,
-        is_master = true,
-        token = master_token,
+    local events = { leader = {}, follower = {} }
+    local leader = Link.new{
+        stream = leader_stream,
+        is_leader = true,
+        token = leader_token,
         name = "Kindle-L",
         slot = 1,
-        on_message = function(_, msg) events.master[#events.master+1] = msg end,
-        on_close = function(_, reason) events.master.closed = reason end,
-        on_ready = function() events.master.ready = true end,
+        on_message = function(_, msg) events.leader[#events.leader+1] = msg end,
+        on_close = function(_, reason) events.leader.closed = reason end,
+        on_ready = function() events.leader.ready = true end,
     }
-    local slave = Link.new{
-        stream = slave_stream,
-        is_master = false,
-        token = slave_token,
+    local follower = Link.new{
+        stream = follower_stream,
+        is_leader = false,
+        token = follower_token,
         name = "Kindle-F",
-        on_message = function(_, msg) events.slave[#events.slave+1] = msg end,
-        on_close = function(_, reason) events.slave.closed = reason end,
-        on_ready = function() events.slave.ready = true end,
+        on_message = function(_, msg) events.follower[#events.follower+1] = msg end,
+        on_close = function(_, reason) events.follower.closed = reason end,
+        on_ready = function() events.follower.ready = true end,
     }
-    return master, slave, events, server
+    return leader, follower, events, server
 end
 
 T.describe("tcp transport", function()
@@ -154,25 +154,25 @@ end)
 
 T.describe("link handshake", function()
     T.it("brings both sides up when the tokens match", function()
-        local master, slave, events, server = connectedPair("K7F2QX", "k7f-2qx")
-        T.assertTrue(pumpUntil({ master, slave }, function()
-            return master:isReady() and slave:isReady()
+        local leader, follower, events, server = connectedPair("K7F2QX", "k7f-2qx")
+        T.assertTrue(pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
         end), "handshake did not complete")
-        T.assertTrue(events.master.ready)
-        T.assertTrue(events.slave.ready)
-        T.assertEquals(master.peer_name, "Kindle-F")
-        T.assertEquals(slave.peer_name, "Kindle-L")
-        T.assertEquals(slave.slot, 1)
-        master:close("done"); slave:close("done"); server:close()
+        T.assertTrue(events.leader.ready)
+        T.assertTrue(events.follower.ready)
+        T.assertEquals(leader.peer_name, "Kindle-F")
+        T.assertEquals(follower.peer_name, "Kindle-L")
+        T.assertEquals(follower.slot, 1)
+        leader:close("done"); follower:close("done"); server:close()
     end)
 
-    T.it("refuses a slave with the wrong token", function()
-        local master, slave, events, server = connectedPair("K7F2QX", "WRONG9")
-        T.assertTrue(pumpUntil({ master, slave }, function()
-            return master:isClosed() and slave:isClosed()
+    T.it("refuses a follower with the wrong token", function()
+        local leader, follower, events, server = connectedPair("K7F2QX", "WRONG9")
+        T.assertTrue(pumpUntil({ leader, follower }, function()
+            return leader:isClosed() and follower:isClosed()
         end), "bad pairing was not rejected")
-        T.assertTrue(not master:isReady())
-        T.assertMatch(events.slave.closed, "pairing code")
+        T.assertTrue(not leader:isReady())
+        T.assertMatch(events.follower.closed, "pairing code")
         server:close()
     end)
 
@@ -191,8 +191,8 @@ T.describe("link handshake", function()
         end)
 
         local token = "K7F2QX"
-        local master = Link.new{ stream = accepted, is_master = true, token = token, name = "L" }
-        local slave = Link.new{ stream = client, is_master = false, token = token, name = "F" }
+        local leader = Link.new{ stream = accepted, is_leader = true, token = token, name = "L" }
+        local follower = Link.new{ stream = client, is_leader = false, token = token, name = "F" }
 
         -- Watch every byte the two of them exchange.
         local seen = {}
@@ -203,89 +203,89 @@ T.describe("link handshake", function()
                 return original_send(self, data)
             end
         end
-        pumpUntil({ master, slave }, function()
-            return master:isReady() and slave:isReady()
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
         end)
         local transcript = table.concat(seen)
         T.assertTrue(#transcript > 0, "nothing was exchanged")
         T.assertNil(transcript:find(token, 1, true), "the pairing token leaked onto the wire")
-        master:close(); slave:close(); server:close()
+        leader:close(); follower:close(); server:close()
     end)
 
     T.it("accepts anybody when no token is set", function()
-        local master, slave, _, server = connectedPair("", "")
-        T.assertTrue(pumpUntil({ master, slave }, function()
-            return master:isReady() and slave:isReady()
+        local leader, follower, _, server = connectedPair("", "")
+        T.assertTrue(pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
         end))
-        master:close(); slave:close(); server:close()
+        leader:close(); follower:close(); server:close()
     end)
 end)
 
 T.describe("link traffic", function()
     T.it("carries application messages both ways", function()
-        local master, slave, events, server = connectedPair("T0KEN2", "T0KEN2")
-        pumpUntil({ master, slave }, function()
-            return master:isReady() and slave:isReady()
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
         end)
 
-        master:send(Protocol.STATE, { page = 42, pages = 300 })
-        slave:send(Protocol.TURN, { dir = -1 })
-        T.assertTrue(pumpUntil({ master, slave }, function()
-            return #events.slave > 0 and #events.master > 0
+        leader:send(Protocol.STATE, { page = 42, pages = 300 })
+        follower:send(Protocol.TURN, { dir = -1 })
+        T.assertTrue(pumpUntil({ leader, follower }, function()
+            return #events.follower > 0 and #events.leader > 0
         end), "messages did not arrive")
 
-        T.assertEquals(events.slave[1].type, "STATE")
-        T.assertEquals(Protocol.num(events.slave[1], "page"), 42)
-        T.assertEquals(events.master[1].type, "TURN")
-        T.assertEquals(Protocol.num(events.master[1], "dir"), -1)
-        master:close(); slave:close(); server:close()
+        T.assertEquals(events.follower[1].type, "STATE")
+        T.assertEquals(Protocol.num(events.follower[1], "page"), 42)
+        T.assertEquals(events.leader[1].type, "TURN")
+        T.assertEquals(Protocol.num(events.leader[1], "dir"), -1)
+        leader:close(); follower:close(); server:close()
     end)
 
     T.it("keeps itself alive with heartbeats and measures latency", function()
-        local master, slave, _, server = connectedPair("T0KEN2", "T0KEN2")
-        pumpUntil({ master, slave }, function()
-            return master:isReady() and slave:isReady()
+        local leader, follower, _, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
         end)
         -- PING_INTERVAL is 4s; wait past it and confirm nothing timed out.
         local started = socket.gettime()
-        pumpUntil({ master, slave }, function()
+        pumpUntil({ leader, follower }, function()
             return socket.gettime() - started > 4.5
         end, 6)
-        T.assertTrue(master:isReady(), "master dropped the link")
-        T.assertTrue(slave:isReady(), "slave dropped the link")
-        T.assertTrue(master.latency ~= nil or slave.latency ~= nil, "no round trip measured")
-        master:close(); slave:close(); server:close()
+        T.assertTrue(leader:isReady(), "leader dropped the link")
+        T.assertTrue(follower:isReady(), "follower dropped the link")
+        T.assertTrue(leader.latency ~= nil or follower.latency ~= nil, "no round trip measured")
+        leader:close(); follower:close(); server:close()
     end)
 
     T.it("notices when the peer vanishes", function()
-        local master, slave, events, server = connectedPair("T0KEN2", "T0KEN2")
-        pumpUntil({ master, slave }, function()
-            return master:isReady() and slave:isReady()
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
         end)
-        slave.stream:close() -- yanked cable / device suspended
-        T.assertTrue(pumpUntil({ master }, function()
-            return master:isClosed()
-        end), "master did not notice the peer leaving")
-        T.assertMatch(events.master.closed, "disconnect")
+        follower.stream:close() -- yanked cable / device suspended
+        T.assertTrue(pumpUntil({ leader }, function()
+            return leader:isClosed()
+        end), "leader did not notice the peer leaving")
+        T.assertMatch(events.leader.closed, "disconnect")
         server:close()
     end)
 
     T.it("says goodbye on a clean close", function()
-        local master, slave, events, server = connectedPair("T0KEN2", "T0KEN2")
-        pumpUntil({ master, slave }, function()
-            return master:isReady() and slave:isReady()
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
         end)
-        master:close("stopped by user", true)
-        T.assertTrue(pumpUntil({ slave }, function()
-            return slave:isClosed()
-        end), "slave missed the goodbye")
-        T.assertMatch(events.slave.closed, "stopped by user")
+        leader:close("stopped by user", true)
+        T.assertTrue(pumpUntil({ follower }, function()
+            return follower:isClosed()
+        end), "follower missed the goodbye")
+        T.assertMatch(events.follower.closed, "stopped by user")
         server:close()
     end)
 end)
 
 T.describe("discovery", function()
-    T.it("finds a master over UDP", function()
+    T.it("finds a leader over UDP", function()
         local udp_port = freePort()
         local responder = assert(Discovery.newResponder{
             port = udp_port,

@@ -34,11 +34,11 @@ print(("book: %s — %d pages of %d×%d"):format(
 os.execute("mkdir -p " .. OUT_DIR)
 
 local controller = Controller.new{ first_port = 18600 }
-local names = { "master", "slave", "slave2" }
+local names = { "leader", "follower", "follower2" }
 local devices = {}
 for index = 1, DEVICE_COUNT do
-    devices[index] = controller:spawn(names[index] or ("slave" .. index), { book = BOOK })
-    devices[index].label = names[index] or ("slave" .. index)
+    devices[index] = controller:spawn(names[index] or ("follower" .. index), { book = BOOK })
+    devices[index].label = names[index] or ("follower" .. index)
 end
 
 local function call(device, code) return controller:call(device, code) end
@@ -51,11 +51,11 @@ for _, device in ipairs(devices) do
     call(device, "Core.settings.discovery_port = 19996")
     call(device, "Core.settings.mode = 'spread'")
 end
-call(devices[1], "Core:start('master')")
+call(devices[1], "Core:start('leader')")
 for index = 2, #devices do
-    call(devices[index], ("Core:start('slave', { host = '127.0.0.1', port = %d })"):format(PORT))
+    call(devices[index], ("Core:start('follower', { host = '127.0.0.1', port = %d })"):format(PORT))
 end
-controller:assertEventually(devices[1], "Core:slaveCount()", #devices - 1, "not everybody connected", 20)
+controller:assertEventually(devices[1], "Core:followerCount()", #devices - 1, "not everybody connected", 20)
 print(("connected: %s"):format(call(devices[1], "Core:getStatusText()")))
 
 --- Reads every screen once the pages have stopped moving.
@@ -103,8 +103,8 @@ call(devices[1], "D:tapForward()")
 capture("and one more")
 
 call(devices[#devices], "D:tapForward()")
-capture("a tap on the slave instead",
-    "The tap is forwarded to the master, which moves the pair. Only one device ever decides.")
+capture("a tap on the follower instead",
+    "The tap is forwarded to the leader, which moves the pair. Only one device ever decides.")
 
 call(devices[1], "Core.settings.mode = 'mirror'; Core:broadcastState()")
 capture("mirror mode", "The same page on both, for reading along with somebody else.")

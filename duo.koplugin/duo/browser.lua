@@ -1,7 +1,7 @@
 --[[--
 The book list, spread across the devices too.
 
-The same idea as the reading spread, one level up: the master shows the
+The same idea as the reading spread, one level up: the leader shows the
 first screenful of the folder, the next device shows the screenful after
 that, and one swipe moves the whole row along. Twelve books in view instead
 of six, and picking one on either device opens it on both.

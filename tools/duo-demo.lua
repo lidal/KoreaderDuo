@@ -3,7 +3,7 @@ Runs a real Duo session and records what each device displayed.
 
     luajit tools/duo-demo.lua [device-count]
 
-Starts one master and N-1 slaves as separate processes, connects them over
+Starts one leader and N-1 followers as separate processes, connects them over
 real sockets, performs a scripted sequence of taps and jumps, and after each
 one asks every device what page it is showing. Prints a table, and writes
 `/tmp/duo-demo-trace.lua` for anything that wants to draw it.
@@ -23,9 +23,9 @@ local PORT = 19990
 local controller = Controller.new{ first_port = 18700 }
 
 local devices = {}
-local names = { "master", "slave", "slave2", "slave3" }
+local names = { "leader", "follower", "follower2", "follower3" }
 for index = 1, DEVICE_COUNT do
-    local name = names[index] or ("slave" .. (index - 1))
+    local name = names[index] or ("follower" .. (index - 1))
     devices[index] = controller:spawn(name, { pages = PAGES })
     devices[index].label = name
 end
@@ -42,11 +42,11 @@ local function connect()
         call(device, "Core.settings.mode = 'spread'")
         call(device, "Core.settings.reverse = false")
     end
-    call(devices[1], "Core:start('master')")
+    call(devices[1], "Core:start('leader')")
     for index = 2, #devices do
-        call(devices[index], ("Core:start('slave', { host = '127.0.0.1', port = %d })"):format(PORT))
+        call(devices[index], ("Core:start('follower', { host = '127.0.0.1', port = %d })"):format(PORT))
     end
-    controller:assertEventually(devices[1], "Core:slaveCount()", #devices - 1,
+    controller:assertEventually(devices[1], "Core:followerCount()", #devices - 1,
         "not everybody connected", 20)
 end
 
@@ -100,14 +100,14 @@ record("open at page 10")
 
 for _ = 1, 3 do
     call(devices[1], "D:tapForward()")
-    record("tap forward on the master")
+    record("tap forward on the leader")
 end
 
 call(devices[#devices], "D:tapForward()")
-record("tap forward on the last slave")
+record("tap forward on the last follower")
 
 call(devices[1], "D:tapBack()")
-record("tap back on the master")
+record("tap back on the leader")
 
 call(devices[1], "D:jumpToPage(100)")
 record("jump to page 100 (contents)")
@@ -124,7 +124,7 @@ call(devices[1], ("D:jumpToPage(%d)"):format(PAGES))
 record("jump to the last page")
 
 print(string.rep("─", 34 + DEVICE_COUNT * 15))
-print(("a page turn moves the master %d pages (%d devices)"):format(trace.step_size, DEVICE_COUNT))
+print(("a page turn moves the leader %d pages (%d devices)"):format(trace.step_size, DEVICE_COUNT))
 print(("status: %s"):format(call(devices[1], "Core:getStatusText()")))
 print("")
 

@@ -1,8 +1,8 @@
 --[[--
 KOReader Duo — turn two devices into one two-page spread.
 
-One device is the master: it owns the page number and tells the other what
-to show. The other is the slave: it displays whatever it is told and can
+One device is the leader: it owns the page number and tells the other what
+to show. The other is the follower: it displays whatever it is told and can
 forward page turns back. Put them side by side and you get a book with a
 left page and a right page.
 
@@ -374,7 +374,7 @@ exactly the right moment.
 --]]--
 function Duo:onPathChanged()
     self:bindBrowser()
-    if Core:isMaster() then
+    if Core:isLeader() then
         Core:broadcastBrowser()
     end
 end
@@ -475,7 +475,7 @@ end
 
 function Duo:resync()
     if not Core:isActive() then return end
-    if Core:isMaster() then
+    if Core:isLeader() then
         Core:broadcastDocument()
         Core:broadcastState()
         Core:notify(_("Duo: resent the current page"))
@@ -483,7 +483,7 @@ function Duo:resync()
         local link = Core:getReadyLinks()[1]
         if link then
             link:send(require("duo/protocol").SYNC, {})
-            Core:notify(_("Duo: asked the master where we are"))
+            Core:notify(_("Duo: asked the leader where we are"))
         end
     end
 end
@@ -521,7 +521,7 @@ end
 --[[--
 Decides what a tap on a book in the list means on this device.
 
-On the master it means what it always did. On a slave there are two other
+On the leader it means what it always did. On a follower there are two other
 possibilities: the file is a stand-in, and the real book has to be fetched
 before there is anything to open; or it is a real book, and the pair should
 open it together rather than this device wandering off into it alone.
@@ -530,14 +530,14 @@ open it together rather than this device wandering off into it alone.
 --]]--
 function Duo:fetchBeforeOpening(file)
     if type(file) ~= "string" then return false end
-    if not Core:isConnected() or Core:isMaster() then return false end
+    if not Core:isConnected() or Core:isLeader() then return false end
 
     if not file:lower():match("%.epub$") or not Core:isStub(file) then
-        -- A book both devices can open: let the master lead the way in, so
+        -- A book both devices can open: let the leader lead the way in, so
         -- it stays the one deciding what page everybody is on.
         local name = select(2, util.splitFilePathName(file))
         if not Core:requestOpen(file, name) then return false end
-        -- The book opens when the master's answer comes back, a moment
+        -- The book opens when the leader's answer comes back, a moment
         -- later. Saying so means the tap is never silent in between.
         UIManager:show(InfoMessage:new{
             text = T(_("Opening %1 on both devices…"), name),
@@ -561,10 +561,10 @@ function Duo:fetchBeforeOpening(file)
 end
 
 --------------------------------------------------------------------------
--- Following the master's book
+-- Following the leader's book
 --------------------------------------------------------------------------
 
---- Opens the book the master just opened.
+--- Opens the book the leader just opened.
 -- Two Kindles usually store the same book at the same path, but when they
 -- do not, the reading history is a good second guess before giving up.
 function Duo:openRemoteDocument(file, msg)
@@ -595,7 +595,7 @@ Closes the book, because the other device closed its own.
 
 KOReader's own "back to the file list" is the Home event: the reader tears
 itself down and the file manager comes up in its place, which is exactly
-what the master just did. Doing it on the next tick because this arrives
+what the leader just did. Doing it on the next tick because this arrives
 from inside the poll loop, and closing the widget that is polling from
 underneath itself does not end well.
 --]]--
@@ -707,30 +707,97 @@ end
 --------------------------------------------------------------------------
 
 --- The entry point for pairing: pick a role.
+--[[--
+Step one of pairing: how the two devices should reach each other.
+
+Split in two because the old single screen asked two questions at once and
+in the wrong order — two roles, plus a third button that was really a
+different kind of link and then asked for the role again. Which page a
+device holds has nothing to do with whether there is a router in the room,
+so the link is settled first and the role second, the same two taps
+whichever way you go.
+--]]--
 function Duo:showConnectDialog()
     local dialog
+    local buttons = {
+        {{
+            text = _("Over a Wi-Fi network"),
+            callback = function()
+                UIManager:close(dialog)
+                self:showRoleDialog("network")
+            end,
+        }},
+        {{
+            text = _("Directly, with no router"),
+            callback = function()
+                UIManager:close(dialog)
+                self:showDirectRoleDialog()
+            end,
+        }},
+    }
+    -- Only worth offering once there is something to undo.
+    if Core:get("direct_link") then
+        buttons[#buttons+1] = {{
+            text = _("Restore normal Wi-Fi"),
+            callback = function()
+                UIManager:close(dialog)
+                self:restoreWifi()
+            end,
+        }}
+    end
+    buttons[#buttons+1] = {{
+        text = _("Cancel"),
+        callback = function() UIManager:close(dialog) end,
+    }}
+
     dialog = ButtonDialog:new{
-        title = _("Duo — two devices, one book\n\nStart one as the master, then connect the other to it."),
+        title = _("Duo — two devices, one book\n\nHow should the two reach each other?"),
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+end
+
+--[[--
+Step two: which of the two devices this one is.
+
+@string over  "network" for an ordinary network, "direct" for a link Duo
+              makes itself
+@tparam[opt] string preamble  what to say above the question
+--]]--
+function Duo:showRoleDialog(over, preamble)
+    local dialog
+    local title = preamble
+        or _("Both devices on the same network.\n\nWhich one is this?")
+    dialog = ButtonDialog:new{
+        title = title,
         buttons = {
             {{
-                text = _("This is the master (left page)"),
+                text = _("This device leads (left page)"),
                 callback = function()
                     UIManager:close(dialog)
-                    self:startMaster()
+                    if over == "direct" then
+                        self:runDirectLink("host")
+                    else
+                        self:startLeader()
+                    end
                 end,
             }},
             {{
-                text = _("Connect to a master (right page)"),
+                text = _("This device follows (right page)"),
                 callback = function()
                     UIManager:close(dialog)
-                    self:searchForMaster()
+                    if over == "direct" then
+                        self:runDirectLink("join")
+                    else
+                        self:searchForLeader()
+                    end
                 end,
             }},
             {{
-                text = _("No Wi-Fi network? Link the two directly…"),
+                text = _("Back"),
                 callback = function()
                     UIManager:close(dialog)
-                    self:showDirectLinkDialog()
+                    self:showConnectDialog()
                 end,
             }},
             {{
@@ -742,13 +809,53 @@ function Duo:showConnectDialog()
     UIManager:show(dialog)
 end
 
-function Duo:startMaster()
+--[[--
+The role question for a link Duo makes itself.
+
+Asks the device what it can do before offering anything, so a reader whose
+Wi-Fi cannot host a link says so here rather than after the choice is made.
+--]]--
+function Duo:showDirectRoleDialog()
+    local DirectLink = require("duo/directlink")
+    local report = DirectLink.probe()
+
+    if not DirectLink.isPossible(report) then
+        UIManager:show(InfoMessage:new{
+            text = T(_([[
+This device cannot make a Wi-Fi link of its own.
+
+%1
+
+Any network will do instead — a home router, or a phone hotspot with no internet on it.]]),
+                DirectLink.describe(report)),
+        })
+        return
+    end
+
+    self:showRoleDialog("direct", T(_([[
+A link with no router: one device makes the network, the other joins it.
+
+%1
+
+Which one is this? Takes over Wi-Fi while it runs.]]), DirectLink.describe(report)))
+end
+
+--- Hands Wi-Fi back to the system and forgets the link Duo built.
+function Duo:restoreWifi()
+    local DirectLink = require("duo/directlink")
+    Core:stop("restoring Wi-Fi")
+    DirectLink.restore()
+    Core:set("direct_link", nil)
+    UIManager:show(InfoMessage:new{ text = _("Wi-Fi handed back to the system.") })
+end
+
+function Duo:startLeader()
     local function go()
-        if Core:start(Core.ROLE_MASTER) then
+        if Core:start(Core.ROLE_LEADER) then
             self:showPairingSheet()
         end
     end
-    -- A master with no network is a master nobody can reach.
+    -- A leader with no network is a leader nobody can reach.
     if NetworkMgr:isConnected() then
         go()
     else
@@ -777,14 +884,14 @@ function Duo:showPairingSheet(options)
     if options.direct then
         local DirectLink = require("duo/directlink")
         local report = options.report or DirectLink.probe() or {}
-        local others = _([[Anything else: join this Wi-Fi network, then tap "Connect to a master".]])
+        local others = _([[Anything else: join this Wi-Fi network, then tap "Connect to a leader".]])
         if options.mode == "ibss" then
             others = _([[This is an ad-hoc cell, not an access point. Another reader still joins it as above, but most phones and laptops will not list it at all.]])
         end
         text = T(_([[
-Duo master is running, on a link this device is hosting.
+Duo leader is running, on a link this device is hosting.
 
-Another reader: open Duo, tap "No Wi-Fi network? Link the two directly…", then "Join the link". Nothing to type.
+Another reader: open Duo, tap "Directly, with no router", then "This device follows". Nothing to type.
 
 %1
 
@@ -796,9 +903,9 @@ Code:       %6]]),
             address, Core:get("port"), Core:ensureToken())
     else
         text = T(_([[
-Duo master is running.
+Duo leader is running.
 
-On the other device, open Duo and tap "Connect to a master". It should find this one by itself.
+On the other device, open Duo and tap "Connect to a leader". It should find this one by itself.
 
 Name:    %1
 Address: %2:%3
@@ -809,10 +916,10 @@ Code:    %4]]),
 end
 
 --- Searches the network, then offers whatever it found.
-function Duo:searchForMaster()
+function Duo:searchForLeader()
     local function begin()
         local searching = InfoMessage:new{
-            text = _("Looking for a master on this network…"),
+            text = _("Looking for a leader on this network…"),
             timeout = 10,
         }
         UIManager:show(searching)
@@ -854,7 +961,7 @@ function Duo:showSearchResults(results)
         text = _("Search again"),
         callback = function()
             UIManager:close(self.search_dialog)
-            self:searchForMaster()
+            self:searchForLeader()
         end,
     }}
     buttons[#buttons+1] = {{
@@ -865,16 +972,16 @@ function Duo:showSearchResults(results)
     self.search_dialog = ButtonDialog:new{
         title = #results > 0
             and _("Found these devices:")
-            or _("No master answered.\n\nCheck that Duo is running as master on the other device, and that both are on the same network."),
+            or _("No leader answered.\n\nCheck that Duo is running as leader on the other device, and that both are on the same network."),
         buttons = buttons,
     }
     UIManager:show(self.search_dialog)
 end
 
---- Connects, asking for the pairing code when the master wants one.
+--- Connects, asking for the pairing code when the leader wants one.
 function Duo:connectTo(host, port, locked)
     local function go()
-        Core:start(Core.ROLE_SLAVE, { host = host, port = port })
+        Core:start(Core.ROLE_FOLLOWER, { host = host, port = port })
     end
     if locked and Util.normalizeToken(Core:get("token")) == "" then
         self:promptForToken(go)
@@ -887,7 +994,7 @@ function Duo:promptForToken(on_done)
     local dialog
     dialog = InputDialog:new{
         title = _("Pairing code"),
-        description = _("Type the code shown on the master."),
+        description = _("Type the code shown on the leader."),
         input = Core:get("token"),
         buttons = {{
             {
@@ -913,8 +1020,8 @@ end
 function Duo:promptForAddress()
     local dialog
     dialog = InputDialog:new{
-        title = _("Master address"),
-        description = _("The address shown on the master device, for example 192.168.1.24"),
+        title = _("Leader address"),
+        description = _("The address shown on the leader device, for example 192.168.1.24"),
         input = Core:get("peer_host"),
         input_hint = "192.168.1.24",
         buttons = {{
@@ -953,69 +1060,6 @@ The self-contained arrangement: the two devices make a Wi-Fi link between
 themselves. Whether a reader can do this at all depends on its Wi-Fi
 driver, so nothing is attempted until the device has been asked.
 --]]--
-function Duo:showDirectLinkDialog()
-    local DirectLink = require("duo/directlink")
-    local report = DirectLink.probe()
-
-    if not DirectLink.isPossible(report) then
-        UIManager:show(InfoMessage:new{
-            text = T(_([[
-This device cannot make a Wi-Fi link of its own.
-
-%1
-
-Any network will do instead — a home router, or a phone hotspot with no internet on it.]]),
-                DirectLink.describe(report)),
-        })
-        return
-    end
-
-    local dialog
-    dialog = ButtonDialog:new{
-        title = T(_([[
-Link the two devices directly, with no router.
-
-One hosts, the other joins. Do this on both and they find each other.
-
-%1
-
-Takes over Wi-Fi while it runs; "Restore normal Wi-Fi" or a reboot puts it back.]]),
-            DirectLink.describe(report)),
-        buttons = {
-            {{
-                text = _("Host the link, and be the master"),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:runDirectLink("host")
-                end,
-            }},
-            {{
-                text = _("Join the link, and be the slave"),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:runDirectLink("join")
-                end,
-            }},
-            {{
-                text = _("Restore normal Wi-Fi"),
-                callback = function()
-                    UIManager:close(dialog)
-                    local DirectLinkModule = require("duo/directlink")
-                    Core:stop("restoring Wi-Fi")
-                    DirectLinkModule.restore()
-                    UIManager:show(InfoMessage:new{
-                        text = _("Wi-Fi handed back to the system."),
-                    })
-                end,
-            }},
-            {{
-                text = _("Cancel"),
-                callback = function() UIManager:close(dialog) end,
-            }},
-        },
-    }
-    UIManager:show(dialog)
-end
 
 --- Brings the direct link up and then starts Duo on it, so the whole thing
 -- is one tap on each device.
@@ -1043,14 +1087,14 @@ function Duo:runDirectLink(role)
     -- a link nobody else is maintaining does not survive.
     Core:set("direct_link", role)
     if role == "host" then
-        if Core:start(Core.ROLE_MASTER) then
+        if Core:start(Core.ROLE_LEADER) then
             self:showPairingSheet{ direct = true, mode = DirectLink.modeOf(output) }
         end
     else
         -- The host is always at the same address, so there is nothing to
         -- search for and nothing to type.
         Core:set("peer_host", DirectLink.HOST_ADDRESS)
-        Core:start(Core.ROLE_SLAVE, {
+        Core:start(Core.ROLE_FOLLOWER, {
             host = DirectLink.HOST_ADDRESS,
             port = Core:get("peer_port"),
         })
@@ -1110,7 +1154,7 @@ function Duo:getMenuTable()
             sub_item_table = {
                 {
                     text = _("Two-page spread"),
-                    help_text = _("Master shows page N, the other shows N+1. A turn moves the pair by two."),
+                    help_text = _("Leader shows page N, the other shows N+1. A turn moves the pair by two."),
                     checked_func = function() return Core:get("mode") == Spread.SPREAD end,
                     callback = function()
                         Core:set("mode", Spread.SPREAD)
@@ -1151,7 +1195,7 @@ function Duo:getMenuTable()
                     text = _("Set up a direct link (no router)…"),
                     help_text = _("A Wi-Fi link between the two devices alone, for reading where there is no network."),
                     keep_menu_open = true,
-                    callback = function() self:showDirectLinkDialog() end,
+                    callback = function() self:showDirectRoleDialog() end,
                 },
                 {
                     text = _("Serial line (RFCOMM or UART)"),
@@ -1177,11 +1221,11 @@ function Duo:getMenuTable()
 
 Font, size, weight, spacing, margins, columns and zoom are matched; brightness, rotation and night mode are not.
 
-On connecting, the master's settings win. After that a change on either device moves the rest.]]),
+On connecting, the leader's settings win. After that a change on either device moves the rest.]]),
             checked_func = function() return Core:get("match_typography") end,
             callback = function()
                 Core:set("match_typography", not Core:get("match_typography"))
-                if Core:get("match_typography") and Core:isMaster() then
+                if Core:get("match_typography") and Core:isLeader() then
                     Core:pushTypography("switched on")
                 end
             end,
@@ -1210,13 +1254,13 @@ On connecting, the master's settings win. After that a change on either device m
         },
         {
             text = _("Page turns from the other device"),
-            help_text = _("Let a tap on the slave turn the pair. Switch this off to make the slave a display only."),
-            checked_func = function() return Core:get("slave_can_turn") end,
-            callback = function() Core:set("slave_can_turn", not Core:get("slave_can_turn")) end,
+            help_text = _("Let a tap on the follower turn the pair. Switch this off to make the follower a display only."),
+            checked_func = function() return Core:get("follower_can_turn") end,
+            callback = function() Core:set("follower_can_turn", not Core:get("follower_can_turn")) end,
         },
         {
-            text = _("Follow the master's book"),
-            help_text = _("When the master opens a book, open the same one here."),
+            text = _("Follow the leader's book"),
+            help_text = _("When the leader opens a book, open the same one here."),
             checked_func = function() return Core:get("follow_document") end,
             callback = function() Core:set("follow_document", not Core:get("follow_document")) end,
         },
@@ -1257,7 +1301,7 @@ On connecting, the master's settings win. After that a change on either device m
                 if limit == 0 then return _("Most to copy in one go: no limit") end
                 return T(_("Most to copy in one go: %1 MB"), limit)
             end,
-            help_text = _("A guard against copying the wrong folder, since the shared one is simply whichever the master is looking at. Only books are copied in any case, whatever else is in there."),
+            help_text = _("A guard against copying the wrong folder, since the shared one is simply whichever the leader is looking at. Only books are copied in any case, whatever else is in there."),
             keep_menu_open = true,
             callback = function()
                 local steps = { 128, 512, 2048, 0 }
@@ -1282,9 +1326,9 @@ On connecting, the master's settings win. After that a change on either device m
                 if Core:isSyncingLibrary() then return _("Stop fetching books") end
                 return _("Fetch any missing books now")
             end,
-            help_text = _("Compare this folder with the master's and pull over what is missing. Only the other device has anything to fetch."),
-            -- The master is where the books come from; it has nothing to fetch.
-            enabled_func = function() return Core:isConnected() and not Core:isMaster() end,
+            help_text = _("Compare this folder with the leader's and pull over what is missing. Only the other device has anything to fetch."),
+            -- The leader is where the books come from; it has nothing to fetch.
+            enabled_func = function() return Core:isConnected() and not Core:isLeader() end,
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 self.menu_container = touchmenu_instance
@@ -1302,7 +1346,7 @@ On connecting, the master's settings win. After that a change on either device m
         },
         {
             text = _("Send the book if the other device lacks it"),
-            help_text = _("When the master opens a book this device lacks, fetch it over the same link. Only the book it actually has open can be sent."),
+            help_text = _("When the leader opens a book this device lacks, fetch it over the same link. Only the book it actually has open can be sent."),
             checked_func = function() return Core:get("sync_books") end,
             callback = function() Core:set("sync_books", not Core:get("sync_books")) end,
         },

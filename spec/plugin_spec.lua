@@ -14,7 +14,7 @@ local function reset()
     Core:stop("test reset")
     Core.settings.mode = "spread"
     Core.settings.reverse = false
-    Core.settings.slave_can_turn = true
+    Core.settings.follower_can_turn = true
     device:drainMessages()
 end
 
@@ -113,15 +113,15 @@ T.describe("reader binding", function()
     end)
 end)
 
-T.describe("master page stepping", function()
-    -- The engine is driven directly here: a real slave arrives in the
+T.describe("leader page stepping", function()
+    -- The engine is driven directly here: a real follower arrives in the
     -- integration test. What matters is that a turn moves by as many pages
     -- as there are devices.
-    local function pretendConnected(slave_count)
-        Core.role = Core.ROLE_MASTER
+    local function pretendConnected(follower_count)
+        Core.role = Core.ROLE_LEADER
         Core.getReadyLinks = function()
             local links = {}
-            for slot = 1, slave_count do
+            for slot = 1, follower_count do
                 links[slot] = { slot = slot, send = function() end, isReady = function() return true end }
             end
             return links
@@ -130,7 +130,7 @@ T.describe("master page stepping", function()
 
     local real_getReadyLinks = Core.getReadyLinks
 
-    T.it("moves two pages per turn with one slave", function()
+    T.it("moves two pages per turn with one follower", function()
         reset()
         pretendConnected(1)
         device.ui.paging.current_page = 10
@@ -142,7 +142,7 @@ T.describe("master page stepping", function()
         Core.role = Core.ROLE_OFF
     end)
 
-    T.it("moves three pages per turn with two slaves", function()
+    T.it("moves three pages per turn with two followers", function()
         reset()
         pretendConnected(2)
         device.ui.paging.current_page = 10
@@ -191,7 +191,7 @@ T.describe("what a library sync will and will not copy", function()
 
     T.it("stops before copying a folder far too big to be a shelf", function()
         --[[
-        The shared folder is whichever one the master is looking at, so a
+        The shared folder is whichever one the leader is looking at, so a
         wrong turn is easy. Refusing and naming the number beats starting a
         multi-gigabyte pull over a link with no router on it and hoping
         somebody notices.
@@ -239,7 +239,7 @@ end)
 T.describe("coming back after a sleep", function()
     --[[
     A device wakes before its network does. This used to be one attempt
-    whose failure was final — the master's listen failed on an interface
+    whose failure was final — the leader's listen failed on an interface
     with no address yet, an alert went up, and Duo stayed off until
     somebody reconnected both devices by hand. A short lock worked because
     the network never went away; a long one did not.
@@ -255,20 +255,20 @@ T.describe("coming back after a sleep", function()
         return function() return attempts end
     end
 
-    local function sleepAsMaster()
+    local function sleepAsLeader()
         reset()
-        Core.role = Core.ROLE_MASTER
+        Core.role = Core.ROLE_LEADER
         Core:suspend()
-        T.assertEquals(Core.paused_role, "master", "the role has to survive the sleep")
+        T.assertEquals(Core.paused_role, "leader", "the role has to survive the sleep")
     end
 
     T.it("keeps trying until the network is really back", function()
-        sleepAsMaster()
+        sleepAsLeader()
         local attempts = failingStart(2)
 
         Core:resume()
         T.assertEquals(attempts(), 1)
-        T.assertEquals(Core.paused_role, "master", "one failure must not be the end of it")
+        T.assertEquals(Core.paused_role, "leader", "one failure must not be the end of it")
 
         Core.resume_at = 0
         Core:poll()
@@ -285,7 +285,7 @@ T.describe("coming back after a sleep", function()
         -- A link with no router behind it does not survive a deep sleep:
         -- the Kindle's own Wi-Fi daemon takes the interface back. Nothing
         -- else will notice, and waiting politely means waiting for ever.
-        sleepAsMaster()
+        sleepAsLeader()
         local revived = 0
         Core.hooks.reviveDirectLink = function() revived = revived + 1 end
         failingStart(99)
@@ -303,7 +303,7 @@ T.describe("coming back after a sleep", function()
     end)
 
     T.it("gives up in the end, and says so", function()
-        sleepAsMaster()
+        sleepAsLeader()
         failingStart(99)
         Core:resume()
         for _ = 1, 40 do
@@ -316,7 +316,7 @@ T.describe("coming back after a sleep", function()
     end)
 
     T.it("does not come back after being switched off on purpose", function()
-        sleepAsMaster()
+        sleepAsLeader()
         Core:stop("switched off by hand")
         T.assertNil(Core.paused_role)
         local attempts = failingStart(0)
@@ -349,7 +349,7 @@ T.describe("keeping the reader awake", function()
         ]]
         local unit = reader("Kindle-Lead")
         unit.Core.settings.port = 19801
-        T.assertTrue(unit.Core:start("master"))
+        T.assertTrue(unit.Core:start("leader"))
         T.assertEquals(unit.UIManager._prevent_standby_count, 1,
             "a leader just started is being used")
 
@@ -367,7 +367,7 @@ T.describe("keeping the reader awake", function()
 
     T.it("keeps a follower awake while the leader is", function()
         local unit = reader("Kindle-Follow")
-        unit.Core.role = unit.Core.ROLE_SLAVE
+        unit.Core.role = unit.Core.ROLE_FOLLOWER
         unit.Core.peer_napping = false
         -- Connected, as far as this half of the pair can tell.
         unit.Core.isConnected = function() return true end
@@ -389,7 +389,7 @@ T.describe("keeping the reader awake", function()
     T.it("stays awake for a book, whichever end of it this is", function()
         local unit = reader("Kindle-Busy")
         unit.Core.settings.port = 19802
-        T.assertTrue(unit.Core:start("master"))
+        T.assertTrue(unit.Core:start("leader"))
         -- Idle long enough that only the transfer can be holding it.
         unit.Core.last_activity = 0
         unit.Core:updateAwake()
@@ -410,7 +410,7 @@ T.describe("keeping the reader awake", function()
     T.it("never releases a hold it does not have", function()
         local unit = reader("Kindle-Balance")
         unit.Core.settings.port = 19803
-        T.assertTrue(unit.Core:start("master"))
+        T.assertTrue(unit.Core:start("leader"))
         unit.Core:stop("done")
         unit.Core:stop("done again")
         unit.Core:updateAwake()
@@ -419,33 +419,51 @@ T.describe("keeping the reader awake", function()
 end)
 
 T.describe("pairing dialogs", function()
-    T.it("offers both roles", function()
+    T.it("asks how the two should reach each other, before who is who", function()
+        --[[
+        Two questions, in that order. The screen used to ask both at once
+        and in the wrong one: two roles plus a third button that was really
+        a different kind of link and then asked for the role again. Which
+        page a device holds has nothing to do with whether there is a router
+        in the room.
+        ]]
         reset()
         device.plugin:showConnectDialog()
-        local messages = device:drainMessages()
-        T.assertEquals(#messages, 1)
-        T.assertMatch(messages[1], "master")
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "reach each other")
+        T.assertTrue(not shown:find("left page"),
+            "the role question does not belong on the first screen")
     end)
 
-    T.it("shows the code and address after starting as master", function()
+    T.it("then asks which device this is, the same way for either link", function()
+        reset()
+        device.plugin:showRoleDialog("network")
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "Which one is this")
+        T.assertMatch(shown, "leads")
+        T.assertMatch(shown, "follows")
+        T.assertMatch(shown, "Back", "a two-step choice has to be reversible")
+    end)
+
+    T.it("shows the code and address after starting as leader", function()
         reset()
         Core.settings.token = "K7F2QX"
         -- Not the default port: a real KOReader running Duo on this machine
         -- would already hold 9970, and this test would fail for a reason
         -- that has nothing to do with the pairing sheet.
         Core.settings.port = 19899
-        device.plugin:startMaster()
+        device.plugin:startLeader()
         local shown = table.concat(device:drainMessages(), "\n")
         T.assertMatch(shown, "K7F2QX")
         T.assertMatch(shown, "19899")
-        T.assertTrue(Core:isMaster())
+        T.assertTrue(Core:isLeader())
         Core:stop("test done")
         Core.settings.port = 9970
     end)
 
     T.it("names the network to join when it is hosting the link itself", function()
         --[[
-        The ordinary sheet says "tap Connect to a master" and that is
+        The ordinary sheet says "tap Connect to a leader" and that is
         enough, because both devices are already on the same network. When
         this device *is* the network, anything that is not another reader
         running Duo has to be told what to join — and being told to search a
@@ -461,7 +479,7 @@ T.describe("pairing dialogs", function()
         local shown = table.concat(device:drainMessages(), "\n")
         T.assertMatch(shown, "KOReaderDuo", "the network has to be named")
         T.assertMatch(shown, "koreaderduo", "and so does the passphrase")
-        T.assertMatch(shown, "Join the link", "another reader does it from the menu")
+        T.assertMatch(shown, "This device follows", "another reader does it from the menu")
         T.assertMatch(shown, "DIRECT1")
 
         -- The ordinary sheet says none of that, because it does not apply.
@@ -490,7 +508,7 @@ T.describe("pairing dialogs", function()
         local shown = table.concat(device:drainMessages(), "\n")
         T.assertMatch(shown, "ad%-hoc cell")
         T.assertMatch(shown, "will not list it at all")
-        T.assertMatch(shown, "Join the link", "another reader can still join it")
+        T.assertMatch(shown, "This device follows", "another reader can still join it")
         T.assertTrue(not shown:find("join this Wi%-Fi network"),
             "nobody should be sent looking for a network their device will not show")
     end)
@@ -516,12 +534,12 @@ end)
 T.describe("spread arithmetic", function()
     local Spread = require("duo/spread")
 
-    T.it("puts the slave on the next page", function()
+    T.it("puts the follower on the next page", function()
         T.assertEquals(Spread.pageForSlot(10, 1, { mode = "spread", page_count = 300 }), 11)
         T.assertEquals(Spread.pageForSlot(10, 2, { mode = "spread", page_count = 300 }), 12)
     end)
 
-    T.it("puts the slave on the previous page when reversed", function()
+    T.it("puts the follower on the previous page when reversed", function()
         T.assertEquals(Spread.pageForSlot(10, 1, { mode = "spread", reverse = true, page_count = 300 }), 9)
     end)
 

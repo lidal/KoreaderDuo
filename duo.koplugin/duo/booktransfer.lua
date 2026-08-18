@@ -1,9 +1,9 @@
 --[[--
 Sending the book itself.
 
-"Follow the master's book" is only useful if the other device has the book.
+"Follow the leader's book" is only useful if the other device has the book.
 When it does not, the file goes down the same link the page numbers do,
-which means a slave can be handed a book it has never seen and be reading
+which means a follower can be handed a book it has never seen and be reading
 the right page of it a moment later.
 
 Reading and writing happen a chunk at a time, driven from the poll loop, so
@@ -34,7 +34,7 @@ What counts as a book, and so as something worth copying between devices.
 An allowlist rather than a filter on what to leave out. The file browser
 already hides what KOReader cannot open, but "already hides" is a setting
 somebody can turn off, and the folder being shared is whichever one the
-master happens to be looking at: point it at a downloads folder by mistake
+leader happens to be looking at: point it at a downloads folder by mistake
 and a device that copies whatever it is shown will copy all of it, slowly,
 over a link with no router on it. The cost of an extension missing from
 this list is one book that has to be copied by hand; the cost of not having

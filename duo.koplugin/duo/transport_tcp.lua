@@ -115,7 +115,7 @@ function Stream:getPeerName()
 end
 
 --------------------------------------------------------------------------
--- Server: accepts slave connections.
+-- Server: accepts follower connections.
 --------------------------------------------------------------------------
 
 local Server = {}

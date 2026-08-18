@@ -457,7 +457,7 @@ establish() {
     if [ "$role" = "host" ]; then
         log "This device is hosting the link at $HOST_IP."
         log "On the other device run: $0 join"
-        log "Then start Duo as master here, and as slave there."
+        log "Then start Duo as the leader here, and the follower there."
         case "$settled" in
             IBSS|Ad-Hoc)
                 #[[
@@ -478,7 +478,7 @@ establish() {
         esac
     else
         log "Joined the link as $address; the other device is at $HOST_IP."
-        log "Start Duo as slave here and point it at $HOST_IP."
+        log "Start Duo as the follower here and point it at $HOST_IP."
     fi
 }
 

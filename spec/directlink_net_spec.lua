@@ -132,7 +132,7 @@ T.describe("a link with no router on it", function()
     T.it("finds the other device by broadcast, with nothing typed in", function()
         configure(host_device)
         configure(join_device)
-        controller:call(host_device, "Core:start('master')")
+        controller:call(host_device, "Core:start('leader')")
 
         -- The joining device knows nothing but the port: no address, no DHCP,
         -- no router. It has to shout and see who answers.
@@ -140,14 +140,14 @@ T.describe("a link with no router on it", function()
         controller:call(join_device, "Core:startScan(function(r) Core.scan_results = r end)")
         controller:assertEventually(join_device, "Core.scan_results ~= nil", true, "the search never finished")
         T.assertEquals(controller:call(join_device, "#Core.scan_results"), "1",
-            "the master was not found across the link")
+            "the leader was not found across the link")
         T.assertEquals(controller:call(join_device, "Core.scan_results[1].host"), HOST_IP)
         T.assertEquals(controller:call(join_device, "Core.scan_results[1].name"), "host-kindle")
     end)
 
     T.it("connects to whatever the search found", function()
         controller:call(join_device,
-            "Core:start('slave', { host = Core.scan_results[1].host, port = Core.scan_results[1].port })")
+            "Core:start('follower', { host = Core.scan_results[1].host, port = Core.scan_results[1].port })")
         controller:assertEventually(host_device, "Core:isConnected()", true, "nobody arrived")
         controller:assertEventually(join_device, "Core:isConnected()", true, "did not reach the host")
         T.assertEquals(controller:call(join_device, "Core:getReadyLinks()[1].peer_name"), "host-kindle")

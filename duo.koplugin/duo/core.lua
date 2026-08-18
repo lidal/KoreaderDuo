@@ -29,8 +29,8 @@ local TcpTransport = require("duo/transport_tcp")
 local Util = require("duo/util")
 
 local Core = {
-    role = "off",              -- "off" | "master" | "slave"
-    links = {},                -- master: one per slave. slave: at most one.
+    role = "off",              -- "off" | "leader" | "follower"
+    links = {},                -- leader: one per follower. follower: at most one.
     reader = nil,              -- reader binding, or nil outside a document
     settings = nil,
     hooks = nil,
@@ -47,8 +47,8 @@ local Core = {
 }
 
 Core.ROLE_OFF = "off"
-Core.ROLE_MASTER = "master"
-Core.ROLE_SLAVE = "slave"
+Core.ROLE_LEADER = "leader"
+Core.ROLE_FOLLOWER = "follower"
 
 --- Reconnection backoff, in seconds.
 local RECONNECT_MIN = 1
@@ -99,7 +99,7 @@ local DEFAULTS = {
     peer_port = 9970,
     mode = Spread.SPREAD,
     reverse = false,
-    slave_can_turn = true,
+    follower_can_turn = true,
     follow_document = true,
     match_typography = true,
     share_browser = true,
@@ -127,10 +127,34 @@ only the first call takes effect for a given KOReader run.
     settings  persisted settings table (mutated in place)
     hooks     log / notify / alert / save / onChanged callbacks
 --]]--
+--[[--
+Brings a settings file written by an older version up to date.
+
+The two roles used to be called master and slave, and both the name of the
+setting and the value saved in it changed with them. A file on a device
+that has been running Duo for a while still says the old thing, and a pair
+that silently stopped autostarting — or quietly stopped taking page turns
+from the other device — after an update would be a poor way to find out.
+--]]--
+local RENAMED_SETTINGS = { slave_can_turn = "follower_can_turn" }
+local RENAMED_ROLES = { master = "leader", slave = "follower" }
+
+local function migrate(settings)
+    for old_key, new_key in pairs(RENAMED_SETTINGS) do
+        if settings[old_key] ~= nil and settings[new_key] == nil then
+            settings[new_key] = settings[old_key]
+        end
+        settings[old_key] = nil
+    end
+    local role = RENAMED_ROLES[settings.autostart_role]
+    if role then settings.autostart_role = role end
+    return settings
+end
+
 function Core:configure(options)
     self.hooks = options.hooks or self.hooks or {}
     if not self.settings then
-        self.settings = options.settings or {}
+        self.settings = migrate(options.settings or {})
         for key, value in pairs(DEFAULTS) do
             if self.settings[key] == nil then
                 self.settings[key] = value
@@ -175,7 +199,7 @@ The settings that describe how the pair behaves, as opposed to what this
 particular device is.
 
 Everything here is a decision about the two devices together — whether a
-turn on the slave counts, whether the book list is shared, how big a
+turn on the follower counts, whether the book list is shared, how big a
 library may be — and a pair that disagrees about one of them misbehaves in
 a way that looks like a bug rather than a setting. Switching page turns off
 on one device silently disabled them, and which device you had to look at
@@ -189,7 +213,7 @@ a transport across the link would be a fine way to hang up on yourself.
 local SHARED_SETTINGS = {
     "mode",
     "reverse",
-    "slave_can_turn",
+    "follower_can_turn",
     "follow_document",
     "match_typography",
     "share_browser",
@@ -238,8 +262,8 @@ end
 --[[--
 Shares a setting somebody just changed on this device.
 
-The master tells everyone. A slave can only ask: it hands the change to the
-master, which applies it and passes it on, so there is one account of what
+The leader tells everyone. A follower can only ask: it hands the change to the
+leader, which applies it and passes it on, so there is one account of what
 the pair is doing rather than two devices talking over each other.
 --]]--
 function Core:pushSettings(reason)
@@ -253,7 +277,7 @@ end
 --[[--
 Takes the shared settings from the other device.
 
-On connect this arrives from the master and the master wins, which is what
+On connect this arrives from the leader and the leader wins, which is what
 makes it a tiebreaker rather than a race: two devices that were configured
 differently end up agreeing, and agreeing on the one that is leading.
 --]]--
@@ -284,9 +308,9 @@ function Core:applySettings(msg, from_link)
         self:save()
         self:changed()
         self:log("adopted settings:", table.concat(adopted, ", "))
-        if self:isMaster() then
-            -- A change made on a slave has to reach the other slaves, and
-            -- the master is the only device that talks to all of them.
+        if self:isLeader() then
+            -- A change made on a follower has to reach the other followers, and
+            -- the leader is the only device that talks to all of them.
             self:broadcastState()
             for _, link in ipairs(self:getReadyLinks()) do
                 if link ~= from_link then self:sendSettingsTo(link) end
@@ -340,7 +364,7 @@ function Core:attachReader(binding)
     self.typography_backup = nil
     self:changed()
     if not self:isActive() then return end
-    if self:isMaster() then
+    if self:isLeader() then
         self:broadcastDocument()
         self:pushTypography("document opened")
         self:broadcastState()
@@ -377,12 +401,12 @@ function Core:isActive()
     return self.role ~= Core.ROLE_OFF
 end
 
-function Core:isMaster()
-    return self.role == Core.ROLE_MASTER
+function Core:isLeader()
+    return self.role == Core.ROLE_LEADER
 end
 
-function Core:isSlave()
-    return self.role == Core.ROLE_SLAVE
+function Core:isFollower()
+    return self.role == Core.ROLE_FOLLOWER
 end
 
 --[[--
@@ -411,7 +435,7 @@ function Core:shouldStayAwake()
     if not self:isActive() then return false end
     -- Bytes in flight, at either end.
     if self.book_sender or self.book_receiver or self.library then return true end
-    if self:isMaster() then
+    if self:isLeader() then
         return Util.now() - (self.last_activity or 0) < IDLE_HOLD
     end
     return self:isConnected() and not self.peer_napping
@@ -453,15 +477,15 @@ function Core:isConnected()
     return #self:getReadyLinks() > 0
 end
 
-function Core:slaveCount()
-    if self:isMaster() then return #self:getReadyLinks() end
+function Core:followerCount()
+    if self:isLeader() then return #self:getReadyLinks() end
     return self:isConnected() and 1 or 0
 end
 
---- How many pages one turn should move the master.
+--- How many pages one turn should move the leader.
 function Core:getStep()
     if not self:isActive() or not self:isConnected() then return 1 end
-    return Spread.stepFor(self:get("mode"), self:slaveCount())
+    return Spread.stepFor(self:get("mode"), self:followerCount())
 end
 
 function Core:getSpreadOptions()
@@ -481,8 +505,8 @@ end
 --[[--
 Starts Duo in the given role.
 
-@string role Core.ROLE_MASTER or Core.ROLE_SLAVE
-@tparam[opt] table options host and port for a slave
+@string role Core.ROLE_LEADER or Core.ROLE_FOLLOWER
+@tparam[opt] table options host and port for a follower
 @treturn boolean success
 --]]--
 --- True when Duo is talking over a serial device (a Bluetooth RFCOMM link,
@@ -495,7 +519,7 @@ end
 Brings up the serial link.
 
 There is no dialling on a serial line: both devices open the same channel
-and the master starts talking. Whoever gets there first waits for the other.
+and the leader starts talking. Whoever gets there first waits for the other.
 --]]--
 function Core:openSerialLink()
     self.reconnect_at = nil
@@ -506,13 +530,14 @@ function Core:openSerialLink()
         self:scheduleReconnect()
         return false
     end
-    self:adoptStream(stream, self:isMaster())
+    self:adoptStream(stream, self:isLeader())
     self:changed()
     return true
 end
 
 function Core:start(role, options)
     options = options or {}
+    role = RENAMED_ROLES[role] or role
     self:stop("restarting")
 
     self:ensureToken()
@@ -523,7 +548,7 @@ function Core:start(role, options)
     self.sleeping_for_peer = false
 
     if self:usesSerial() then
-        if role ~= Core.ROLE_MASTER and role ~= Core.ROLE_SLAVE then return false end
+        if role ~= Core.ROLE_LEADER and role ~= Core.ROLE_FOLLOWER then return false end
         if not SerialTransport.isAvailable() then
             self:alert("This build of KOReader cannot use a serial link.")
             return false
@@ -543,7 +568,7 @@ function Core:start(role, options)
         return true
     end
 
-    if role == Core.ROLE_MASTER then
+    if role == Core.ROLE_LEADER then
         local port = self:get("port")
         local server, err = TcpTransport.listen(port)
         if not server then
@@ -574,14 +599,14 @@ function Core:start(role, options)
                 }
             end,
         }
-        self.role = Core.ROLE_MASTER
-        self:log("started as master on port", port)
-    elseif role == Core.ROLE_SLAVE then
+        self.role = Core.ROLE_LEADER
+        self:log("started as leader on port", port)
+    elseif role == Core.ROLE_FOLLOWER then
         local host = tostring(options.host or self:get("peer_host") or ""):gsub("%s", "")
         local port = options.port or self:get("peer_port")
         if host == "" then
             if not options.quiet then
-                self:alert("No master address yet. Search for one, or type its address.")
+                self:alert("No leader address yet. Search for one, or type its address.")
             end
             return false
         end
@@ -591,7 +616,7 @@ function Core:start(role, options)
         if not resolved then
             self.last_error = ("no device answers to %s"):format(host)
             if not options.quiet then
-                self:alert(("No device answers to \"%s\".\n\nCheck the address shown on the master."):format(host))
+                self:alert(("No device answers to \"%s\".\n\nCheck the address shown on the leader."):format(host))
             end
             return false
         end
@@ -599,9 +624,9 @@ function Core:start(role, options)
         self.settings.peer_host = host
         self.settings.peer_port = port
         self:save()
-        self.role = Core.ROLE_SLAVE
+        self.role = Core.ROLE_FOLLOWER
         self:beginConnect()
-        self:log("started as slave, dialing", host, port)
+        self:log("started as follower, dialing", host, port)
     else
         return false
     end
@@ -698,7 +723,7 @@ end
 --------------------------------------------------------------------------
 
 --[[--
-Starts looking for a master on the network.
+Starts looking for a leader on the network.
 
 Scanning happens while Duo is still off, which is exactly when the user is
 standing there waiting, so it is driven from the same poll loop as
@@ -753,7 +778,7 @@ function Core:poll()
             self:openSerialLink()
         end
     else
-        if self:isMaster() and self.server then
+        if self:isLeader() and self.server then
             while true do
                 local stream = self.server:accept()
                 if not stream then break end
@@ -761,7 +786,7 @@ function Core:poll()
             end
         end
 
-        if self:isSlave() then
+        if self:isFollower() then
             if self.connector then
                 local result, err = self.connector:poll()
                 if result then
@@ -835,15 +860,15 @@ end
 
 --- Wraps a freshly opened stream in an authenticated link.
 -- @tparam table stream anything with send / receive / close
--- @bool is_master true when this device drives the handshake
-function Core:adoptStream(stream, is_master)
+-- @bool is_leader true when this device drives the handshake
+function Core:adoptStream(stream, is_leader)
     local link
     link = Link.new{
         stream = stream,
-        is_master = is_master,
+        is_leader = is_leader,
         token = self:get("token"),
         name = self:getDeviceName(),
-        slot = is_master and self:nextFreeSlot() or 1,
+        slot = is_leader and self:nextFreeSlot() or 1,
         on_message = function(_, msg) self:handleMessage(link, msg) end,
         on_ready = function() self:onLinkReady(link) end,
         on_close = function(_, reason) self:onLinkClosed(link, reason) end,
@@ -852,7 +877,7 @@ function Core:adoptStream(stream, is_master)
     return link
 end
 
---- Lowest slave index not currently taken, so a reconnecting device lands
+--- Lowest follower index not currently taken, so a reconnecting device lands
 -- back on the page it had rather than being pushed to the end of the spread.
 function Core:nextFreeSlot()
     local taken = {}
@@ -868,12 +893,12 @@ function Core:onLinkReady(link)
     self.reconnect_delay = RECONNECT_MIN
     self.last_error = nil
     self:notify(("Duo: connected to %s"):format(link.peer_name or "peer"))
-    if self:isMaster() then
-        -- The master pushes; the slave does not need to ask. Asking as well
+    if self:isLeader() then
+        -- The leader pushes; the follower does not need to ask. Asking as well
         -- would have it told twice, and a second DOC can mean opening the
         -- same book twice.
         -- Settings first of all: they decide whether the rest of this is
-        -- wanted at all, and the master is the tiebreaker when the two
+        -- wanted at all, and the leader is the tiebreaker when the two
         -- devices were configured differently.
         self:sendSettingsTo(link)
         self:sendDocumentTo(link)
@@ -894,7 +919,7 @@ function Core:onLinkClosed(link, reason)
     end
     -- Whoever dialled is the one who redials. On a serial line neither side
     -- dialled, so both keep the channel open and wait for the other.
-    if self:isActive() and (self:isSlave() or self:usesSerial()) then
+    if self:isActive() and (self:isFollower() or self:usesSerial()) then
         self:scheduleReconnect()
     end
     self:changed()
@@ -906,13 +931,13 @@ end
 
 function Core:sendStateTo(link)
     if not self.reader then return end
-    local master_page = self.reader.getPage()
-    if not master_page then return end
+    local leader_page = self.reader.getPage()
+    if not leader_page then return end
     local options = self:getSpreadOptions()
-    local page, clamped = Spread.pageForSlot(master_page, link.slot, options)
+    local page, clamped = Spread.pageForSlot(leader_page, link.slot, options)
     link:send(Protocol.STATE, {
         page = page,
-        master_page = master_page,
+        leader_page = leader_page,
         pages = self.reader.getPageCount() or 0,
         slot = link.slot,
         mode = options.mode,
@@ -924,7 +949,7 @@ function Core:sendStateTo(link)
 end
 
 function Core:broadcastState()
-    if not self:isMaster() then return end
+    if not self:isLeader() then return end
     self:noteActivity()
     for _, link in ipairs(self:getReadyLinks()) do
         self:sendStateTo(link)
@@ -946,7 +971,7 @@ function Core:sendDocumentTo(link)
 end
 
 function Core:broadcastDocument()
-    if not self:isMaster() then return end
+    if not self:isLeader() then return end
     for _, link in ipairs(self:getReadyLinks()) do
         self:sendDocumentTo(link)
     end
@@ -959,22 +984,22 @@ end
 --[[--
 Handles a relative page turn the user made on this device.
 
-On the master this moves the whole spread: one turn advances by as many
-pages as there are devices. On a connected slave the turn is forwarded to
-the master instead of being applied locally, so the two screens can never
-drift apart — the master remains the only thing that decides what is shown.
+On the leader this moves the whole spread: one turn advances by as many
+pages as there are devices. On a connected follower the turn is forwarded to
+the leader instead of being applied locally, so the two screens can never
+drift apart — the leader remains the only thing that decides what is shown.
 
 @number diff pages to turn, normally 1 or -1
 @treturn boolean true when Duo handled it and the reader should not
 --]]--
 function Core:handleRelativeTurn(diff)
     if not self:isActive() or not self:isConnected() then return false end
-    if self:isMaster() then
+    if self:isLeader() then
         self:applyRelativeTurn(diff)
         return true
     end
-    if not self:get("slave_can_turn") then
-        -- Reading on the slave should not move the pair: ignore the tap
+    if not self:get("follower_can_turn") then
+        -- Reading on the follower should not move the pair: ignore the tap
         -- rather than letting this screen drift out of the spread.
         return true
     end
@@ -984,7 +1009,7 @@ function Core:handleRelativeTurn(diff)
     return true
 end
 
---- Moves the master by `diff` spreads. The page change is broadcast by
+--- Moves the leader by `diff` spreads. The page change is broadcast by
 -- whatever the reader reports afterwards, via onPageChanged.
 function Core:applyRelativeTurn(diff)
     if not self.reader then return end
@@ -996,14 +1021,14 @@ end
 function Core:onPageChanged(page)
     if not self:isActive() then return end
     if self.applying_remote then return end
-    if self:isMaster() then
+    if self:isLeader() then
         self:broadcastState()
     else
         self:changed()
     end
 end
 
---- Applies a page the master told us to show.
+--- Applies a page the leader told us to show.
 function Core:applyRemotePage(page)
     if not self.reader or not page then return end
     if self.reader.getPage() == page then return end
@@ -1033,12 +1058,12 @@ function Core:attachBrowser(binding)
     self.browser_state = nil
     self.warned_listing = false
     self:changed()
-    if self:isActive() and self:isMaster() then
+    if self:isActive() and self:isLeader() then
         --[[
-        The file manager appearing on the master is the moment the book was
+        The file manager appearing on the leader is the moment the book was
         closed, and a better signal than the reader going away: switching
         straight from one book to another tears a reader down too, and a
-        slave told to go home then would close the book it is about to be
+        follower told to go home then would close the book it is about to be
         told to open.
         ]]
         if self:get("follow_document") then
@@ -1063,7 +1088,7 @@ end
 
 --- Sends one device the page of the listing it should be showing.
 function Core:sendBrowserTo(link)
-    if not self:isMaster() or not self.browser then return end
+    if not self:isLeader() or not self.browser then return end
     if not self:get("share_browser") then return end
     local state = self.browser.getState()
     if not state then return end
@@ -1080,7 +1105,7 @@ function Core:sendBrowserTo(link)
     link:send(Protocol.BROWSE, {
         path = state.path,
         page = page,
-        master_page = state.page,
+        leader_page = state.page,
         pages = state.pages,
         perpage = state.perpage,
         -- Only set when this device is showing a grid of covers, so the
@@ -1094,17 +1119,17 @@ end
 
 --- Sends every device the page of the listing it should be showing.
 function Core:broadcastBrowser()
-    if self:isMaster() then self:noteActivity() end
+    if self:isLeader() then self:noteActivity() end
     for _, link in ipairs(self:getReadyLinks()) do
         self:sendBrowserTo(link)
     end
     self:changed()
 end
 
---- Shows the part of the listing the master allotted to this device.
+--- Shows the part of the listing the leader allotted to this device.
 function Core:applyBrowser(msg)
     if not self.browser or not self:get("share_browser") then return end
-    if self:isMaster() then return end
+    if self:isLeader() then return end
 
     self.applying_remote = true
     -- Same folder first: a page number means nothing until the two devices
@@ -1134,7 +1159,7 @@ end
 
 --- Fetches whatever is missing when the two folders do not match.
 function Core:reconcileLibrary(msg)
-    if not self:get("sync_library") or self:isMaster() then return end
+    if not self:get("sync_library") or self:isLeader() then return end
     if self.library or not self.browser then return end
     local state = self.browser.getState()
     if not state then return end
@@ -1199,7 +1224,7 @@ function Core:setDeviceIdle(idle)
     self.device_idle = idle and true or false
     if not self:isActive() then return end
 
-    if self:isMaster() then
+    if self:isLeader() then
         for _, link in ipairs(self:getReadyLinks()) do
             link:send(Protocol.NAP, { sleep = idle and 1 or 0 })
         end
@@ -1215,7 +1240,7 @@ end
 
 --- The other device says it is dozing off, or waking up.
 function Core:handleNap(msg)
-    if self:isMaster() then return end
+    if self:isLeader() then return end
     self.peer_napping = Protocol.bool(msg, "sleep")
     self:log(self.peer_napping and "the other device is dozing off"
         or "the other device is back")
@@ -1226,18 +1251,18 @@ end
 --[[--
 Handles a swipe through the listing.
 
-The master steps by as many screenfuls as there are devices; a slave asks
-the master to do it, exactly as with a page turn in a book.
+The leader steps by as many screenfuls as there are devices; a follower asks
+the leader to do it, exactly as with a page turn in a book.
 
 @treturn boolean true when Duo handled it and the browser should not
 --]]--
 function Core:handleBrowserTurn(diff)
     if not self:browsingTogether() then return false end
-    if self:isMaster() then
+    if self:isLeader() then
         self:applyBrowserTurn(diff)
         return true
     end
-    if not self:get("slave_can_turn") then return true end
+    if not self:get("follower_can_turn") then return true end
     local link = self:getReadyLinks()[1]
     if not link then return false end
     link:send(Protocol.BTURN, { dir = diff })
@@ -1248,7 +1273,7 @@ function Core:applyBrowserTurn(diff)
     if not self.browser then return end
     local state = self.browser.getState()
     if not state then return end
-    local step = Spread.stepFor(self:get("mode"), self:slaveCount())
+    local step = Spread.stepFor(self:get("mode"), self:followerCount())
     -- Clamped rather than wrapped: cycling round to the first page would
     -- put the devices on unrelated parts of the list.
     local target = Util.clamp(state.page + diff * step, 1, state.pages)
@@ -1256,9 +1281,9 @@ function Core:applyBrowserTurn(diff)
     self:broadcastBrowser()
 end
 
---- Notices the master moving through the listing by any other route.
+--- Notices the leader moving through the listing by any other route.
 function Core:checkBrowser()
-    if not self:isMaster() or not self.browser then return end
+    if not self:isLeader() or not self.browser then return end
     if not self:get("share_browser") or not self:isConnected() then return end
     if self.applying_remote then return end
     local state = self.browser.getState()
@@ -1287,7 +1312,7 @@ what makes the two halves of a shared book list fail to line up.
 --]]--
 function Core:requestLibrary(path)
     if not self:get("sync_library") then return false end
-    if self:isMaster() or not self.browser then return false end
+    if self:isLeader() or not self.browser then return false end
     if self.library or self.book_receiver then return false end
     local link = self:getReadyLinks()[1]
     if not link then return false end
@@ -1298,9 +1323,9 @@ function Core:requestLibrary(path)
     return true
 end
 
---- The master lists the folder it is sharing.
+--- The leader lists the folder it is sharing.
 function Core:handleLibraryRequest(link, msg)
-    if not self:isMaster() or not self.browser then return end
+    if not self:isLeader() or not self.browser then return end
     if not self:get("sync_library") then
         link:send(Protocol.LIB_END, { count = 0, reason = "not sharing the library" })
         return
@@ -1392,7 +1417,7 @@ function Core:handleLibraryEnd(msg)
 
     --[[
     A ceiling on one sync, because the folder being copied is whichever one
-    the master is looking at and a wrong turn is easy to make. Nothing here
+    the leader is looking at and a wrong turn is easy to make. Nothing here
     is destructive, but a mistake would otherwise mean a device quietly
     pulling gigabytes over a link that has no router on it, at a few hundred
     kilobytes a second, with a battery to pay for it. Refusing and saying
@@ -1432,7 +1457,7 @@ function Core:pumpLibrary()
             if self.browser then self.browser.refresh() end
             -- The list is a different length than it was a moment ago, so
             -- the half of it this device was given no longer means the same
-            -- thing. Ask the master where in the new one it belongs.
+            -- thing. Ask the leader where in the new one it belongs.
             local ready = self:getReadyLinks()[1]
             if ready then ready:send(Protocol.SYNC, {}) end
         end
@@ -1502,7 +1527,7 @@ book, so the wait is theirs to spend, and it is spent once.
 @treturn boolean true when the asking started
 --]]--
 function Core:fetchBookFor(path, title)
-    if not self:isConnected() or self:isMaster() then return false end
+    if not self:isConnected() or self:isLeader() then return false end
     if self.book_receiver or self.book_request then return false end
     local link = self:getReadyLinks()[1]
     if not link then return false end
@@ -1543,15 +1568,15 @@ end
 --------------------------------------------------------------------------
 
 --[[--
-Asks the master for a book this device does not have.
+Asks the leader for a book this device does not have.
 
-Called when the master announces a document that is nowhere on this device.
+Called when the leader announces a document that is nowhere on this device.
 Following someone else's reading is not much use if you cannot open what
 they are reading.
 --]]--
 function Core:requestBook(msg)
     if not self:get("sync_books") then return false end
-    if self:isMaster() then return false end
+    if self:isLeader() then return false end
     local link = self:getReadyLinks()[1]
     if not link then return false end
     if self.book_receiver or self.book_request then return false end
@@ -1597,9 +1622,9 @@ function Core:resolveSharedFile(requested)
     return nil
 end
 
---- The master starts sending a book a slave asked for.
+--- The leader starts sending a book a follower asked for.
 function Core:handleBookRequest(link, msg)
-    if not self:isMaster() then return end
+    if not self:isLeader() then return end
     local BookTransfer = require("duo/booktransfer")
 
     if not self:get("sync_books") then
@@ -1930,7 +1955,7 @@ function Core:pushTypography(reason)
     self:log("pushed typography:", reason)
     -- The book is a different length than it was a moment ago, so the page
     -- everyone should be on has moved too.
-    if self:isMaster() then self:broadcastState() end
+    if self:isLeader() then self:broadcastState() end
 end
 
 function Core:sendTypographyTo(link)
@@ -1945,7 +1970,7 @@ end
 --[[--
 Applies the layout settings from the other device.
 
-Whoever sent this is, for the moment, right: on connect that is the master,
+Whoever sent this is, for the moment, right: on connect that is the leader,
 and afterwards it is whichever device the user just changed something on.
 The result is that both screens keep breaking lines in the same places.
 --]]--
@@ -1981,13 +2006,13 @@ function Core:applyTypography(msg, from_link)
     if applied and #applied > 0 then
         self:notify(("Duo: matched %s"):format(Typography.describe(applied)))
         -- Relaying out moves every page number, so the spread has to be
-        -- recomputed from wherever the master ended up.
+        -- recomputed from wherever the leader ended up.
         self.warned_pagination = false
-        if self:isMaster() then
+        if self:isLeader() then
             self:broadcastState()
         elseif from_link then
             -- Every page number in this book just changed. Waiting for the
-            -- master's next broadcast means sitting on the wrong page until
+            -- leader's next broadcast means sitting on the wrong page until
             -- somebody turns one; asking costs a single line.
             from_link:send(Protocol.SYNC, {})
         end
@@ -1997,9 +2022,9 @@ function Core:applyTypography(msg, from_link)
             tostring(applied.missing_font)))
     end
 
-    -- A change made on a slave has to reach the other slaves too, and the
-    -- master is the only device that talks to all of them.
-    if self:isMaster() then
+    -- A change made on a follower has to reach the other followers too, and the
+    -- leader is the only device that talks to all of them.
+    if self:isLeader() then
         for _, link in ipairs(self:getReadyLinks()) do
             if link ~= from_link then
                 link:send(Protocol.TYPO, settings)
@@ -2031,11 +2056,11 @@ function Core:checkTypography()
 
     self.typography_snapshot = current
     self:log("typography changed here:", table.concat(changed, ", "))
-    if self:isMaster() then
-        self:pushTypography("changed on the master")
+    if self:isLeader() then
+        self:pushTypography("changed on the leader")
         self:broadcastState()
     else
-        -- Hand it to the master, which applies it and passes it on.
+        -- Hand it to the leader, which applies it and passes it on.
         local link = self:getReadyLinks()[1]
         if link then link:send(Protocol.TYPO, current) end
     end
@@ -2105,8 +2130,8 @@ function Core:applyFrontlight(msg, from_link)
         self:notify(("Duo: matched %s"):format(Frontlight.describe(applied)))
     end
 
-    -- A change made on a slave has to reach the other slaves too.
-    if self:isMaster() then
+    -- A change made on a follower has to reach the other followers too.
+    if self:isLeader() then
         for _, link in ipairs(self:getReadyLinks()) do
             if link ~= from_link then self:sendFrontlightTo(link) end
         end
@@ -2143,8 +2168,8 @@ function Core:checkFrontlight()
         return
     end
     self.frontlight_snapshot = current
-    if self:isMaster() then
-        self:pushFrontlight("changed on the master")
+    if self:isLeader() then
+        self:pushFrontlight("changed on the leader")
     else
         local link = self:getReadyLinks()[1]
         if link then self:sendFrontlightTo(link) end
@@ -2174,16 +2199,16 @@ end
 
 function Core:handleMessage(link, msg)
     if msg.type == Protocol.STATE then
-        if self:isMaster() then return end -- only the master decides
-        self.master_page = Protocol.num(msg, "master_page")
+        if self:isLeader() then return end -- only the leader decides
+        self.leader_page = Protocol.num(msg, "leader_page")
         self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
         self:applyRemotePage(Protocol.num(msg, "page"))
     elseif msg.type == Protocol.TURN then
-        if not self:isMaster() then return end
-        if not self:get("slave_can_turn") then return end
+        if not self:isLeader() then return end
+        if not self:get("follower_can_turn") then return end
         self:applyRelativeTurn(Protocol.num(msg, "dir", 1))
     elseif msg.type == Protocol.GOTO then
-        if not self:isMaster() or not self.reader then return end
+        if not self:isLeader() or not self.reader then return end
         local page = Protocol.num(msg, "page")
         if page then
             self.applying_remote = true
@@ -2194,12 +2219,12 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.NAP then
         self:handleNap(msg)
     elseif msg.type == Protocol.SYNC then
-        if not self:isMaster() then return end
+        if not self:isLeader() then return end
         self:sendDocumentTo(link)
         --[[
         Typography before the page, and never left out.
 
-        A slave asks for this the moment it finishes opening a book, which
+        A follower asks for this the moment it finishes opening a book, which
         is the one time it is certain to need it: the layout settings sent
         when the link came up arrived while this device was still in the
         file list with no book to apply them to, and were dropped. Leaving
@@ -2219,7 +2244,7 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.BROWSE then
         self:applyBrowser(msg)
     elseif msg.type == Protocol.BTURN then
-        if self:isMaster() and self:get("slave_can_turn") then
+        if self:isLeader() and self:get("follower_can_turn") then
             self:applyBrowserTurn(Protocol.num(msg, "dir", 1))
         end
     elseif msg.type == Protocol.LIB_REQ then
@@ -2239,13 +2264,13 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.BOOK_ERR then
         self:handleBookError(msg)
     elseif msg.type == Protocol.DOC then
-        if self:isMaster() then return end
+        if self:isLeader() then return end
         self:handleRemoteDocument(msg)
     elseif msg.type == Protocol.HOME then
-        if self:isMaster() then return end
+        if self:isLeader() then return end
         self:handleRemoteHome()
     elseif msg.type == Protocol.OPEN then
-        if not self:isMaster() then return end
+        if not self:isLeader() then return end
         self:handleRemoteOpen(msg)
     elseif msg.type == Protocol.SLEEP then
         self:handleRemoteSleep()
@@ -2254,7 +2279,7 @@ function Core:handleMessage(link, msg)
     end
 end
 
---- Opens the book the master is reading, when we are not already in it.
+--- Opens the book the leader is reading, when we are not already in it.
 function Core:handleRemoteDocument(msg)
     if not self:get("follow_document") then return end
     local file = msg.file
@@ -2281,11 +2306,11 @@ function Core:handleRemoteDocument(msg)
 end
 
 --[[--
-Follows the master out of a book and back to the list.
+Follows the leader out of a book and back to the list.
 
 The spread is a pair of screens showing one thing, and that has to hold for
-the book list as much as for the book: a master that has closed its book
-and a slave still sitting in one is not a spread, it is two devices doing
+the book list as much as for the book: a leader that has closed its book
+and a follower still sitting in one is not a spread, it is two devices doing
 different things. Going in was already followed; this is coming back out.
 --]]--
 function Core:handleRemoteHome()
@@ -2298,31 +2323,31 @@ function Core:handleRemoteHome()
 end
 
 --[[--
-Opens, for the whole pair, a book the user tapped on a slave.
+Opens, for the whole pair, a book the user tapped on a follower.
 
-The slave may turn pages, so it would be strange if it could not start one.
-It cannot simply open the book itself, though: the master owns the page
-number, and a slave that went off and opened something on its own would
+The follower may turn pages, so it would be strange if it could not start one.
+It cannot simply open the book itself, though: the leader owns the page
+number, and a follower that went off and opened something on its own would
 leave the two devices in different books. So the tap is forwarded, the
-master opens it, and the master's own DOC brings the slave along — the same
-path as if the master had been tapped.
+leader opens it, and the leader's own DOC brings the follower along — the same
+path as if the leader had been tapped.
 --]]--
 function Core:requestOpen(file, title)
-    if not self:isActive() or self:isMaster() then return false end
+    if not self:isActive() or self:isLeader() then return false end
     if not self:get("follow_document") then return false end
-    if not self:get("slave_can_turn") then return false end
+    if not self:get("follower_can_turn") then return false end
     local link = self:getReadyLinks()[1]
     if not link then return false end
     link:send(Protocol.OPEN, { file = file, title = title or "" })
-    self:log("asked the master to open", file)
+    self:log("asked the leader to open", file)
     return true
 end
 
 function Core:handleRemoteOpen(msg)
-    if not self:get("slave_can_turn") then return end
+    if not self:get("follower_can_turn") then return end
     local file = msg.file
     if not file or file == "" then return end
-    -- Already reading it: the slave is only catching up, so say so rather
+    -- Already reading it: the follower is only catching up, so say so rather
     -- than reopening the book underneath the person holding it.
     local document = self.reader and self.reader.getDocument() or nil
     if document and document.file == file then
@@ -2382,34 +2407,34 @@ end
 --[[--
 Warns when the two devices paginate the same book differently.
 
-@int master_pages  how many pages the master says the book has
-@string[opt] master_typo  the master's layout fingerprint, when it sent one
+@int leader_pages  how many pages the leader says the book has
+@string[opt] leader_typo  the leader's layout fingerprint, when it sent one
 --]]--
-function Core:checkPagination(master_pages, master_typo)
-    if self.warned_pagination or not master_pages or master_pages == 0 then return end
+function Core:checkPagination(leader_pages, leader_typo)
+    if self.warned_pagination or not leader_pages or leader_pages == 0 then return end
     if not self.reader then return end
     local own_pages = self.reader.getPageCount()
-    if not own_pages or own_pages == master_pages then return end
+    if not own_pages or own_pages == leader_pages then return end
 
     if self:get("match_typography") then
         -- Nothing to say until matching has actually happened.
         if not self.typography_in_sync then return end
         --[[
         The page counts are being compared against settings that may not be
-        the ones that produced them. Change the font size on the master and
+        the ones that produced them. Change the font size on the leader and
         it repaginates at once, but Duo only notices a moment later, so the
         new page count arrives here while both devices still hold the old
         settings — and complaining then means complaining about a difference
         that is about to fix itself.
 
-        The fingerprint settles it: the master stamps each page count with
+        The fingerprint settles it: the leader stamps each page count with
         the layout that produced it, so "we disagree because the settings
         differ" and "we disagree even though they match" stop looking alike.
         Only the second is worth saying, and only it gets said.
         ]]
         local own_typo = self:typographySignature()
-        if master_typo and master_typo ~= "" and own_typo and own_typo ~= ""
-                and master_typo ~= own_typo then
+        if leader_typo and leader_typo ~= "" and own_typo and own_typo ~= ""
+                and leader_typo ~= own_typo then
             return
         end
         if self.typography_applied_at
@@ -2432,12 +2457,12 @@ function Core:checkPagination(master_pages, master_typo)
             return
         end
         self.warned_pagination = true
-        self:alert(("Both devices lay this book out with the same settings, yet it comes to %d pages here and %d on the master.\n\nThat is usually the screens themselves, which cannot be matched, so the spread will drift apart."):format(
-            own_pages, master_pages))
+        self:alert(("Both devices lay this book out with the same settings, yet it comes to %d pages here and %d on the leader.\n\nThat is usually the screens themselves, which cannot be matched, so the spread will drift apart."):format(
+            own_pages, leader_pages))
     else
         self.warned_pagination = true
-        self:alert(("This device paginates the book differently (%d pages here, %d on the master), so the spread will not line up.\n\nTurn on \"Match typography\", or set the same font, size, spacing and margins on both."):format(
-            own_pages, master_pages))
+        self:alert(("This device paginates the book differently (%d pages here, %d on the leader), so the spread will not line up.\n\nTurn on \"Match typography\", or set the same font, size, spacing and margins on both."):format(
+            own_pages, leader_pages))
     end
 end
 
@@ -2459,41 +2484,41 @@ function Core:getStatusText()
             direction == "sending" and "Sending" or "Receiving",
             self.book_title or "a book", math.floor((progress or 0) * 100))
     end
-    if self:isMaster() then
+    if self:isLeader() then
         local ready = self:getReadyLinks()
         if #ready == 0 then
             if self:usesSerial() then
-                return ("Master · waiting on %s"):format(self:get("serial_device"))
+                return ("Leader · waiting on %s"):format(self:get("serial_device"))
             end
             local address = NetUtil.getLocalIP()
-            return ("Master · waiting on %s:%d"):format(address or "this device", self:get("port"))
+            return ("Leader · waiting on %s:%d"):format(address or "this device", self:get("port"))
         end
         local names = {}
         for _, link in ipairs(ready) do
-            names[#names+1] = link.peer_name or "slave"
+            names[#names+1] = link.peer_name or "follower"
         end
         local pages = ""
         if self.reader then
             pages = " · pages " .. Spread.describeLayout(self.reader.getPage(), #ready, self:getSpreadOptions())
         end
-        return ("Master · %s%s"):format(table.concat(names, ", "), pages)
+        return ("Leader · %s%s"):format(table.concat(names, ", "), pages)
     end
     local link = self:getReadyLinks()[1]
     if link then
         local page = self.reader and self.reader.getPage()
-        return ("Slave · following %s%s"):format(
-            link.peer_name or "master",
+        return ("Follower · following %s%s"):format(
+            link.peer_name or "leader",
             page and (" · page " .. page) or "")
     end
     if self.reconnect_at then
         local seconds = math.max(0, math.ceil(self.reconnect_at - Util.now()))
-        return ("Slave · retrying in %ds%s"):format(seconds,
+        return ("Follower · retrying in %ds%s"):format(seconds,
             self.last_error and (" (" .. self.last_error .. ")") or "")
     end
     if self:usesSerial() then
-        return ("Slave · listening on %s…"):format(self:get("serial_device"))
+        return ("Follower · listening on %s…"):format(self:get("serial_device"))
     end
-    return ("Slave · connecting to %s…"):format(self:get("peer_host"))
+    return ("Follower · connecting to %s…"):format(self:get("peer_host"))
 end
 
 --------------------------------------------------------------------------
@@ -2526,7 +2551,7 @@ Waking up is not the same as being ready. A device that has been asleep for
 a while comes back with its Wi-Fi still down: the interface has no address,
 a link-local cell has not re-formed, and binding a socket to any of that
 fails. This used to be a single attempt whose failure was permanent — the
-role was cleared, the master's listen failed, an alert went up and nothing
+role was cleared, the leader's listen failed, an alert went up and nothing
 ever tried again, which is why a long sleep needed a disconnect and
 reconnect by hand while a short one did not.
 

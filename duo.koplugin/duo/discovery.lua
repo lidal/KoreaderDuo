@@ -1,7 +1,7 @@
 --[[--
 Finding the other device without typing an IP address.
 
-The master answers UDP probes with an offer describing itself; the slave
+The leader answers UDP probes with an offer describing itself; the follower
 broadcasts a probe and collects the answers. Typing a `192.168.x.y` on an
 e-ink keyboard is miserable, so this is the path the pairing screen uses,
 with manual entry kept as the fallback for networks that filter broadcasts.
@@ -24,7 +24,7 @@ local PROBE = "PROBE"
 local OFFER = "OFFER"
 
 --------------------------------------------------------------------------
--- Responder: runs on the master.
+-- Responder: runs on the leader.
 --------------------------------------------------------------------------
 
 local Responder = {}
@@ -80,14 +80,14 @@ function Responder:close()
 end
 
 --------------------------------------------------------------------------
--- Scanner: runs on the slave.
+-- Scanner: runs on the follower.
 --------------------------------------------------------------------------
 
 local Scanner = {}
 Scanner.__index = Scanner
 
 --[[--
-Starts looking for masters.
+Starts looking for leaders.
 
 @tparam table options
     port        UDP port to probe (default Discovery.PORT)
@@ -143,7 +143,7 @@ function Scanner:poll()
         if not data then break end
         local msg = Protocol.decode((data:gsub("\n$", "")))
         if msg and msg.type == OFFER and Protocol.num(msg, "proto", 0) == Protocol.VERSION then
-            -- One master can answer the same scan on several interfaces.
+            -- One leader can answer the same scan on several interfaces.
             -- Fold those together by its instance id so the user is offered
             -- one device, not one row per address it happens to own.
             local key = (msg.id and msg.id ~= "" and msg.id) or (ip .. ":" .. (msg.port or "?"))

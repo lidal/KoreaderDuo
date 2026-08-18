@@ -133,9 +133,21 @@ local function makeUIManager(clock)
 
     function UIManager:show(widget)
         self.shown[widget] = true
+        --[[
+        A dialog is its title *and* its buttons. Recording only the title
+        let a test assert that a screen asked the right question while
+        saying nothing about the answers it offered, which is most of what
+        a button dialog is.
+        ]]
+        local text = widget.text or widget.title or ""
+        for _, row in ipairs(widget.buttons or {}) do
+            for _, button in ipairs(row) do
+                if button.text then text = text .. "\n" .. button.text end
+            end
+        end
         table.insert(self.shown_log, {
             class = widget.class_name or "Widget",
-            text = widget.text or widget.title or "",
+            text = text,
         })
         if widget.timeout then
             self:scheduleIn(widget.timeout, function() self:close(widget) end)

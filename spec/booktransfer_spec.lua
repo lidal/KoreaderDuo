@@ -130,7 +130,7 @@ end)
 
 T.describe("what counts as a book", function()
     --[[
-    The shared folder is whichever one the master happens to be looking at,
+    The shared folder is whichever one the leader happens to be looking at,
     and the file browser hides unsupported files only until somebody turns
     that setting off. So an allowlist, not a guess: the wrong turn is a
     downloads folder, and the wrong outcome is a device pulling firmware

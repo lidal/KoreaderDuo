@@ -10,7 +10,7 @@ last of which is how the test suite exercises it.
 
 The difference from TCP is that there is nothing to connect to: the line is
 simply there, symmetric, with no accept step. Whoever is configured as the
-master starts the handshake and repeats it until the other end answers.
+leader starts the handshake and repeats it until the other end answers.
 
 Non-blocking I/O needs the raw system calls, so this module uses LuaJIT's
 ffi. KOReader ships LuaJIT, so that is a safe dependency; `isAvailable()`

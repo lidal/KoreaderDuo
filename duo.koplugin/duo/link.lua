@@ -6,11 +6,11 @@ heartbeats, and hands finished messages to its owner. It knows nothing about
 pages or books: `duo/core` decides what to say, the Link makes sure it is
 said to the right device and notices when that device goes away.
 
-Handshake (the master listens, the slave dials in):
+Handshake (the leader listens, the follower dials in):
 
-    master   -> slave : CHALLENGE nonce=<a> proto=1
-    slave -> master   : HELLO nonce=<b> proof=H(<a>:token) name=... proto=1
-    master   -> slave : WELCOME proof=H(<b>:token) name=... slot=1
+    leader   -> follower : CHALLENGE nonce=<a> proto=1
+    follower -> leader   : HELLO nonce=<b> proof=H(<a>:token) name=... proto=1
+    leader   -> follower : WELCOME proof=H(<b>:token) name=... slot=1
                     or   : DENY reason=...
 
 Both sides prove they know the pairing token, and neither side ever sends
@@ -46,10 +46,10 @@ Creates a link around an already connected stream.
 
 @tparam table options
     stream      the transport stream to talk over
-    is_master   true on the device that listens and decides
+    is_leader   true on the device that listens and decides
     token       shared pairing token ("" accepts anybody)
     name        this device's display name
-    slot        slave index handed out by the master (master side only)
+    slot        follower index handed out by the leader (leader side only)
     on_message  function(link, msg) for application messages
     on_ready    function(link) once the handshake succeeded
     on_close    function(link, reason) exactly once, when the link dies
@@ -57,7 +57,7 @@ Creates a link around an already connected stream.
 function Link.new(options)
     local link = setmetatable({
         stream = options.stream,
-        is_master = options.is_master and true or false,
+        is_leader = options.is_leader and true or false,
         token = options.token or "",
         name = options.name or "KOReader",
         slot = options.slot or 1,
@@ -73,7 +73,7 @@ function Link.new(options)
         latency = nil,
     }, Link)
 
-    if link.is_master then
+    if link.is_leader then
         link.nonce = Util.randomHex(8)
         link:sendChallenge()
     end
@@ -151,7 +151,7 @@ end
 --------------------------------------------------------------------------
 
 function Link:handleHandshake(msg)
-    if self.is_master then
+    if self.is_leader then
         if msg.type ~= Protocol.HELLO then
             self:close("unexpected " .. msg.type)
             return
@@ -166,7 +166,7 @@ function Link:handleHandshake(msg)
             self:close("wrong pairing code")
             return
         end
-        self.peer_name = msg.name or "slave"
+        self.peer_name = msg.name or "follower"
         self:sendMessage(Protocol.WELCOME, {
             proof = Link.proof(msg.nonce or "", self.token),
             name = self.name,
@@ -175,7 +175,7 @@ function Link:handleHandshake(msg)
         self:becomeReady()
     else
         if msg.type == Protocol.DENY then
-            self:close(msg.reason or "refused by master")
+            self:close(msg.reason or "refused by leader")
             return
         end
         if msg.type == Protocol.CHALLENGE then
@@ -183,8 +183,8 @@ function Link:handleHandshake(msg)
                 self:close("protocol version mismatch")
                 return
             end
-            self.peer_name = msg.name or "master"
-            -- A serial line has no connect step, so the master repeats its
+            self.peer_name = msg.name or "leader"
+            -- A serial line has no connect step, so the leader repeats its
             -- challenge until somebody answers. Answering a repeat with a
             -- *new* nonce would invalidate the reply already in flight, so
             -- the nonce is tied to the challenge that prompted it.
@@ -202,11 +202,11 @@ function Link:handleHandshake(msg)
         end
         if msg.type == Protocol.WELCOME then
             if self.token ~= "" and msg.proof ~= Link.proof(self.nonce, self.token) then
-                -- Someone is listening on that port, but it is not our master.
+                -- Someone is listening on that port, but it is not our leader.
                 self:close("pairing code does not match")
                 return
             end
-            self.peer_name = msg.name or self.peer_name or "master"
+            self.peer_name = msg.name or self.peer_name or "leader"
             self.slot = Protocol.num(msg, "slot", 1)
             self:becomeReady()
             return
@@ -295,7 +295,7 @@ function Link:checkTimers()
     if self.state == "handshake" then
         if now - self.created_at > Link.HANDSHAKE_TIMEOUT then
             self:close("handshake timed out")
-        elseif self.is_master and not self.heard_from_peer
+        elseif self.is_leader and not self.heard_from_peer
                 and now - self.last_tx >= Link.CHALLENGE_INTERVAL then
             -- Nobody has said anything back. On a serial line that just
             -- means the other device is not listening yet, so keep calling.

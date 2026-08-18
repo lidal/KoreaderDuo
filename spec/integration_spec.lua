@@ -1,7 +1,7 @@
 --[[--
 Two devices, two processes, one book.
 
-This is the test that matters: a master and a slave, each a separate OS
+This is the test that matters: a leader and a follower, each a separate OS
 process running the real plugin, connected over a real TCP socket, driven
 through the same code paths a finger on the screen would take.
 
@@ -21,50 +21,50 @@ local LOG_DIR = os.getenv("DUO_LOG_DIR") or "/tmp"
 --------------------------------------------------------------------------
 
 local controller = Controller.new()
-local master = controller:spawn("master")
-local slave = controller:spawn("slave")
-local slave2 = controller:spawn("slave2")
+local leader = controller:spawn("leader")
+local follower = controller:spawn("follower")
+local follower2 = controller:spawn("follower2")
 
 local DUO_PORT = 19970
 
-local function callMaster(code) return controller:call(master, code) end
-local function callSlave(code) return controller:call(slave, code) end
+local function callLeader(code) return controller:call(leader, code) end
+local function callFollower(code) return controller:call(follower, code) end
 
---- Puts both devices back to a known state: master running, slave attached,
+--- Puts both devices back to a known state: leader running, follower attached,
 -- both in spread mode on page 10/11.
 local function connectPair(options)
     options = options or {}
-    callMaster("Core:stop('test reset')")
-    callSlave("Core:stop('test reset')")
-    controller:call(slave2, "Core:stop('test reset')")
+    callLeader("Core:stop('test reset')")
+    callFollower("Core:stop('test reset')")
+    controller:call(follower2, "Core:stop('test reset')")
 
-    callMaster(("Core.settings.port = %d"):format(DUO_PORT))
-    callMaster(("Core.settings.token = %q"):format(options.master_token or "K7F2QX"))
-    callMaster(("Core.settings.mode = %q"):format(options.mode or "spread"))
-    callMaster(("Core.settings.reverse = %s"):format(tostring(options.reverse or false)))
-    callMaster(("Core.settings.slave_can_turn = %s"):format(tostring(options.slave_can_turn ~= false)))
-    callMaster("Core.settings.discovery_port = 19971")
+    callLeader(("Core.settings.port = %d"):format(DUO_PORT))
+    callLeader(("Core.settings.token = %q"):format(options.leader_token or "K7F2QX"))
+    callLeader(("Core.settings.mode = %q"):format(options.mode or "spread"))
+    callLeader(("Core.settings.reverse = %s"):format(tostring(options.reverse or false)))
+    callLeader(("Core.settings.follower_can_turn = %s"):format(tostring(options.follower_can_turn ~= false)))
+    callLeader("Core.settings.discovery_port = 19971")
 
-    callSlave(("Core.settings.token = %q"):format(options.slave_token or "K7F2QX"))
-    callSlave(("Core.settings.peer_port = %d"):format(DUO_PORT))
-    callSlave("Core.settings.discovery_port = 19971")
-    -- Set on both sides: the slave consults its own copy when deciding
+    callFollower(("Core.settings.token = %q"):format(options.follower_token or "K7F2QX"))
+    callFollower(("Core.settings.peer_port = %d"):format(DUO_PORT))
+    callFollower("Core.settings.discovery_port = 19971")
+    -- Set on both sides: the follower consults its own copy when deciding
     -- whether to forward a turn, and a test that switched it off would
     -- otherwise leak into every test after it.
-    callSlave(("Core.settings.slave_can_turn = %s"):format(tostring(options.slave_can_turn ~= false)))
+    callFollower(("Core.settings.follower_can_turn = %s"):format(tostring(options.follower_can_turn ~= false)))
 
-    callMaster("Core:start('master')")
-    callSlave(("Core:start('slave', { host = '127.0.0.1', port = %d })"):format(DUO_PORT))
+    callLeader("Core:start('leader')")
+    callFollower(("Core:start('follower', { host = '127.0.0.1', port = %d })"):format(DUO_PORT))
 
     if options.expect_failure then return end
-    controller:assertEventually(master, "Core:isConnected()", true, "master never saw the slave")
-    controller:assertEventually(slave, "Core:isConnected()", true, "slave never connected")
+    controller:assertEventually(leader, "Core:isConnected()", true, "leader never saw the follower")
+    controller:assertEventually(follower, "Core:isConnected()", true, "follower never connected")
 end
 
---- Sets the master's page and waits for the spread to settle.
-local function setMasterPage(page)
-    callMaster(("D:jumpToPage(%d)"):format(page))
-    controller:assertEventually(master, "D:getPage()", page, "master did not move")
+--- Sets the leader's page and waits for the spread to settle.
+local function setLeaderPage(page)
+    callLeader(("D:jumpToPage(%d)"):format(page))
+    controller:assertEventually(leader, "D:getPage()", page, "leader did not move")
 end
 
 --------------------------------------------------------------------------
@@ -74,128 +74,128 @@ end
 T.describe("two devices, connecting", function()
     T.it("pairs over the network", function()
         connectPair()
-        T.assertEquals(callMaster("Core.role"), "master")
-        T.assertEquals(callSlave("Core.role"), "slave")
-        T.assertMatch(callMaster("Core:getStatusText()"), "Master")
-        T.assertMatch(callSlave("Core:getStatusText()"), "following")
+        T.assertEquals(callLeader("Core.role"), "leader")
+        T.assertEquals(callFollower("Core.role"), "follower")
+        T.assertMatch(callLeader("Core:getStatusText()"), "Leader")
+        T.assertMatch(callFollower("Core:getStatusText()"), "following")
     end)
 
     T.it("learns the other device's name", function()
         connectPair()
-        T.assertEquals(callSlave("Core:getReadyLinks()[1].peer_name"), "master")
-        T.assertEquals(callMaster("Core:getReadyLinks()[1].peer_name"), "slave")
+        T.assertEquals(callFollower("Core:getReadyLinks()[1].peer_name"), "leader")
+        T.assertEquals(callLeader("Core:getReadyLinks()[1].peer_name"), "follower")
     end)
 
     T.it("turns away a device with the wrong pairing code", function()
-        connectPair{ slave_token = "NOPE99", expect_failure = true }
-        -- The slave must not end up connected, however long we wait.
-        local connected = controller:waitFor(slave, "Core:isConnected()", true, 3)
+        connectPair{ follower_token = "NOPE99", expect_failure = true }
+        -- The follower must not end up connected, however long we wait.
+        local connected = controller:waitFor(follower, "Core:isConnected()", true, 3)
         T.assertTrue(not connected, "a device with the wrong code got in")
-        T.assertTrue(not (controller:waitFor(master, "Core:isConnected()", true, 1)),
-            "the master accepted a device with the wrong code")
+        T.assertTrue(not (controller:waitFor(leader, "Core:isConnected()", true, 1)),
+            "the leader accepted a device with the wrong code")
     end)
 
-    T.it("finds the master over UDP without being told its address", function()
+    T.it("finds the leader over UDP without being told its address", function()
         connectPair()
-        callSlave("Core:startScan(function(r) Core.scan_results = r end)")
-        controller:assertEventually(slave, "Core.scan_results ~= nil", true, "the scan never finished")
-        T.assertEquals(controller:call(slave, "#Core.scan_results"), "1")
-        T.assertEquals(controller:call(slave, "Core.scan_results[1].name"), "master")
-        T.assertEquals(controller:call(slave, "Core.scan_results[1].port"), tostring(DUO_PORT))
+        callFollower("Core:startScan(function(r) Core.scan_results = r end)")
+        controller:assertEventually(follower, "Core.scan_results ~= nil", true, "the scan never finished")
+        T.assertEquals(controller:call(follower, "#Core.scan_results"), "1")
+        T.assertEquals(controller:call(follower, "Core.scan_results[1].name"), "leader")
+        T.assertEquals(controller:call(follower, "Core.scan_results[1].port"), tostring(DUO_PORT))
     end)
 end)
 
 T.describe("two devices, one spread", function()
-    T.it("puts the slave on the page after the master's", function()
+    T.it("puts the follower on the page after the leader's", function()
         connectPair()
-        setMasterPage(10)
-        controller:assertEventually(slave, "D:getPage()", 11, "the slave is not showing the next page")
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11, "the follower is not showing the next page")
     end)
 
-    T.it("moves both devices by two when the master turns a page", function()
+    T.it("moves both devices by two when the leader turns a page", function()
         connectPair()
-        setMasterPage(10)
-        controller:assertEventually(slave, "D:getPage()", 11)
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
 
-        callMaster("D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 12, "the master must skip the page the slave showed")
-        controller:assertEventually(slave, "D:getPage()", 13)
+        callLeader("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 12, "the leader must skip the page the follower showed")
+        controller:assertEventually(follower, "D:getPage()", 13)
 
-        callMaster("D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 14)
-        controller:assertEventually(slave, "D:getPage()", 15)
+        callLeader("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 14)
+        controller:assertEventually(follower, "D:getPage()", 15)
 
-        callMaster("D:tapBack()")
-        controller:assertEventually(master, "D:getPage()", 12)
-        controller:assertEventually(slave, "D:getPage()", 13)
+        callLeader("D:tapBack()")
+        controller:assertEventually(leader, "D:getPage()", 12)
+        controller:assertEventually(follower, "D:getPage()", 13)
     end)
 
-    T.it("lets a tap on the slave turn the pair", function()
+    T.it("lets a tap on the follower turn the pair", function()
         connectPair()
-        setMasterPage(20)
-        controller:assertEventually(slave, "D:getPage()", 21)
+        setLeaderPage(20)
+        controller:assertEventually(follower, "D:getPage()", 21)
 
-        callSlave("D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 22, "the slave's tap did not reach the master")
-        controller:assertEventually(slave, "D:getPage()", 23)
+        callFollower("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 22, "the follower's tap did not reach the leader")
+        controller:assertEventually(follower, "D:getPage()", 23)
 
-        callSlave("D:tapBack()")
-        controller:assertEventually(master, "D:getPage()", 20)
-        controller:assertEventually(slave, "D:getPage()", 21)
+        callFollower("D:tapBack()")
+        controller:assertEventually(leader, "D:getPage()", 20)
+        controller:assertEventually(follower, "D:getPage()", 21)
     end)
 
-    T.it("ignores taps on the slave when that is switched off", function()
-        connectPair{ slave_can_turn = false }
-        setMasterPage(30)
-        controller:assertEventually(slave, "D:getPage()", 31)
+    T.it("ignores taps on the follower when that is switched off", function()
+        connectPair{ follower_can_turn = false }
+        setLeaderPage(30)
+        controller:assertEventually(follower, "D:getPage()", 31)
 
-        callSlave("Core.settings.slave_can_turn = false")
-        callSlave("D:tapForward()")
+        callFollower("Core.settings.follower_can_turn = false")
+        callFollower("D:tapForward()")
         socket.sleep(0.5)
-        T.assertEquals(controller:number(master, "D:getPage()"), 30, "the master moved anyway")
-        T.assertEquals(controller:number(slave, "D:getPage()"), 31, "the slave drifted out of the spread")
+        T.assertEquals(controller:number(leader, "D:getPage()"), 30, "the leader moved anyway")
+        T.assertEquals(controller:number(follower, "D:getPage()"), 31, "the follower drifted out of the spread")
     end)
 
     T.it("follows a jump from the table of contents", function()
         connectPair()
-        setMasterPage(10)
-        controller:assertEventually(slave, "D:getPage()", 11)
-        setMasterPage(157)
-        controller:assertEventually(slave, "D:getPage()", 158, "the slave did not follow an absolute jump")
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
+        setLeaderPage(157)
+        controller:assertEventually(follower, "D:getPage()", 158, "the follower did not follow an absolute jump")
     end)
 
     T.it("mirrors both devices onto the same page", function()
         connectPair{ mode = "mirror" }
-        setMasterPage(42)
-        controller:assertEventually(slave, "D:getPage()", 42)
-        callMaster("D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 43, "mirror mode must move one page at a time")
-        controller:assertEventually(slave, "D:getPage()", 43)
+        setLeaderPage(42)
+        controller:assertEventually(follower, "D:getPage()", 42)
+        callLeader("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 43, "mirror mode must move one page at a time")
+        controller:assertEventually(follower, "D:getPage()", 43)
     end)
 
-    T.it("can put the slave on the left", function()
+    T.it("can put the follower on the left", function()
         connectPair{ reverse = true }
-        setMasterPage(50)
-        controller:assertEventually(slave, "D:getPage()", 49)
-        callMaster("D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 52)
-        controller:assertEventually(slave, "D:getPage()", 51)
+        setLeaderPage(50)
+        controller:assertEventually(follower, "D:getPage()", 49)
+        callLeader("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 52)
+        controller:assertEventually(follower, "D:getPage()", 51)
     end)
 
     T.it("stops at the end of the book instead of running past it", function()
         connectPair()
-        setMasterPage(300)
-        controller:assertEventually(slave, "D:getPage()", 300, "the slave should stay on the last page")
+        setLeaderPage(300)
+        controller:assertEventually(follower, "D:getPage()", 300, "the follower should stay on the last page")
     end)
 
     T.it("switches layout while connected", function()
         connectPair()
-        setMasterPage(10)
-        controller:assertEventually(slave, "D:getPage()", 11)
-        callMaster("Core.settings.mode = 'mirror'; Core:broadcastState()")
-        controller:assertEventually(slave, "D:getPage()", 10, "the slave did not follow the layout change")
-        callMaster("Core.settings.mode = 'spread'; Core:broadcastState()")
-        controller:assertEventually(slave, "D:getPage()", 11)
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
+        callLeader("Core.settings.mode = 'mirror'; Core:broadcastState()")
+        controller:assertEventually(follower, "D:getPage()", 10, "the follower did not follow the layout change")
+        callLeader("Core.settings.mode = 'spread'; Core:broadcastState()")
+        controller:assertEventually(follower, "D:getPage()", 11)
     end)
 end)
 
@@ -205,160 +205,160 @@ T.describe("matching typography", function()
     local function fontSize(device) return controller:number(device, "UI.document.configurable.font_size") end
     local function pageCount(device) return controller:number(device, "UI.document:getPageCount()") end
 
-    T.it("brings a mismatched slave into line on connect", function()
-        callMaster("Core:stop('reset')")
-        callSlave("Core:stop('reset')")
-        -- The slave is reading at a bigger size, so it has more pages than
-        -- the master and the spread would be nonsense.
-        callSlave("UI.document.configurable.font_size = 30; UI.document:repaginate()")
-        T.assertNotEquals(pageCount(slave), pageCount(master), "the fixture is not actually mismatched")
+    T.it("brings a mismatched follower into line on connect", function()
+        callLeader("Core:stop('reset')")
+        callFollower("Core:stop('reset')")
+        -- The follower is reading at a bigger size, so it has more pages than
+        -- the leader and the spread would be nonsense.
+        callFollower("UI.document.configurable.font_size = 30; UI.document:repaginate()")
+        T.assertNotEquals(pageCount(follower), pageCount(leader), "the fixture is not actually mismatched")
 
         connectPair()
-        controller:assertEventually(slave, "UI.document.configurable.font_size", 22,
-            "the slave kept its own font size")
-        T.assertEquals(pageCount(slave), pageCount(master),
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 22,
+            "the follower kept its own font size")
+        T.assertEquals(pageCount(follower), pageCount(leader),
             "the two devices still disagree about how long the book is")
     end)
 
     T.it("matches a book opened after the link came up", function()
         --[[
         The layout settings sent when the link comes up arrive while a
-        slave is still in the file list, with no book to apply them to, and
+        follower is still in the file list, with no book to apply them to, and
         are dropped. If nothing sends them again, the two devices sit at
         different font sizes until somebody changes one by hand — which is
-        exactly what it looked like on real hardware. A slave asks for its
+        exactly what it looked like on real hardware. A follower asks for its
         place the moment it finishes opening a book; the answer has to
         carry the typography as well as the page.
         ]]
         connectPair()
-        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 26))")
-        controller:assertEventually(slave, "UI.document.configurable.font_size", 26)
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 26))")
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 26)
 
-        -- A fresh book on the slave, opened at a size of its own. All one
+        -- A fresh book on the follower, opened at a size of its own. All one
         -- snippet: the device only touches its sockets between commands, so
         -- there is no window for the answer to arrive early and make this
         -- pass without ever having been mismatched.
-        callSlave("D:openDocument{ page_count = 300 }" ..
+        callFollower("D:openDocument{ page_count = 300 }" ..
             "; UI.document.configurable.font_size = 30; UI.document:repaginate()")
 
-        controller:assertEventually(slave, "UI.document.configurable.font_size", 26,
-            "a book opened on the slave kept its own font size")
-        T.assertEquals(pageCount(slave), pageCount(master),
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 26,
+            "a book opened on the follower kept its own font size")
+        T.assertEquals(pageCount(follower), pageCount(leader),
             "the two devices still disagree about how long the book is")
     end)
 
-    T.it("follows a change made on the master", function()
+    T.it("follows a change made on the leader", function()
         connectPair()
-        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 26))")
-        controller:assertEventually(slave, "UI.document.configurable.font_size", 26,
-            "the slave did not follow the master")
-        T.assertEquals(pageCount(slave), pageCount(master))
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 26))")
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 26,
+            "the follower did not follow the leader")
+        T.assertEquals(pageCount(follower), pageCount(leader))
     end)
 
-    T.it("follows a change made on the slave", function()
+    T.it("follows a change made on the follower", function()
         connectPair()
-        callSlave("UI:handleEvent(D.Event:new('SetFontSize', 18))")
-        -- A slave cannot decide anything by itself: it tells the master,
+        callFollower("UI:handleEvent(D.Event:new('SetFontSize', 18))")
+        -- A follower cannot decide anything by itself: it tells the leader,
         -- which applies it and passes it on.
-        controller:assertEventually(master, "UI.document.configurable.font_size", 18,
-            "the master did not follow the slave")
-        T.assertEquals(fontSize(slave), 18)
-        T.assertEquals(pageCount(slave), pageCount(master))
+        controller:assertEventually(leader, "UI.document.configurable.font_size", 18,
+            "the leader did not follow the follower")
+        T.assertEquals(fontSize(follower), 18)
+        T.assertEquals(pageCount(follower), pageCount(leader))
     end)
 
     T.it("matches margins, which are a pair rather than a number", function()
         connectPair()
-        callMaster("UI:handleEvent(D.Event:new('SetPageHorizMargins', {25, 25}))")
-        controller:assertEventually(slave, "UI.document.configurable.h_page_margins[1]", 25,
-            "the slave did not follow the margins")
-        T.assertEquals(controller:number(slave, "UI.document.configurable.h_page_margins[2]"), 25)
-        T.assertEquals(pageCount(slave), pageCount(master))
+        callLeader("UI:handleEvent(D.Event:new('SetPageHorizMargins', {25, 25}))")
+        controller:assertEventually(follower, "UI.document.configurable.h_page_margins[1]", 25,
+            "the follower did not follow the margins")
+        T.assertEquals(controller:number(follower, "UI.document.configurable.h_page_margins[2]"), 25)
+        T.assertEquals(pageCount(follower), pageCount(leader))
     end)
 
     T.it("keeps the spread correct after a relayout", function()
         connectPair()
-        setMasterPage(40)
-        controller:assertEventually(slave, "D:getPage()", 41)
+        setLeaderPage(40)
+        controller:assertEventually(follower, "D:getPage()", 41)
 
-        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 24))")
-        controller:assertEventually(slave, "UI.document.configurable.font_size", 24)
-        -- Whatever page the master ended up on, the slave must be on the next.
-        local master_page = controller:number(master, "D:getPage()")
-        controller:assertEventually(slave, "D:getPage()", master_page + 1,
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 24))")
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 24)
+        -- Whatever page the leader ended up on, the follower must be on the next.
+        local leader_page = controller:number(leader, "D:getPage()")
+        controller:assertEventually(follower, "D:getPage()", leader_page + 1,
             "the spread broke when the book was laid out again")
     end)
 
     T.it("leaves the devices alone when switched off", function()
         connectPair()
-        callSlave("Core.settings.match_typography = false")
-        callMaster("Core.settings.match_typography = false")
-        callSlave("UI.document.configurable.font_size = 30; UI.document:repaginate()")
-        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 20))")
+        callFollower("Core.settings.match_typography = false")
+        callLeader("Core.settings.match_typography = false")
+        callFollower("UI.document.configurable.font_size = 30; UI.document:repaginate()")
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 20))")
         socket.sleep(2.5)
-        T.assertEquals(fontSize(slave), 30, "the slave was changed with matching switched off")
+        T.assertEquals(fontSize(follower), 30, "the follower was changed with matching switched off")
     end)
 
-    T.it("can put the slave's own settings back", function()
-        callSlave("Core:stop('reset')")
-        callMaster("Core:stop('reset')")
-        callSlave("Core.settings.match_typography = true")
-        callMaster("Core.settings.match_typography = true")
+    T.it("can put the follower's own settings back", function()
+        callFollower("Core:stop('reset')")
+        callLeader("Core:stop('reset')")
+        callFollower("Core.settings.match_typography = true")
+        callLeader("Core.settings.match_typography = true")
         -- On a device this is fresh per document; these are all one session.
-        callSlave("Core.typography_backup = nil")
+        callFollower("Core.typography_backup = nil")
         -- Both sizes set here rather than assumed: the previous test leaves
-        -- the master somewhere of its own choosing.
-        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 22))")
-        callSlave("UI:handleEvent(D.Event:new('SetFontSize', 30))")
+        -- the leader somewhere of its own choosing.
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 22))")
+        callFollower("UI:handleEvent(D.Event:new('SetFontSize', 30))")
         connectPair()
-        controller:assertEventually(slave, "UI.document.configurable.font_size", 22,
-            "the slave did not take the master's size")
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 22,
+            "the follower did not take the leader's size")
 
-        T.assertEquals(callSlave("Core:hasTypographyBackup()"), "true")
-        T.assertEquals(callSlave("Core:restoreTypography()"), "true")
-        T.assertEquals(fontSize(slave), 30, "the slave's own size did not come back")
-        T.assertEquals(callSlave("Core:hasTypographyBackup()"), "false")
+        T.assertEquals(callFollower("Core:hasTypographyBackup()"), "true")
+        T.assertEquals(callFollower("Core:restoreTypography()"), "true")
+        T.assertEquals(fontSize(follower), 30, "the follower's own size did not come back")
+        T.assertEquals(callFollower("Core:hasTypographyBackup()"), "false")
     end)
 end)
 
 T.describe("agreeing on the settings", function()
     --[[
     Nothing about the configuration used to cross the link, and several
-    features are checked on both devices — page turns from the slave, for
+    features are checked on both devices — page turns from the follower, for
     one. Switching such a thing off on one device silently disabled it, and
     which device you had to look at differed from feature to feature.
     ]]
-    T.it("takes the master's settings on connect, whatever the slave had", function()
-        callMaster("Core:stop('reset')")
-        callSlave("Core:stop('reset')")
+    T.it("takes the leader's settings on connect, whatever the follower had", function()
+        callLeader("Core:stop('reset')")
+        callFollower("Core:stop('reset')")
         -- Configured differently, and deliberately in both directions so a
         -- test that simply set everything true could not pass.
-        callSlave("Core.settings.share_browser = false")
-        callSlave("Core.settings.covers_first = false")
-        callSlave("Core.settings.max_library_mb = 64")
-        callMaster("Core.settings.share_browser = true")
-        callMaster("Core.settings.covers_first = true")
-        callMaster("Core.settings.max_library_mb = 512")
+        callFollower("Core.settings.share_browser = false")
+        callFollower("Core.settings.covers_first = false")
+        callFollower("Core.settings.max_library_mb = 64")
+        callLeader("Core.settings.share_browser = true")
+        callLeader("Core.settings.covers_first = true")
+        callLeader("Core.settings.max_library_mb = 512")
 
         connectPair()
-        controller:assertEventually(slave, "Core:get('share_browser')", true,
-            "the slave kept its own setting")
-        T.assertEquals(callSlave("Core:get('covers_first')"), "true")
-        T.assertEquals(callSlave("Core:get('max_library_mb')"), "512",
+        controller:assertEventually(follower, "Core:get('share_browser')", true,
+            "the follower kept its own setting")
+        T.assertEquals(callFollower("Core:get('covers_first')"), "true")
+        T.assertEquals(callFollower("Core:get('max_library_mb')"), "512",
             "a number has to survive the trip as a number")
     end)
 
     T.it("follows a change made on either device afterwards", function()
         connectPair()
-        callMaster("Core:set('slave_can_turn', false)")
-        controller:assertEventually(slave, "Core:get('slave_can_turn')", false,
-            "the slave did not follow the master")
+        callLeader("Core:set('follower_can_turn', false)")
+        controller:assertEventually(follower, "Core:get('follower_can_turn')", false,
+            "the follower did not follow the leader")
 
-        -- And back the other way: a slave asks, the master decides, and the
+        -- And back the other way: a follower asks, the leader decides, and the
         -- answer comes back round.
-        callSlave("Core:set('slave_can_turn', true)")
-        controller:assertEventually(master, "Core:get('slave_can_turn')", true,
-            "a change on the slave never reached the master")
-        controller:assertEventually(slave, "Core:get('slave_can_turn')", true)
+        callFollower("Core:set('follower_can_turn', true)")
+        controller:assertEventually(leader, "Core:get('follower_can_turn')", true,
+            "a change on the follower never reached the leader")
+        controller:assertEventually(follower, "Core:get('follower_can_turn')", true)
     end)
 
     T.it("never levels the things that make the two devices different", function()
@@ -368,42 +368,42 @@ T.describe("agreeing on the settings", function()
         talk itself into silence.
         ]]
         connectPair()
-        local before = callSlave("Core:get('peer_port') .. ',' .. Core:get('device_name')")
-        callMaster("Core:pushSettings('test')")
+        local before = callFollower("Core:get('peer_port') .. ',' .. Core:get('device_name')")
+        callLeader("Core:pushSettings('test')")
         socket.sleep(0.5)
-        T.assertEquals(callSlave("Core:get('peer_port') .. ',' .. Core:get('device_name')"),
-            before, "the slave adopted something that identifies the other device")
-        T.assertEquals(callSlave("Core.role"), "slave", "and it is still the slave")
+        T.assertEquals(callFollower("Core:get('peer_port') .. ',' .. Core:get('device_name')"),
+            before, "the follower adopted something that identifies the other device")
+        T.assertEquals(callFollower("Core.role"), "follower", "and it is still the follower")
     end)
 end)
 
 T.describe("matching the frontlight", function()
     local function light(device) return controller:number(device, "Device.getPowerDevice().fl_intensity") end
 
-    T.it("brings a mismatched slave to the master's brightness on connect", function()
-        callMaster("Core:stop('reset')")
-        callSlave("Core:stop('reset')")
-        callMaster("Device.getPowerDevice().fl_intensity = 18")
-        callSlave("Device.getPowerDevice().fl_intensity = 3")
-        T.assertNotEquals(light(slave), light(master), "the fixture is not actually mismatched")
+    T.it("brings a mismatched follower to the leader's brightness on connect", function()
+        callLeader("Core:stop('reset')")
+        callFollower("Core:stop('reset')")
+        callLeader("Device.getPowerDevice().fl_intensity = 18")
+        callFollower("Device.getPowerDevice().fl_intensity = 3")
+        T.assertNotEquals(light(follower), light(leader), "the fixture is not actually mismatched")
 
         connectPair()
-        controller:assertEventually(slave, "Device.getPowerDevice().fl_intensity", 18,
-            "the slave stayed at its own brightness")
+        controller:assertEventually(follower, "Device.getPowerDevice().fl_intensity", 18,
+            "the follower stayed at its own brightness")
     end)
 
-    T.it("follows a change made on the master", function()
+    T.it("follows a change made on the leader", function()
         connectPair()
-        callMaster("Device.getPowerDevice().fl_intensity = 6")
-        controller:assertEventually(slave, "Device.getPowerDevice().fl_intensity", 6,
-            "the slave did not follow", 15)
+        callLeader("Device.getPowerDevice().fl_intensity = 6")
+        controller:assertEventually(follower, "Device.getPowerDevice().fl_intensity", 6,
+            "the follower did not follow", 15)
     end)
 
-    T.it("follows a change made on the slave", function()
+    T.it("follows a change made on the follower", function()
         connectPair()
-        callSlave("Device.getPowerDevice().fl_intensity = 21")
-        controller:assertEventually(master, "Device.getPowerDevice().fl_intensity", 21,
-            "a change on the slave never reached the master", 15)
+        callFollower("Device.getPowerDevice().fl_intensity = 21")
+        controller:assertEventually(leader, "Device.getPowerDevice().fl_intensity", 21,
+            "a change on the follower never reached the leader", 15)
     end)
 
     T.it("settles rather than correcting each other for ever", function()
@@ -411,22 +411,22 @@ T.describe("matching the frontlight", function()
         -- value that rounds a step either way could have them chasing it up
         -- and down between them without ever stopping.
         connectPair()
-        callMaster("Device.getPowerDevice().fl_intensity = 13")
-        controller:assertEventually(slave, "Device.getPowerDevice().fl_intensity", 13, nil, 15)
+        callLeader("Device.getPowerDevice().fl_intensity = 13")
+        controller:assertEventually(follower, "Device.getPowerDevice().fl_intensity", 13, nil, 15)
         socket.sleep(3)
-        T.assertEquals(light(master), 13, "the master's light moved on its own")
-        T.assertEquals(light(slave), 13, "the two never settled")
+        T.assertEquals(light(leader), 13, "the leader's light moved on its own")
+        T.assertEquals(light(follower), 13, "the two never settled")
     end)
 
     T.it("leaves the light alone when the option is off", function()
         connectPair()
-        callMaster("Core:set('sync_frontlight', false)")
-        controller:assertEventually(slave, "Core:get('sync_frontlight')", false)
-        callSlave("Device.getPowerDevice().fl_intensity = 2")
-        callMaster("Device.getPowerDevice().fl_intensity = 20")
+        callLeader("Core:set('sync_frontlight', false)")
+        controller:assertEventually(follower, "Core:get('sync_frontlight')", false)
+        callFollower("Device.getPowerDevice().fl_intensity = 2")
+        callLeader("Device.getPowerDevice().fl_intensity = 20")
         socket.sleep(2.5)
-        T.assertEquals(light(slave), 2, "the light was matched with matching switched off")
-        callMaster("Core:set('sync_frontlight', true)")
+        T.assertEquals(light(follower), 2, "the light was matched with matching switched off")
+        callLeader("Core:set('sync_frontlight', true)")
     end)
 end)
 
@@ -442,14 +442,14 @@ T.describe("one book list across two screens", function()
         local setup = ("D:openFileManager{ path = '/books', perpage = %d, items = %s }")
             :format(options.perpage or 6, "{'" .. table.concat(items, "','") .. "'}")
 
-        callMaster("Core:stop('reset')")
-        callSlave("Core:stop('reset')")
-        callMaster(setup)
-        callSlave(options.slave_setup or setup)
+        callLeader("Core:stop('reset')")
+        callFollower("Core:stop('reset')")
+        callLeader(setup)
+        callFollower(options.follower_setup or setup)
         connectPair()
-        callMaster("Core.settings.share_browser = true")
-        callSlave("Core.settings.share_browser = true")
-        callMaster("Core:broadcastBrowser()")
+        callLeader("Core.settings.share_browser = true")
+        callFollower("Core.settings.share_browser = true")
+        callLeader("Core:broadcastBrowser()")
     end
 
     local function visible(device)
@@ -458,62 +458,62 @@ T.describe("one book list across two screens", function()
 
     T.it("shows the next screenful of books on the second device", function()
         browseTogether{ count = 20, perpage = 6 }
-        controller:assertEventually(slave, "UI.file_chooser.page", 2,
-            "the slave is not on the second screenful")
-        T.assertEquals(visible(master), "book01.epub,book02.epub,book03.epub,book04.epub,book05.epub,book06.epub")
-        T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
+        controller:assertEventually(follower, "UI.file_chooser.page", 2,
+            "the follower is not on the second screenful")
+        T.assertEquals(visible(leader), "book01.epub,book02.epub,book03.epub,book04.epub,book05.epub,book06.epub")
+        T.assertEquals(visible(follower), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
     end)
 
     T.it("moves the whole row by two screenfuls at a time", function()
         browseTogether{ count = 40, perpage = 6 }
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
 
-        -- A swipe on the master: it takes screen 3, the slave takes screen 4.
-        callMaster("UI.file_chooser:onNextPage()")
-        controller:assertEventually(master, "UI.file_chooser.page", 3,
-            "the master must skip the screenful the slave was showing")
-        controller:assertEventually(slave, "UI.file_chooser.page", 4)
-        T.assertEquals(visible(master), "book13.epub,book14.epub,book15.epub,book16.epub,book17.epub,book18.epub")
-        T.assertEquals(visible(slave), "book19.epub,book20.epub,book21.epub,book22.epub,book23.epub,book24.epub")
+        -- A swipe on the leader: it takes screen 3, the follower takes screen 4.
+        callLeader("UI.file_chooser:onNextPage()")
+        controller:assertEventually(leader, "UI.file_chooser.page", 3,
+            "the leader must skip the screenful the follower was showing")
+        controller:assertEventually(follower, "UI.file_chooser.page", 4)
+        T.assertEquals(visible(leader), "book13.epub,book14.epub,book15.epub,book16.epub,book17.epub,book18.epub")
+        T.assertEquals(visible(follower), "book19.epub,book20.epub,book21.epub,book22.epub,book23.epub,book24.epub")
 
-        callMaster("UI.file_chooser:onPrevPage()")
-        controller:assertEventually(master, "UI.file_chooser.page", 1)
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        callLeader("UI.file_chooser:onPrevPage()")
+        controller:assertEventually(leader, "UI.file_chooser.page", 1)
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
     end)
 
-    T.it("lets a swipe on the slave move the row", function()
+    T.it("lets a swipe on the follower move the row", function()
         browseTogether{ count = 40, perpage = 6 }
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
-        callSlave("UI.file_chooser:onNextPage()")
-        controller:assertEventually(master, "UI.file_chooser.page", 3,
-            "the slave's swipe did not reach the master")
-        controller:assertEventually(slave, "UI.file_chooser.page", 4)
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
+        callFollower("UI.file_chooser:onNextPage()")
+        controller:assertEventually(leader, "UI.file_chooser.page", 3,
+            "the follower's swipe did not reach the leader")
+        controller:assertEventually(follower, "UI.file_chooser.page", 4)
     end)
 
     T.it("stops at the end of the list instead of wrapping round", function()
         -- KOReader's own paging cycles back to the first page at the end,
         -- which would put the two devices on unrelated parts of the list.
         browseTogether{ count = 20, perpage = 6 } -- four screenfuls
-        callMaster("UI.file_chooser:onNextPage()")
-        controller:assertEventually(master, "UI.file_chooser.page", 3)
-        callMaster("UI.file_chooser:onNextPage()")
+        callLeader("UI.file_chooser:onNextPage()")
+        controller:assertEventually(leader, "UI.file_chooser.page", 3)
+        callLeader("UI.file_chooser:onNextPage()")
         socket.sleep(0.6)
-        T.assertEquals(controller:number(master, "UI.file_chooser.page"), 4,
-            "the master should stop at the last screenful")
-        T.assertEquals(controller:number(slave, "UI.file_chooser.page"), 4)
+        T.assertEquals(controller:number(leader, "UI.file_chooser.page"), 4,
+            "the leader should stop at the last screenful")
+        T.assertEquals(controller:number(follower, "UI.file_chooser.page"), 4)
     end)
 
     T.it("makes both devices fit the same number of books on a screen", function()
-        browseTogether{ count = 24, perpage = 6, slave_setup =
+        browseTogether{ count = 24, perpage = 6, follower_setup =
             "D:openFileManager{ path = '/books', perpage = 4, items = " ..
             "{'book01.epub','book02.epub','book03.epub','book04.epub','book05.epub','book06.epub'," ..
             "'book07.epub','book08.epub','book09.epub','book10.epub','book11.epub','book12.epub'," ..
             "'book13.epub','book14.epub','book15.epub','book16.epub','book17.epub','book18.epub'," ..
             "'book19.epub','book20.epub','book21.epub','book22.epub','book23.epub','book24.epub'} }" }
-        controller:assertEventually(slave, "UI.file_chooser.perpage", 6,
-            "the slave kept its own screenful size, so the halves cannot line up")
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
-        T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
+        controller:assertEventually(follower, "UI.file_chooser.perpage", 6,
+            "the follower kept its own screenful size, so the halves cannot line up")
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
+        T.assertEquals(visible(follower), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
     end)
 
     T.it("spreads a grid of covers across the two screens", function()
@@ -521,21 +521,21 @@ T.describe("one book list across two screens", function()
         -- screenful is its columns times its rows. Two grids can be evened
         -- up exactly, because the shape travels with the page.
         browseTogether{ count = 24, perpage = 6 }
-        callMaster("UI.file_chooser:asCoverBrowser('mosaic', { cols = 3, rows = 2 })")
-        callSlave("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 2 })")
-        callSlave("UIManager.shown_log = {}")
-        callSlave("Core.warned_listing = false")
-        callMaster("Core:broadcastBrowser()")
+        callLeader("UI.file_chooser:asCoverBrowser('mosaic', { cols = 3, rows = 2 })")
+        callFollower("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 2 })")
+        callFollower("UIManager.shown_log = {}")
+        callFollower("Core.warned_listing = false")
+        callLeader("Core:broadcastBrowser()")
 
-        controller:assertEventually(slave, "UI.file_chooser.perpage", 6,
-            "the slave kept its own grid, so the halves cannot line up")
-        T.assertEquals(controller:number(slave, "UI.file_chooser.nb_cols"), 3,
+        controller:assertEventually(follower, "UI.file_chooser.perpage", 6,
+            "the follower kept its own grid, so the halves cannot line up")
+        T.assertEquals(controller:number(follower, "UI.file_chooser.nb_cols"), 3,
             "the shape should have come over, not just the total")
-        T.assertEquals(controller:number(slave, "UI.file_chooser.nb_rows"), 2)
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
-        T.assertEquals(visible(master), "book01.epub,book02.epub,book03.epub,book04.epub,book05.epub,book06.epub")
-        T.assertEquals(visible(slave), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
-        T.assertEquals(callSlave(
+        T.assertEquals(controller:number(follower, "UI.file_chooser.nb_rows"), 2)
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
+        T.assertEquals(visible(leader), "book01.epub,book02.epub,book03.epub,book04.epub,book05.epub,book06.epub")
+        T.assertEquals(visible(follower), "book07.epub,book08.epub,book09.epub,book10.epub,book11.epub,book12.epub")
+        T.assertEquals(callFollower(
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('on a screen') then return true end end return false end)()"),
             "false", "it warned about a difference it had just evened out")
     end)
@@ -546,34 +546,34 @@ T.describe("one book list across two screens", function()
         -- mosaic mode, where the cover browser replaces how a page is
         -- measured but not how it is turned.
         browseTogether{ count = 30, perpage = 6 }
-        callMaster("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 3 })")
-        callSlave("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 3 })")
-        callMaster("Core:broadcastBrowser()")
-        controller:assertEventually(master, "UI.file_chooser.page_num", 5,
+        callLeader("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 3 })")
+        callFollower("UI.file_chooser:asCoverBrowser('mosaic', { cols = 2, rows = 3 })")
+        callLeader("Core:broadcastBrowser()")
+        controller:assertEventually(leader, "UI.file_chooser.page_num", 5,
             "thirty books at six a screen is five screenfuls")
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
 
-        callMaster("UI.file_chooser:onNextPage()")
-        controller:assertEventually(master, "UI.file_chooser.page", 3,
-            "the master must skip the screenful the slave was showing")
-        controller:assertEventually(slave, "UI.file_chooser.page", 4)
-        T.assertEquals(visible(master), "book13.epub,book14.epub,book15.epub,book16.epub,book17.epub,book18.epub")
-        T.assertEquals(visible(slave), "book19.epub,book20.epub,book21.epub,book22.epub,book23.epub,book24.epub")
+        callLeader("UI.file_chooser:onNextPage()")
+        controller:assertEventually(leader, "UI.file_chooser.page", 3,
+            "the leader must skip the screenful the follower was showing")
+        controller:assertEventually(follower, "UI.file_chooser.page", 4)
+        T.assertEquals(visible(leader), "book13.epub,book14.epub,book15.epub,book16.epub,book17.epub,book18.epub")
+        T.assertEquals(visible(follower), "book19.epub,book20.epub,book21.epub,book22.epub,book23.epub,book24.epub")
 
         -- A turn on the follower moves the row just the same.
-        callSlave("UI.file_chooser:onPrevPage()")
-        controller:assertEventually(master, "UI.file_chooser.page", 1,
+        callFollower("UI.file_chooser:onPrevPage()")
+        controller:assertEventually(leader, "UI.file_chooser.page", 1,
             "a swipe on the grid of the second device did not reach the first")
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
 
         -- And the end of the list is a wall, not a loop.
-        callMaster("UI.file_chooser:onNextPage()")
-        controller:assertEventually(slave, "UI.file_chooser.page", 4)
-        callMaster("UI.file_chooser:onNextPage()")
+        callLeader("UI.file_chooser:onNextPage()")
+        controller:assertEventually(follower, "UI.file_chooser.page", 4)
+        callLeader("UI.file_chooser:onNextPage()")
         socket.sleep(0.8)
-        T.assertEquals(controller:number(master, "UI.file_chooser.page"), 5,
-            "the master should stop at the last screenful rather than wrap")
-        T.assertEquals(controller:number(slave, "UI.file_chooser.page"), 5,
+        T.assertEquals(controller:number(leader, "UI.file_chooser.page"), 5,
+            "the leader should stop at the last screenful rather than wrap")
+        T.assertEquals(controller:number(follower, "UI.file_chooser.page"), 5,
             "with nothing after it, the follower shows the last screenful too")
     end)
 
@@ -582,62 +582,62 @@ T.describe("one book list across two screens", function()
         -- device fits eight, a grid has no way to know whether that is two
         -- by four or one by eight, and guessing would rearrange the screen.
         browseTogether{ count = 24, perpage = 8 }
-        callSlave("UIManager.shown_log = {}")
-        callSlave("Core.warned_listing = false")
-        callSlave("UI.file_chooser:asCoverBrowser('mosaic', { cols = 3, rows = 3 })")
-        callMaster("Core:broadcastBrowser()")
-        controller:assertEventually(slave,
+        callFollower("UIManager.shown_log = {}")
+        callFollower("Core.warned_listing = false")
+        callFollower("UI.file_chooser:asCoverBrowser('mosaic', { cols = 3, rows = 3 })")
+        callLeader("Core:broadcastBrowser()")
+        controller:assertEventually(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('on a screen') then return true end end return false end)()",
             true, "no warning when the two screenfuls are different sizes")
-        T.assertEquals(controller:number(slave, "UI.file_chooser.perpage"), 9,
+        T.assertEquals(controller:number(follower, "UI.file_chooser.perpage"), 9,
             "the grid should have been left as it is")
     end)
 
     T.it("asks where it belongs when it is reopened on the list", function()
-        -- A slave that has just been rebuilt — a document closed, a folder
+        -- A follower that has just been rebuilt — a document closed, a folder
         -- reopened — knows nothing about which screenful is its own.
         browseTogether{ count = 40, perpage = 6 }
-        callMaster("UI.file_chooser:onNextPage()")
-        controller:assertEventually(slave, "UI.file_chooser.page", 4)
+        callLeader("UI.file_chooser:onNextPage()")
+        controller:assertEventually(follower, "UI.file_chooser.page", 4)
 
-        callSlave("UI.file_chooser:onGotoPage(1)")
-        callSlave("Core:getReadyLinks()[1]:send('SYNC', {})")
-        controller:assertEventually(slave, "UI.file_chooser.page", 4,
+        callFollower("UI.file_chooser:onGotoPage(1)")
+        callFollower("Core:getReadyLinks()[1]:send('SYNC', {})")
+        controller:assertEventually(follower, "UI.file_chooser.page", 4,
             "asking for the current state did not bring back the book list")
     end)
 
     T.it("says so when the two devices hold different books", function()
-        browseTogether{ count = 20, perpage = 6, slave_setup =
+        browseTogether{ count = 20, perpage = 6, follower_setup =
             "D:openFileManager{ path = '/books', perpage = 6, items = {'other01.epub','other02.epub'} }" }
-        controller:assertEventually(slave,
+        controller:assertEventually(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('not line up') then return true end end return false end)()",
             true, "no warning about the two libraries differing")
     end)
 
     T.it("leaves the browser alone when switched off", function()
         browseTogether{ count = 20, perpage = 6 }
-        callSlave("Core.settings.share_browser = false")
-        callSlave("UI.file_chooser:onGotoPage(1)")
-        callMaster("UI.file_chooser:onNextPage()")
+        callFollower("Core.settings.share_browser = false")
+        callFollower("UI.file_chooser:onGotoPage(1)")
+        callLeader("UI.file_chooser:onNextPage()")
         socket.sleep(1)
-        T.assertEquals(controller:number(slave, "UI.file_chooser.page"), 1,
-            "the slave moved with sharing switched off")
-        callSlave("Core.settings.share_browser = true")
+        T.assertEquals(controller:number(follower, "UI.file_chooser.page"), 1,
+            "the follower moved with sharing switched off")
+        callFollower("Core.settings.share_browser = true")
     end)
 
     T.it("keeps the link when a book is opened from the list", function()
         browseTogether{ count = 20, perpage = 6 }
-        controller:assertEventually(slave, "UI.file_chooser.page", 2)
+        controller:assertEventually(follower, "UI.file_chooser.page", 2)
 
         -- KOReader throws the whole file manager away and builds a ReaderUI,
         -- which is the moment a connection owned by the UI would die.
-        callMaster("D:openDocument{ page_count = 300 }")
-        callSlave("D:openDocument{ page_count = 300 }")
+        callLeader("D:openDocument{ page_count = 300 }")
+        callFollower("D:openDocument{ page_count = 300 }")
 
-        T.assertEquals(callMaster("Core:isConnected()"), "true",
+        T.assertEquals(callLeader("Core:isConnected()"), "true",
             "the link died on the way from the list into a book")
-        setMasterPage(12)
-        controller:assertEventually(slave, "D:getPage()", 13,
+        setLeaderPage(12)
+        controller:assertEventually(follower, "D:getPage()", 13,
             "the spread did not resume in the book")
     end)
 end)
@@ -679,31 +679,31 @@ T.describe("sending the book itself", function()
         return contents
     end
 
-    T.it("sends a book the slave does not have, and opens it there", function()
+    T.it("sends a book the follower does not have, and opens it there", function()
         local path = makeBook("sent-book.epub", 40000)
         connectPair()
-        callSlave("Core.settings.sync_books = true")
-        callMaster("Core.settings.sync_books = true")
-        callSlave("UIManager.shown_log = {}")
-        -- Both processes share a disk, so without this the slave would open
-        -- the master's copy and the book would never go over the wire.
-        callSlave(("D:doesNotHave(%q)"):format(path))
+        callFollower("Core.settings.sync_books = true")
+        callLeader("Core.settings.sync_books = true")
+        callFollower("UIManager.shown_log = {}")
+        -- Both processes share a disk, so without this the follower would open
+        -- the leader's copy and the book would never go over the wire.
+        callFollower(("D:doesNotHave(%q)"):format(path))
 
-        -- The master opens a book that exists only on its side.
-        callMaster(("UI.document.file = %q"):format(path))
-        callMaster("UI.digest = 'digest-sent-book'")
-        callMaster("Core:broadcastDocument()")
+        -- The leader opens a book that exists only on its side.
+        callLeader(("UI.document.file = %q"):format(path))
+        callLeader("UI.digest = 'digest-sent-book'")
+        callLeader("Core:broadcastDocument()")
 
-        -- The slave asks for it, receives it, and opens what arrived.
-        controller:assertEventually(slave,
+        -- The follower asks for it, receives it, and opens what arrived.
+        controller:assertEventually(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return true end end return false end)()",
-            true, "the slave never opened the book it was sent", 25)
+            true, "the follower never opened the book it was sent", 25)
 
-        local landed = controller:call(slave,
+        local landed = controller:call(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return m.text end end return '' end)()")
         T.assertMatch(landed, "sent%-book%.epub")
         T.assertTrue(landed ~= path,
-            "the slave opened the master's own copy, so nothing was sent")
+            "the follower opened the leader's own copy, so nothing was sent")
         T.assertEquals(readFile(landed), readFile(path),
             "the book that arrived is not the book that was sent")
         os.remove(landed)
@@ -714,18 +714,18 @@ T.describe("sending the book itself", function()
         -- without a word and the other device sits on a half-written file
         -- waiting for a chunk that is never coming.
         local path = makeBook("broken-book.epub", 200000)
-        callSlave("Core:stop('reset')")
+        callFollower("Core:stop('reset')")
         connectPair()
-        callSlave("Core.settings.sync_books = true")
-        callMaster("Core.settings.sync_books = true")
-        callSlave("UIManager.shown_log = {}")
-        callSlave(("D:doesNotHave(%q)"):format(path))
+        callFollower("Core.settings.sync_books = true")
+        callLeader("Core.settings.sync_books = true")
+        callFollower("UIManager.shown_log = {}")
+        callFollower(("D:doesNotHave(%q)"):format(path))
 
-        -- Armed before the slave asks, so the book cannot slip across
+        -- Armed before the follower asks, so the book cannot slip across
         -- whole in the gap between two calls from here. Only the chunks
         -- fail, the way an unsendable message does: the link itself is
         -- fine, which is what makes staying silent inexcusable.
-        callMaster([[(function()
+        callLeader([[(function()
             local link = Core:getReadyLinks()[1]
             local real = link.send
             link.send = function(self, msg_type, fields)
@@ -734,324 +734,324 @@ T.describe("sending the book itself", function()
             end
         end)()]])
 
-        callMaster(("UI.document.file = %q"):format(path))
-        callMaster("UI.digest = 'digest-broken-book'")
-        callMaster("Core:broadcastDocument()")
+        callLeader(("UI.document.file = %q"):format(path))
+        callLeader("UI.digest = 'digest-broken-book'")
+        callLeader("Core:broadcastDocument()")
 
-        controller:assertEventually(slave,
+        controller:assertEventually(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('could not fetch') then return true end end return false end)()",
-            true, "the slave was never told the transfer had failed", 20)
-        T.assertEquals(callMaster("tostring(Core.book_sender)"), "nil",
-            "the master should have given up on the book")
-        T.assertEquals(callSlave("tostring(Core.book_receiver)"), "nil",
-            "the slave was left holding a half-written book")
+            true, "the follower was never told the transfer had failed", 20)
+        T.assertEquals(callLeader("tostring(Core.book_sender)"), "nil",
+            "the leader should have given up on the book")
+        T.assertEquals(callFollower("tostring(Core.book_receiver)"), "nil",
+            "the follower was left holding a half-written book")
     end)
 
     T.it("will not hand over a book it does not have open", function()
         connectPair()
-        callSlave("Core.settings.sync_books = true")
-        callSlave("UIManager.shown_log = {}")
+        callFollower("Core.settings.sync_books = true")
+        callFollower("UIManager.shown_log = {}")
         -- A peer asking for an arbitrary path gets nothing.
-        callSlave("Core.book_request = { file = '/etc/passwd' }")
-        callSlave("Core:getReadyLinks()[1]:send('BOOK_REQ', { file = '/etc/passwd' })")
-        controller:assertEventually(slave,
+        callFollower("Core.book_request = { file = '/etc/passwd' }")
+        callFollower("Core:getReadyLinks()[1]:send('BOOK_REQ', { file = '/etc/passwd' })")
+        controller:assertEventually(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('not the book') then return true end end return false end)()",
-            true, "the master should refuse a book it does not have open")
-        callSlave("Core.book_request = nil")
+            true, "the leader should refuse a book it does not have open")
+        callFollower("Core.book_request = nil")
     end)
 
     T.it("says nothing and sends nothing when switched off", function()
         local path = makeBook("unsent-book.epub", 4000)
-        callSlave("Core:stop('reset')")
+        callFollower("Core:stop('reset')")
         connectPair()
-        callSlave("Core.settings.sync_books = false")
-        callSlave("UIManager.shown_log = {}")
-        callMaster(("UI.document.file = %q"):format(path))
-        callMaster("UI.digest = 'digest-unsent'")
-        callMaster("Core:broadcastDocument()")
+        callFollower("Core.settings.sync_books = false")
+        callFollower("UIManager.shown_log = {}")
+        callLeader(("UI.document.file = %q"):format(path))
+        callLeader("UI.digest = 'digest-unsent'")
+        callLeader("Core:broadcastDocument()")
         socket.sleep(2)
-        T.assertEquals(callSlave("tostring(Core.book_receiver)"), "nil",
+        T.assertEquals(callFollower("tostring(Core.book_receiver)"), "nil",
             "a book was fetched with sending switched off")
-        callSlave("Core.settings.sync_books = true")
+        callFollower("Core.settings.sync_books = true")
         os.execute("rm -rf " .. BOOK_DIR)
     end)
 end)
 
 T.describe("three devices", function()
     -- Nothing in the design caps this at two: each device gets a slot and
-    -- shows the master's page plus its slot number, and a turn moves the
+    -- shows the leader's page plus its slot number, and a turn moves the
     -- whole row. Three e-readers on a desk is a wide spread, but the
     -- arithmetic is the same one the pair relies on, so it is worth proving.
     T.it("lays three pages out in a row and turns them together", function()
         connectPair()
-        controller:call(slave2, ("Core.settings.token = %q"):format("K7F2QX"))
-        controller:call(slave2, ("Core.settings.peer_port = %d"):format(DUO_PORT))
-        controller:call(slave2, ("Core:start('slave', { host = '127.0.0.1', port = %d })"):format(DUO_PORT))
-        controller:assertEventually(slave2, "Core:isConnected()", true, "the third device never joined")
+        controller:call(follower2, ("Core.settings.token = %q"):format("K7F2QX"))
+        controller:call(follower2, ("Core.settings.peer_port = %d"):format(DUO_PORT))
+        controller:call(follower2, ("Core:start('follower', { host = '127.0.0.1', port = %d })"):format(DUO_PORT))
+        controller:assertEventually(follower2, "Core:isConnected()", true, "the third device never joined")
 
-        setMasterPage(10)
-        controller:assertEventually(slave, "D:getPage()", 11)
-        controller:assertEventually(slave2, "D:getPage()", 12)
-        T.assertEquals(controller:number(master, "Core:getStep()"), 3)
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
+        controller:assertEventually(follower2, "D:getPage()", 12)
+        T.assertEquals(controller:number(leader, "Core:getStep()"), 3)
 
-        callMaster("D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 13)
-        controller:assertEventually(slave, "D:getPage()", 14)
-        controller:assertEventually(slave2, "D:getPage()", 15)
+        callLeader("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 13)
+        controller:assertEventually(follower, "D:getPage()", 14)
+        controller:assertEventually(follower2, "D:getPage()", 15)
 
-        T.assertEquals(callMaster("Core:getStatusText()"):match("pages ([%d–]+)"), "13–14–15")
+        T.assertEquals(callLeader("Core:getStatusText()"):match("pages ([%d–]+)"), "13–14–15")
 
-        controller:call(slave2, "Core:stop('done')")
-        controller:assertEventually(master, "Core:slaveCount()", 1, "the master did not shrink the spread")
+        controller:call(follower2, "Core:stop('done')")
+        controller:assertEventually(leader, "Core:followerCount()", 1, "the leader did not shrink the spread")
     end)
 end)
 
 T.describe("two devices, when things go wrong", function()
-    T.it("puts the slave back on the right page after a reconnect", function()
+    T.it("puts the follower back on the right page after a reconnect", function()
         connectPair()
-        setMasterPage(60)
-        controller:assertEventually(slave, "D:getPage()", 61)
+        setLeaderPage(60)
+        controller:assertEventually(follower, "D:getPage()", 61)
 
         -- Yank the connection the way a sleeping device or a dropped
         -- Wi-Fi link would, without telling either side.
-        callSlave("Core.links[1].stream:close()")
-        controller:assertEventually(slave, "Core:isConnected()", false, "the slave did not notice")
+        callFollower("Core.links[1].stream:close()")
+        controller:assertEventually(follower, "Core:isConnected()", false, "the follower did not notice")
 
-        -- While it is away, the master reads on alone.
-        setMasterPage(120)
+        -- While it is away, the leader reads on alone.
+        setLeaderPage(120)
 
-        controller:assertEventually(slave, "Core:isConnected()", true, "the slave never came back")
-        controller:assertEventually(slave, "D:getPage()", 121, "the slave came back on the wrong page")
+        controller:assertEventually(follower, "Core:isConnected()", true, "the follower never came back")
+        controller:assertEventually(follower, "D:getPage()", 121, "the follower came back on the wrong page")
     end)
 
     T.it("goes back to one page per turn while alone", function()
         connectPair()
-        setMasterPage(70)
-        T.assertEquals(controller:number(master, "Core:getStep()"), 2)
+        setLeaderPage(70)
+        T.assertEquals(controller:number(leader, "Core:getStep()"), 2)
 
-        callSlave("Core:stop('slave left')")
-        controller:assertEventually(master, "Core:isConnected()", false, "the master did not notice")
-        T.assertEquals(controller:number(master, "Core:getStep()"), 1,
+        callFollower("Core:stop('follower left')")
+        controller:assertEventually(leader, "Core:isConnected()", false, "the leader did not notice")
+        T.assertEquals(controller:number(leader, "Core:getStep()"), 1,
             "with nobody following, a turn should move one page again")
 
-        callMaster("D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 71)
+        callLeader("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 71)
     end)
 
     local WARNED = "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('pages here') or tostring(m.text):find('paginates') then return true end end return false end)()"
 
     T.it("says nothing about a mismatch it is about to fix itself", function()
-        -- The slave arrives with a bigger font and so a longer book. With
+        -- The follower arrives with a bigger font and so a longer book. With
         -- matching on, that is not worth a word: it is fixed a moment later.
-        callSlave("Core:stop('reset')")
-        callSlave("Core.settings.match_typography = true")
-        callMaster("Core.settings.match_typography = true")
-        callSlave("UI:handleEvent(D.Event:new('SetFontSize', 30))")
-        callSlave("UIManager.shown_log = {}")
-        callSlave("Core.warned_pagination = false")
+        callFollower("Core:stop('reset')")
+        callFollower("Core.settings.match_typography = true")
+        callLeader("Core.settings.match_typography = true")
+        callFollower("UI:handleEvent(D.Event:new('SetFontSize', 30))")
+        callFollower("UIManager.shown_log = {}")
+        callFollower("Core.warned_pagination = false")
 
         connectPair()
-        setMasterPage(60)
+        setLeaderPage(60)
         socket.sleep(6) -- well past the settle window
-        setMasterPage(62)
+        setLeaderPage(62)
         socket.sleep(1)
 
-        T.assertEquals(callSlave(WARNED), "false", "warned about a mismatch it had already fixed")
-        T.assertEquals(controller:number(slave, "UI.document:getPageCount()"),
-            controller:number(master, "UI.document:getPageCount()"),
+        T.assertEquals(callFollower(WARNED), "false", "warned about a mismatch it had already fixed")
+        T.assertEquals(controller:number(follower, "UI.document:getPageCount()"),
+            controller:number(leader, "UI.document:getPageCount()"),
             "the two devices should agree by now")
     end)
 
     T.it("stays quiet while a font change is still on its way over", function()
         --[[
-        The race a real font change runs into. The master repaginates the
-        instant the size changes, and its new page count reaches the slave
+        The race a real font change runs into. The leader repaginates the
+        instant the size changes, and its new page count reaches the follower
         before Duo has even noticed the change to push it — so for a moment
-        the slave holds the old settings and a page count from the new ones.
+        the follower holds the old settings and a page count from the new ones.
         It used to complain about that, and then fix it a second later.
         ]]
-        callSlave("Core:stop('reset')")
-        callSlave("Core.settings.match_typography = true")
-        callMaster("Core.settings.match_typography = true")
+        callFollower("Core:stop('reset')")
+        callFollower("Core.settings.match_typography = true")
+        callLeader("Core.settings.match_typography = true")
         connectPair()
-        setMasterPage(40)
-        callSlave("UIManager.shown_log = {}")
-        callSlave("Core.warned_pagination = false")
-        callSlave("Core.typography_applied_at = 0")
+        setLeaderPage(40)
+        callFollower("UIManager.shown_log = {}")
+        callFollower("Core.warned_pagination = false")
+        callFollower("Core.typography_applied_at = 0")
 
-        -- The master's layout changes, and only its page count arrives.
-        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 28))")
-        callMaster("Core:broadcastState()")
+        -- The leader's layout changes, and only its page count arrives.
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 28))")
+        callLeader("Core:broadcastState()")
         socket.sleep(1)
-        T.assertEquals(callSlave(WARNED), "false",
+        T.assertEquals(callFollower(WARNED), "false",
             "it complained about a difference the font change was about to explain")
 
         -- And once the change lands, the two agree and still say nothing.
-        controller:assertEventually(slave, "UI.document:getPageCount()",
-            controller:number(master, "UI.document:getPageCount()"),
-            "the slave never caught up with the new font size", 20)
-        T.assertEquals(callSlave(WARNED), "false")
+        controller:assertEventually(follower, "UI.document:getPageCount()",
+            controller:number(leader, "UI.document:getPageCount()"),
+            "the follower never caught up with the new font size", 20)
+        T.assertEquals(callFollower(WARNED), "false")
     end)
 
     T.it("puts itself back on the right page as soon as the layout changes", function()
         -- A font change moves every page number in the book. Until the
-        -- master next broadcasts, a device that only applied the settings
+        -- leader next broadcasts, a device that only applied the settings
         -- is on the page that number used to mean — so it asks.
-        callSlave("Core:stop('reset')")
-        callSlave("Core.settings.match_typography = true")
-        callMaster("Core.settings.match_typography = true")
+        callFollower("Core:stop('reset')")
+        callFollower("Core.settings.match_typography = true")
+        callLeader("Core.settings.match_typography = true")
         connectPair()
-        setMasterPage(50)
-        controller:assertEventually(slave, "D:getPage()", 51)
+        setLeaderPage(50)
+        controller:assertEventually(follower, "D:getPage()", 51)
 
-        callMaster("UI:handleEvent(D.Event:new('SetFontSize', 26))")
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 26))")
         -- No page turn from anyone: only the layout changed.
-        controller:assertEventually(slave, "UI.document:getPageCount()",
-            controller:number(master, "UI.document:getPageCount()"),
-            "the slave never took the new font size", 20)
-        controller:assertEventually(slave, "D:getPage()",
-            controller:number(master, "D:getPage()") + 1,
-            "the slave stayed on the page that number used to mean", 20)
+        controller:assertEventually(follower, "UI.document:getPageCount()",
+            controller:number(leader, "UI.document:getPageCount()"),
+            "the follower never took the new font size", 20)
+        controller:assertEventually(follower, "D:getPage()",
+            controller:number(leader, "D:getPage()") + 1,
+            "the follower stayed on the page that number used to mean", 20)
     end)
 
     T.it("warns when matching cannot fix it, because the screens differ", function()
         connectPair()
         -- Same settings on both, but this device still lays the book out
         -- differently: a smaller screen, which no setting can match.
-        callSlave("UIManager.shown_log = {}")
-        callSlave("Core.warned_pagination = false")
-        callSlave("Core.typography_applied_at = 0")
-        callSlave("UI.document.page_count = 412")
+        callFollower("UIManager.shown_log = {}")
+        callFollower("Core.warned_pagination = false")
+        callFollower("Core.typography_applied_at = 0")
+        callFollower("UI.document.page_count = 412")
         -- A length that has been sitting still for a while, which is what
         -- tells a real difference apart from a book still being relaid out.
-        callSlave("Core.last_own_pages = 412")
-        callSlave("Core.own_pages_changed_at = 0")
-        setMasterPage(80)
-        controller:assertEventually(slave, WARNED, true,
+        callFollower("Core.last_own_pages = 412")
+        callFollower("Core.own_pages_changed_at = 0")
+        setLeaderPage(80)
+        controller:assertEventually(follower, WARNED, true,
             "no warning when the pages genuinely cannot line up", 20)
-        T.assertEquals(callSlave(
+        T.assertEquals(callFollower(
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('the screens themselves') then return true end end return false end)()"),
             "true", "the warning should name the real cause")
-        callSlave("UI.document:repaginate()")
+        callFollower("UI.document:repaginate()")
     end)
 
     T.it("still tells you to match them when matching is switched off", function()
-        callSlave("Core:stop('reset')")
-        callSlave("Core.settings.match_typography = false")
-        callMaster("Core.settings.match_typography = false")
+        callFollower("Core:stop('reset')")
+        callFollower("Core.settings.match_typography = false")
+        callLeader("Core.settings.match_typography = false")
         connectPair()
-        callSlave("UIManager.shown_log = {}")
-        callSlave("Core.warned_pagination = false")
-        callSlave("UI.document.page_count = 412")
-        setMasterPage(84)
-        controller:assertEventually(slave,
+        callFollower("UIManager.shown_log = {}")
+        callFollower("Core.warned_pagination = false")
+        callFollower("UI.document.page_count = 412")
+        setLeaderPage(84)
+        controller:assertEventually(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('Match typography') then return true end end return false end)()",
             true, "no warning with matching switched off")
-        callSlave("UI.document:repaginate()")
-        callSlave("Core.settings.match_typography = true")
-        callMaster("Core.settings.match_typography = true")
+        callFollower("UI.document:repaginate()")
+        callFollower("Core.settings.match_typography = true")
+        callLeader("Core.settings.match_typography = true")
     end)
 
-    T.it("tells the slave which book to open", function()
-        -- A file that really exists, so the slave gets as far as opening it.
+    T.it("tells the follower which book to open", function()
+        -- A file that really exists, so the follower gets as far as opening it.
         local book = LOG_DIR .. "/duo-test-book.epub"
         local handle = assert(io.open(book, "w"))
         handle:write("not really an epub")
         handle:close()
 
         connectPair()
-        callSlave("Core.settings.follow_document = true")
-        callMaster(("UI.document.file = %q"):format(book))
-        callMaster("UI.digest = 'digest-other-book'")
-        callMaster("Core:broadcastDocument()")
+        callFollower("Core.settings.follow_document = true")
+        callLeader(("UI.document.file = %q"):format(book))
+        callLeader("UI.digest = 'digest-other-book'")
+        callLeader("Core:broadcastDocument()")
 
-        controller:assertEventually(slave,
+        controller:assertEventually(follower,
             ("(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' and m.text == %q then return true end end return false end)()"):format(book),
-            true, "the slave never opened the master's book")
+            true, "the follower never opened the leader's book")
         os.remove(book)
     end)
 
-    T.it("opens the master's book once, not once per message", function()
+    T.it("opens the leader's book once, not once per message", function()
         local book = LOG_DIR .. "/duo-test-book2.epub"
         local handle = assert(io.open(book, "w"))
         handle:write("not really an epub")
         handle:close()
 
         connectPair()
-        callSlave("Core.settings.follow_document = true")
-        callSlave("UIManager.shown_log = {}")
-        callMaster(("UI.document.file = %q"):format(book))
-        callMaster("UI.digest = 'digest-book-two'")
+        callFollower("Core.settings.follow_document = true")
+        callFollower("UIManager.shown_log = {}")
+        callLeader(("UI.document.file = %q"):format(book))
+        callLeader("UI.digest = 'digest-book-two'")
         -- Two announcements in quick succession, as a reconnect would produce.
-        callMaster("Core:broadcastDocument()")
-        callMaster("Core:broadcastDocument()")
+        callLeader("Core:broadcastDocument()")
+        callLeader("Core:broadcastDocument()")
         socket.sleep(0.6)
 
-        T.assertEquals(controller:call(slave,
+        T.assertEquals(controller:call(follower,
             "(function() local n = 0 for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then n = n + 1 end end return n end)()"),
-            "1", "the slave opened the same book more than once")
+            "1", "the follower opened the same book more than once")
         os.remove(book)
     end)
 
-    T.it("stays put when the master is in the same book by a different path", function()
+    T.it("stays put when the leader is in the same book by a different path", function()
         connectPair()
-        callSlave("Core.settings.follow_document = true")
-        callSlave("UIManager.shown_log = {}")
+        callFollower("Core.settings.follow_document = true")
+        callFollower("UIManager.shown_log = {}")
         -- Same content digest, different path: a copy of the same book.
-        callMaster("UI.document.file = '/elsewhere/moby-dick.epub'")
-        callMaster("Core:broadcastDocument()")
+        callLeader("UI.document.file = '/elsewhere/moby-dick.epub'")
+        callLeader("Core:broadcastDocument()")
         socket.sleep(0.5)
-        T.assertEquals(controller:call(slave,
+        T.assertEquals(controller:call(follower,
             "(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' then return true end end return false end)()"),
-            "false", "the slave reopened a book it was already reading")
+            "false", "the follower reopened a book it was already reading")
     end)
 
-    T.it("brings the slave back out to the list when the master leaves the book", function()
+    T.it("brings the follower back out to the list when the leader leaves the book", function()
         --[[
         Going into a book was followed; coming back out was not, which left
-        the master in the file list and the slave still sitting in a book —
+        the leader in the file list and the follower still sitting in a book —
         two devices doing different things, which is the one thing a spread
         is not. Signalled from the file manager coming up rather than the
         reader going down: switching straight from one book to another
-        tears a reader down too, and a slave sent home then would close the
+        tears a reader down too, and a follower sent home then would close the
         book it is about to be told to open.
         ]]
         connectPair()
-        callSlave("Core.settings.follow_document = true")
-        T.assertEquals(callSlave("UI.document ~= nil"), "true", "the slave should start in a book")
+        callFollower("Core.settings.follow_document = true")
+        T.assertEquals(callFollower("UI.document ~= nil"), "true", "the follower should start in a book")
 
-        callMaster("D:openFileManager{ path = '/books' }")
-        controller:assertEventually(slave, "UI.went_home == true", true,
-            "the slave stayed in the book after the master closed its own")
-        callMaster("D:openDocument{ page_count = 300 }")
+        callLeader("D:openFileManager{ path = '/books' }")
+        controller:assertEventually(follower, "UI.went_home == true", true,
+            "the follower stayed in the book after the leader closed its own")
+        callLeader("D:openDocument{ page_count = 300 }")
     end)
 
-    T.it("opens a book for the pair when the tap lands on the slave", function()
+    T.it("opens a book for the pair when the tap lands on the follower", function()
         --[[
-        A slave may turn pages, so it would be strange if it could not
+        A follower may turn pages, so it would be strange if it could not
         start one. It must not simply open the book by itself, though: the
-        master owns the page number, and a slave that wandered off into a
+        leader owns the page number, and a follower that wandered off into a
         book on its own would leave the two devices reading different
-        things. The tap is forwarded, and the master's answer brings the
-        slave along the same way a tap on the master would.
+        things. The tap is forwarded, and the leader's answer brings the
+        follower along the same way a tap on the leader would.
         ]]
-        local book = LOG_DIR .. "/duo-slave-opened.epub"
+        local book = LOG_DIR .. "/duo-follower-opened.epub"
         local handle = assert(io.open(book, "w"))
         handle:write("not really an epub")
         handle:close()
 
         connectPair()
-        callMaster("Core.settings.follow_document = true")
-        callSlave("Core.settings.follow_document = true")
-        callSlave("D:openFileManager{ path = '/books' }")
-        callMaster("UIManager.shown_log = {}")
+        callLeader("Core.settings.follow_document = true")
+        callFollower("Core.settings.follow_document = true")
+        callFollower("D:openFileManager{ path = '/books' }")
+        callLeader("UIManager.shown_log = {}")
 
-        callSlave(("D:openFile(%q)"):format(book))
-        controller:assertEventually(master,
+        callFollower(("D:openFile(%q)"):format(book))
+        controller:assertEventually(leader,
             ("(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' and m.text == %q then return true end end return false end)()"):format(book),
-            true, "the master never opened the book the slave was tapped on")
+            true, "the leader never opened the book the follower was tapped on")
         os.remove(book)
-        callSlave("D:openDocument{ page_count = 300 }")
+        callFollower("D:openDocument{ page_count = 300 }")
     end)
 
     T.it("locks the other device when either one is locked", function()
@@ -1062,45 +1062,45 @@ T.describe("two devices, when things go wrong", function()
         should mean.
         ]]
         connectPair()
-        callSlave("UIManager._suspends = 0")
-        callMaster("D.plugin:onSuspend()")
-        controller:assertEventually(slave, "UIManager._suspends", 1,
-            "the slave stayed awake when the master was locked")
+        callFollower("UIManager._suspends = 0")
+        callLeader("D.plugin:onSuspend()")
+        controller:assertEventually(follower, "UIManager._suspends", 1,
+            "the follower stayed awake when the leader was locked")
 
         -- And the other way round, since either device can be the one put
         -- down first.
         connectPair()
-        callMaster("UIManager._suspends = 0")
-        callSlave("D.plugin:onSuspend()")
-        controller:assertEventually(master, "UIManager._suspends", 1,
-            "the master stayed awake when the slave was locked")
+        callLeader("UIManager._suspends = 0")
+        callFollower("D.plugin:onSuspend()")
+        controller:assertEventually(leader, "UIManager._suspends", 1,
+            "the leader stayed awake when the follower was locked")
     end)
 
     T.it("does not send a device that is only obeying back to bed", function()
         -- Both sides suspend each other, so the one following an order must
         -- not pass it on, or the two would take turns saying goodnight.
         connectPair()
-        callSlave("UIManager._suspends = 0")
-        callMaster("D.plugin:onSuspend()")
-        controller:assertEventually(slave, "UIManager._suspends", 1)
+        callFollower("UIManager._suspends = 0")
+        callLeader("D.plugin:onSuspend()")
+        controller:assertEventually(follower, "UIManager._suspends", 1)
         socket.sleep(0.4)
-        T.assertEquals(controller:number(slave, "UIManager._suspends"), 1,
-            "the slave suspended more than once for one lock")
+        T.assertEquals(controller:number(follower, "UIManager._suspends"), 1,
+            "the follower suspended more than once for one lock")
     end)
 
-    T.it("keeps the connection across a document switch on the slave", function()
+    T.it("keeps the connection across a document switch on the follower", function()
         connectPair()
-        setMasterPage(90)
-        controller:assertEventually(slave, "D:getPage()", 91)
+        setLeaderPage(90)
+        controller:assertEventually(follower, "D:getPage()", 91)
 
         -- KOReader destroys and rebuilds the plugin instance here; the
         -- engine, and so the connection, has to outlive it.
-        callSlave("D:openDocument{ page_count = 300 }")
-        T.assertEquals(callSlave("Core:isConnected()"), "true",
+        callFollower("D:openDocument{ page_count = 300 }")
+        T.assertEquals(callFollower("Core:isConnected()"), "true",
             "the link died when the document changed")
 
-        setMasterPage(140)
-        controller:assertEventually(slave, "D:getPage()", 141,
+        setLeaderPage(140)
+        controller:assertEventually(follower, "D:getPage()", 141,
             "the rebuilt plugin instance is not following any more")
     end)
 
@@ -1109,57 +1109,57 @@ T.describe("two devices, when things go wrong", function()
         -- allowed to doze; the follower has nobody to wake it and would
         -- simply stop following.
         connectPair()
-        setMasterPage(30)
-        controller:assertEventually(slave, "UIManager._prevent_standby_count", 1,
+        setLeaderPage(30)
+        controller:assertEventually(follower, "UIManager._prevent_standby_count", 1,
             "a follower should stay awake while the leader is")
-        T.assertEquals(controller:number(master, "UIManager._prevent_standby_count"), 1,
+        T.assertEquals(controller:number(leader, "UIManager._prevent_standby_count"), 1,
             "the leader holds while the book is being read")
 
         -- Nothing happens for long enough that the book is down. The
         -- leader lets go, which is what tells KOReader — and through it
         -- this plugin — that the reader has gone idle.
-        callMaster("Core.last_activity = 0")
-        controller:assertEventually(master, "UIManager._prevent_standby_count", 0,
+        callLeader("Core.last_activity = 0")
+        controller:assertEventually(leader, "UIManager._prevent_standby_count", 0,
             "the leader should stop holding once nobody is reading", 15)
-        callMaster("D.plugin:onAllowStandby()")
-        controller:assertEventually(slave, "UIManager._prevent_standby_count", 0,
+        callLeader("D.plugin:onAllowStandby()")
+        controller:assertEventually(follower, "UIManager._prevent_standby_count", 0,
             "the follower stayed awake after the leader dozed off")
 
-        callMaster("D.plugin:onPreventStandby()")
-        controller:assertEventually(slave, "UIManager._prevent_standby_count", 1,
+        callLeader("D.plugin:onPreventStandby()")
+        controller:assertEventually(follower, "UIManager._prevent_standby_count", 1,
             "the follower did not wake with the leader")
     end)
 
     T.it("catches up by itself when it wakes", function()
         connectPair()
-        setMasterPage(30)
-        controller:assertEventually(slave, "D:getPage()", 31)
+        setLeaderPage(30)
+        controller:assertEventually(follower, "D:getPage()", 31)
 
         -- Asleep, and missing everything.
-        callMaster("Core.last_activity = 0")
-        callMaster("D.plugin:onAllowStandby()")
-        controller:assertEventually(slave, "UIManager._prevent_standby_count", 0)
-        callSlave("UI.paging.current_page = 1")
+        callLeader("Core.last_activity = 0")
+        callLeader("D.plugin:onAllowStandby()")
+        controller:assertEventually(follower, "UIManager._prevent_standby_count", 0)
+        callFollower("UI.paging.current_page = 1")
 
         -- Waking is the follower's cue to ask where it belongs, since it
         -- has no idea what happened while it was out.
-        callSlave("D.plugin:onPreventStandby()")
-        controller:assertEventually(slave, "D:getPage()", 31,
+        callFollower("D.plugin:onPreventStandby()")
+        controller:assertEventually(follower, "D:getPage()", 31,
             "a woken follower should ask for its place rather than wait")
     end)
 
-    T.it("survives the master restarting", function()
+    T.it("survives the leader restarting", function()
         connectPair()
-        setMasterPage(100)
-        controller:assertEventually(slave, "D:getPage()", 101)
+        setLeaderPage(100)
+        controller:assertEventually(follower, "D:getPage()", 101)
 
-        callMaster("Core:stop('master restarting')")
-        controller:assertEventually(slave, "Core:isConnected()", false)
-        callMaster("Core:start('master')")
-        controller:assertEventually(slave, "Core:isConnected()", true, "the slave did not find the master again")
+        callLeader("Core:stop('leader restarting')")
+        controller:assertEventually(follower, "Core:isConnected()", false)
+        callLeader("Core:start('leader')")
+        controller:assertEventually(follower, "Core:isConnected()", true, "the follower did not find the leader again")
 
-        setMasterPage(200)
-        controller:assertEventually(slave, "D:getPage()", 201)
+        setLeaderPage(200)
+        controller:assertEventually(follower, "D:getPage()", 201)
     end)
 end)
 

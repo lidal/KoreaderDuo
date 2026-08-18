@@ -61,22 +61,22 @@ if not startPtyPair() then
 end
 
 local controller = Controller.new{ first_port = 18950 }
-local master = controller:spawn("ser-master")
-local slave = controller:spawn("ser-slave")
+local leader = controller:spawn("ser-leader")
+local follower = controller:spawn("ser-follower")
 
 local function connectOverSerial()
-    controller:call(master, "Core:stop('reset')")
-    controller:call(slave, "Core:stop('reset')")
-    for _, device in ipairs({ master, slave }) do
+    controller:call(leader, "Core:stop('reset')")
+    controller:call(follower, "Core:stop('reset')")
+    for _, device in ipairs({ leader, follower }) do
         controller:call(device, "Core.settings.transport = 'serial'")
         controller:call(device, "Core.settings.token = 'S3R14L'")
     end
-    controller:call(master, ("Core.settings.serial_device = %q"):format(PTY_A))
-    controller:call(slave, ("Core.settings.serial_device = %q"):format(PTY_B))
-    controller:call(master, "Core:start('master')")
-    controller:call(slave, "Core:start('slave')")
-    controller:assertEventually(master, "Core:isConnected()", true, "no slave on the serial line")
-    controller:assertEventually(slave, "Core:isConnected()", true, "did not reach the master")
+    controller:call(leader, ("Core.settings.serial_device = %q"):format(PTY_A))
+    controller:call(follower, ("Core.settings.serial_device = %q"):format(PTY_B))
+    controller:call(leader, "Core:start('leader')")
+    controller:call(follower, "Core:start('follower')")
+    controller:assertEventually(leader, "Core:isConnected()", true, "no follower on the serial line")
+    controller:assertEventually(follower, "Core:isConnected()", true, "did not reach the leader")
 end
 
 T.describe("serial transport", function()
@@ -124,63 +124,63 @@ end)
 T.describe("two devices over a serial link", function()
     T.it("pairs with no network at all", function()
         connectOverSerial()
-        T.assertEquals(controller:call(master, "Core.role"), "master")
-        T.assertEquals(controller:call(slave, "Core:getReadyLinks()[1].peer_name"), "ser-master")
-        T.assertMatch(controller:call(master, "Core:getStatusText()"), "Master")
+        T.assertEquals(controller:call(leader, "Core.role"), "leader")
+        T.assertEquals(controller:call(follower, "Core:getReadyLinks()[1].peer_name"), "ser-leader")
+        T.assertMatch(controller:call(leader, "Core:getStatusText()"), "Leader")
     end)
 
-    T.it("waits for a master that starts later", function()
-        controller:call(master, "Core:stop('reset')")
-        controller:call(slave, "Core:stop('reset')")
-        for _, device in ipairs({ master, slave }) do
+    T.it("waits for a leader that starts later", function()
+        controller:call(leader, "Core:stop('reset')")
+        controller:call(follower, "Core:stop('reset')")
+        for _, device in ipairs({ leader, follower }) do
             controller:call(device, "Core.settings.transport = 'serial'")
             controller:call(device, "Core.settings.token = 'S3R14L'")
         end
-        controller:call(master, ("Core.settings.serial_device = %q"):format(PTY_A))
-        controller:call(slave, ("Core.settings.serial_device = %q"):format(PTY_B))
+        controller:call(leader, ("Core.settings.serial_device = %q"):format(PTY_A))
+        controller:call(follower, ("Core.settings.serial_device = %q"):format(PTY_B))
 
-        -- The slave opens the line first and hears nothing for a while.
-        controller:call(slave, "Core:start('slave')")
+        -- The follower opens the line first and hears nothing for a while.
+        controller:call(follower, "Core:start('follower')")
         socket.sleep(1.5)
-        T.assertEquals(controller:call(slave, "Core:isConnected()"), "false")
+        T.assertEquals(controller:call(follower, "Core:isConnected()"), "false")
 
-        controller:call(master, "Core:start('master')")
-        controller:assertEventually(slave, "Core:isConnected()", true,
+        controller:call(leader, "Core:start('leader')")
+        controller:assertEventually(follower, "Core:isConnected()", true,
             "the repeated challenge never got through")
     end)
 
     T.it("runs the spread over Bluetooth just as over Wi-Fi", function()
         connectOverSerial()
-        controller:call(master, "D:jumpToPage(10)")
-        controller:assertEventually(slave, "D:getPage()", 11, "the slave is not on the next page")
+        controller:call(leader, "D:jumpToPage(10)")
+        controller:assertEventually(follower, "D:getPage()", 11, "the follower is not on the next page")
 
-        controller:call(master, "D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 12)
-        controller:assertEventually(slave, "D:getPage()", 13)
+        controller:call(leader, "D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 12)
+        controller:assertEventually(follower, "D:getPage()", 13)
 
-        controller:call(slave, "D:tapForward()")
-        controller:assertEventually(master, "D:getPage()", 14, "the slave's tap did not reach the master")
-        controller:assertEventually(slave, "D:getPage()", 15)
+        controller:call(follower, "D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 14, "the follower's tap did not reach the leader")
+        controller:assertEventually(follower, "D:getPage()", 15)
     end)
 
     T.it("turns away a device with the wrong pairing code", function()
-        controller:call(master, "Core:stop('reset')")
-        controller:call(slave, "Core:stop('reset')")
-        for _, device in ipairs({ master, slave }) do
+        controller:call(leader, "Core:stop('reset')")
+        controller:call(follower, "Core:stop('reset')")
+        for _, device in ipairs({ leader, follower }) do
             controller:call(device, "Core.settings.transport = 'serial'")
         end
-        controller:call(master, "Core.settings.token = 'S3R14L'")
-        controller:call(slave, "Core.settings.token = 'WR0NG2'")
-        controller:call(master, ("Core.settings.serial_device = %q"):format(PTY_A))
-        controller:call(slave, ("Core.settings.serial_device = %q"):format(PTY_B))
-        controller:call(master, "Core:start('master')")
-        controller:call(slave, "Core:start('slave')")
+        controller:call(leader, "Core.settings.token = 'S3R14L'")
+        controller:call(follower, "Core.settings.token = 'WR0NG2'")
+        controller:call(leader, ("Core.settings.serial_device = %q"):format(PTY_A))
+        controller:call(follower, ("Core.settings.serial_device = %q"):format(PTY_B))
+        controller:call(leader, "Core:start('leader')")
+        controller:call(follower, "Core:start('follower')")
 
         socket.sleep(2)
-        T.assertEquals(controller:call(master, "Core:isConnected()"), "false",
+        T.assertEquals(controller:call(leader, "Core:isConnected()"), "false",
             "a device with the wrong code got in over serial")
-        controller:call(master, "Core:stop('done')")
-        controller:call(slave, "Core:stop('done')")
+        controller:call(leader, "Core:stop('done')")
+        controller:call(follower, "Core:stop('done')")
     end)
 end)
 
