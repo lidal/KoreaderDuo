@@ -76,7 +76,7 @@ function Duo:init()
             -- and the module table has none.
             closeDocument = function() self:closeRemoteDocument() end,
             sleepDevice = function() Duo:sleepForPeer() end,
-            reviveDirectLink = function() Duo:reviveDirectLink() end,
+            reviveDirectLink = function(quiet) return Duo:reviveDirectLink(quiet) end,
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
             getTempDir = function() return Duo:getTempDir() end,
@@ -687,14 +687,40 @@ taking it over uninvited would be a rude way to recover from a nap. The
 script checks what the interface is doing before changing anything, so a
 link that survived the sleep costs a status call and nothing more.
 --]]--
-function Duo:reviveDirectLink()
+--[[--
+Puts a link Duo built back up, and says out loud what it found.
+
+Deliberately noisy. Everything here happens while nobody is looking — a
+device wakes, checks its own network, and either finds it or does not — and
+a silent failure is indistinguishable from a plugin that simply does not
+work. One line when it rebuilds, one when it succeeds, and the script's own
+words when it does not.
+
+@treturn string  "up", "rebuilt", "failed", or "not-ours"
+--]]--
+function Duo:reviveDirectLink(quiet)
     local role = Core:get("direct_link")
-    if role ~= "host" and role ~= "join" then return end
+    if role ~= "host" and role ~= "join" then return "not-ours" end
+
     local DirectLink = require("duo/directlink")
     local status = DirectLink.run("status") or ""
-    if DirectLink.isUp(status, role) then return end
-    logger.dbg("Duo: the direct link did not survive the sleep, rebuilding it")
-    if role == "host" then DirectLink.host() else DirectLink.join() end
+    if DirectLink.isUp(status, role) then
+        logger.dbg("Duo: the direct link is still up")
+        if not quiet then Core:notify(_("Duo: the direct link is up")) end
+        return "up"
+    end
+
+    logger.dbg("Duo: the direct link is gone, rebuilding it")
+    Core:notify(_("Duo: rebuilding the direct link…"))
+    local output = (role == "host" and DirectLink.host() or DirectLink.join()) or ""
+    local failure = output:match("\nerror: ([^\n]*)") or output:match("^error: ([^\n]*)")
+    if failure then
+        logger.dbg("Duo: rebuilding the direct link failed:", failure)
+        Core:alert(T(_("Duo could not rebuild the direct link.\n\n%1"), failure))
+        return "failed"
+    end
+    Core:notify(_("Duo: the direct link is back"))
+    return "rebuilt"
 end
 
 --- Looks for the same book somewhere else on this device.
@@ -1220,6 +1246,20 @@ function Duo:getMenuTable()
                     help_text = _("Talk over TCP/IP. Bluetooth PAN counts: KOReader sees an ordinary network."),
                     checked_func = function() return not Core:usesSerial() end,
                     callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
+                },
+                {
+                    text = _("Check the direct link now"),
+                    help_text = _("Ask whether the link Duo built is still there, and rebuild it if not. The same check that runs by itself when the two have been apart for a while — this one just says what it found straight away."),
+                    enabled_func = function() return Core:get("direct_link") ~= nil end,
+                    keep_menu_open = true,
+                    callback = function()
+                        local found = self:reviveDirectLink()
+                        if found == "up" then
+                            UIManager:show(InfoMessage:new{
+                                text = _("The direct link is still up.\n\nIf the two are not talking, the trouble is above the network."),
+                            })
+                        end
+                    end,
                 },
                 {
                     text = _("Set up a direct link (no router)…"),

@@ -2691,7 +2691,7 @@ function Core:checkLink()
     self.link_check_at = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
-    pcall(self.hooks.reviveDirectLink)
+    pcall(self.hooks.reviveDirectLink, true)
 end
 
 --[[--
@@ -2723,7 +2723,7 @@ function Core:checkLinkHealth()
     self.link_healed_at = now
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("apart for a while; checking the link is still there")
-    pcall(self.hooks.reviveDirectLink)
+    pcall(self.hooks.reviveDirectLink, true)
 end
 
 --- Object handed to UIManager so the sockets get polled by the UI loop.

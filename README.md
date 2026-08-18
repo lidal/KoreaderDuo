@@ -123,6 +123,12 @@ choosing an SSID and passphrase, so that part is yours.
 The script also does `host`, `join`, `status` and `restore`, and takes
 `--dry-run` on any of them so you can read the commands first.
 
+**Duo → Link → Check the direct link now** asks the same question from the
+menu and answers on screen: whether the link is still there, that it is
+rebuilding one that has gone, and the script's own words if the rebuild
+fails. It is the same check that runs by itself, with the waiting taken
+out — worth reaching for before assuming a sleep is to blame.
+
 **restore** gives Wi-Fi back, and does the whole job: it leaves the cell,
 puts the interface back to managed — an interface left in ad-hoc is one the
 system's Wi-Fi daemon cannot use, and it never says so, it simply never
@@ -495,6 +501,11 @@ on either device afterwards moves the rest.
   seconds after waking, on **both** devices, because such a link does not
   survive a deep sleep at all — the reader's own Wi-Fi daemon takes the
   interface back into managed mode.
+
+  Over an ordinary Wi-Fi network none of this is needed: the reader
+  restores its own connection on waking and Duo's reconnect loop simply
+  walks back in. It is only a link Duo built itself that has nobody else to
+  put it back.
 
   That check also runs **without being asked**, whenever the pair has been
   apart for twenty seconds or so. Waking is not something to depend on
