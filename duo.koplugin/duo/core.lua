@@ -406,6 +406,7 @@ Attaches the currently open document.
 function Core:attachReader(binding)
     self.reader = binding
     self.warned_pagination = false
+    self.warned_short_book = false
     self.opening_file = nil -- whatever we were opening has now arrived
     -- A different document has its own typography; nothing carries over.
     self.typography_snapshot = nil
@@ -1063,12 +1064,45 @@ function Core:handleRelativeTurn(diff)
     return true
 end
 
---- Moves the leader by `diff` spreads. The page change is broadcast by
--- whatever the reader reports afterwards, via onPageChanged.
+--[[--
+Moves the leader by `diff` spreads.
+
+The page change is broadcast by whatever the reader reports afterwards, via
+onPageChanged.
+
+A turn that would push the far end of the spread past the end of the book
+is refused rather than clamped. Clamping is what the reader does on its
+own, and on a short book it did the wrong thing twice over: the leader's
+page was pulled back to the last one, the follower's was pulled back to the
+*same* last one, and a pair that had been showing two different pages ended
+up showing one page twice — from a tap that should have done nothing.
+
+@treturn boolean true when the pair moved
+--]]--
 function Core:applyRelativeTurn(diff)
-    if not self.reader then return end
+    if not self.reader then return false end
     local step = self:getStep()
+    local options = self:getSpreadOptions()
+    local page = self.reader.getPage()
+    local ceiling = Spread.leaderCeiling(options.page_count, self:followerCount(), options)
+    if page and ceiling then
+        local floor = Spread.leaderFloor(options.page_count, self:followerCount(), options)
+        floor = math.max(floor, 1)
+        ceiling = math.max(ceiling, 1)
+        if (diff > 0 and page >= ceiling) or (diff < 0 and page <= floor) then
+            self:log("not turning: the spread already reaches the end of the book")
+            return false
+        end
+        local wanted = page + diff * step
+        if wanted > ceiling or wanted < floor then
+            -- Part of a step still fits, so the last turn of a book lands
+            -- on the last whole spread rather than being refused.
+            self.reader.turnRelative(Util.clamp(wanted, floor, ceiling) - page)
+            return true
+        end
+    end
     self.reader.turnRelative(diff * step)
+    return true
 end
 
 --- Called by the plugin whenever this device's page changed, for any reason.
@@ -1225,6 +1259,33 @@ function Core:reconcileLibrary(msg)
     if differs then
         self:requestLibrary(state.path)
     end
+end
+
+--[[--
+Says once that the book is too short to spread across the pair.
+
+A one-page book has no second page for the second device, so both show the
+same one. That is the only thing it *can* do, but it looks exactly like the
+spread being broken — the complaint being that two devices show one page —
+and silence invites that reading. The leader already says when a follower's
+page had to be pulled back inside the book; this turns that flag into
+words, once, and only for a book too short to fill the row rather than for
+the ordinary last page of a long one.
+--]]--
+function Core:noteShortBook(beyond, pages)
+    if not beyond or self.warned_short_book then return end
+    -- The last spread of any book clamps too. Only a book that cannot fill
+    -- the row even from its first page is worth mentioning, which is
+    -- exactly a ceiling that has fallen below the first page.
+    local slots = self:followerCount()
+    if not pages or pages <= 0 or slots < 1 then return end
+    local options = self:getSpreadOptions()
+    options.page_count = pages
+    local ceiling = Spread.leaderCeiling(pages, slots, options)
+    if not ceiling or ceiling >= 1 then return end
+    self.warned_short_book = true
+    self:alert(("This book is only %d page%s long, so there is not enough of it to fill both screens. Both devices show the same page."):format(
+        pages, pages == 1 and "" or "s"))
 end
 
 --[[--
@@ -2257,6 +2318,7 @@ function Core:handleMessage(link, msg)
         self.leader_page = Protocol.num(msg, "leader_page")
         self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
         self:applyRemotePage(Protocol.num(msg, "page"))
+        self:noteShortBook(Protocol.bool(msg, "beyond"), Protocol.num(msg, "pages"))
     elseif msg.type == Protocol.TURN then
         if not self:isLeader() then return end
         if not self:get("follower_can_turn") then return end

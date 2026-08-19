@@ -55,6 +55,47 @@ function Spread.pageForSlot(leader_page, slot, options)
     return clamped, clamped ~= wanted
 end
 
+--[[--
+The furthest the leader may go and still have a spread that fits.
+
+The last device in the row is the one that runs out of book first, so the
+leader's ceiling is the last page minus everything held to its right. Two
+devices on a two-page book put the leader on 1 and the follower on 2, and
+that is the end of it: there is no third page for the pair to move on to.
+
+Without this the leader turned anyway. Its own page was clamped to the last
+one, the follower's was clamped to the same, and a spread that had been
+showing 1 and 2 ended up showing 2 and 2 — the same page twice, from a tap
+that should have done nothing at all.
+
+Returns nil when nothing is known about the length, and may return less
+than 1 for a book too short to fill the spread, which the caller clamps.
+
+@number page_count pages in the book
+@number follower_count devices to the leader's right
+@tparam table options mode, reverse, pages_per_view
+--]]--
+function Spread.leaderCeiling(page_count, follower_count, options)
+    options = options or {}
+    if not page_count or page_count <= 0 then return nil end
+    if options.mode == Spread.MIRROR then return page_count end
+    local per_screen = options.pages_per_view or 1
+    local held = (follower_count or 0) * per_screen
+    -- Reversed, the leader holds the right-hand page and the followers run
+    -- off the *front* of the book, so the ceiling is the whole book and it
+    -- is the floor that moves instead.
+    if options.reverse then return page_count end
+    return page_count - held
+end
+
+--- The earliest page the leader may sit on, the mirror of the above.
+function Spread.leaderFloor(page_count, follower_count, options)
+    options = options or {}
+    if options.mode == Spread.MIRROR or not options.reverse then return 1 end
+    local per_screen = options.pages_per_view or 1
+    return 1 + (follower_count or 0) * per_screen
+end
+
 --- The full layout, leader included, left to right.
 -- @treturn table array of { slot = 0 for the leader, page = n, clamped = bool }
 function Spread.layout(leader_page, follower_count, options)
