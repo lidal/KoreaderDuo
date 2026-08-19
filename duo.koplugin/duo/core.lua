@@ -967,6 +967,12 @@ function Core:onLinkReady(link)
         self:sendFrontlightTo(link)
         self:sendStateTo(link)
         self:broadcastBrowser()
+    elseif self.browser and not self.reader then
+        -- A follower in the file manager. The leader pushes the listing
+        -- from its side too, but only when it has one to push: it may be
+        -- deep in a book, or between file managers, and asking costs a
+        -- line and settles it either way.
+        link:send(Protocol.SYNC, {})
     end
     self:changed()
 end
@@ -1150,6 +1156,25 @@ function Core:attachBrowser(binding)
     self.browser_state = nil
     self.warned_listing = false
     self:changed()
+    if self:isActive() and self:isFollower() then
+        --[[
+        Ask, rather than wait to be told.
+
+        Only the leader pushed the listing, and only at the moments it
+        happened to think of: a link coming up, a swipe, a folder change. A
+        follower that reached the file manager at any other moment — the
+        common one being a leader already sitting in its list long before
+        this device connected — sat there with an unshared list and no way
+        to say so. The book list looked broken until somebody swiped on the
+        other device, which is exactly what a push-only design feels like
+        from the receiving end.
+
+        The leader answers SYNC with the listing among everything else, so
+        one line here closes the gap for good.
+        ]]
+        local link = self:getReadyLinks()[1]
+        if link then link:send(Protocol.SYNC, {}) end
+    end
     if self:isActive() and self:isLeader() then
         --[[
         The file manager appearing on the leader is the moment the book was
