@@ -574,11 +574,45 @@ end
 -- do not, the reading history is a good second guess before giving up.
 function Duo:openRemoteDocument(file, msg)
     local lfs = require("libs/libkoreader-lfs")
+    --[[
+    A book that has this moment landed is the book, whatever stood at that
+    path before it. Asking again whether it is a stand-in would find the one
+    it just landed on top of — for ever, on a device that cannot read the
+    marker back out — and the answer would send it off to fetch the same
+    book again instead of opening the copy already here.
+    ]]
+    local arrived = msg and msg.arrived
+    local function here(path)
+        --[[
+        A stand-in is a file, so every "is it here?" test said yes to one.
+        The pair then went into a book on the leader and into a few hundred
+        bytes of cover and title on the follower — the dummy, opened
+        instead of fetched, which is the exact opposite of what a stand-in
+        is for. It stands in until somebody wants the book; this is
+        somebody wanting the book.
+        ]]
+        return path and lfs.attributes(path, "mode") == "file"
+            and (arrived or not Core:isStub(path))
+    end
     local target = file
-    if lfs.attributes(target, "mode") ~= "file" then
+    local standing_in = not arrived
+        and lfs.attributes(file, "mode") == "file" and Core:isStub(file)
+    if not here(target) then
         target = self:findLocalCopy(file)
+        if not here(target) then target = nil end
     end
     if not target then
+        -- A stand-in on the shelf is asked for by name, so the book lands
+        -- on top of it and the shelf keeps one entry rather than growing a
+        -- second copy somewhere else.
+        if standing_in and Core:fetchBookFor(file, file:gsub("^.*/", "")) then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Fetching %1 from the other device — it will open when it arrives."),
+                         file:gsub("^.*/", "")),
+                timeout = 3,
+            })
+            return
+        end
         -- Not here, and not anywhere else on this device: ask for it.
         if msg and Core:requestBook(msg) then
             return

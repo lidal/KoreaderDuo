@@ -1622,6 +1622,14 @@ Asked of the file itself — the marker is written into it — so it survives
 restarts, backups and anything else that would lose a list kept alongside.
 --]]--
 function Core:isStub(path)
+    -- What this device was told when the file arrived, which beats reading
+    -- it back: the marker lives inside the EPUB, and getting at it needs an
+    -- archive library that a stripped build may not have. When that read
+    -- failed the stand-in passed for a book and a tap opened the empty
+    -- thing, which is the one outcome the whole arrangement exists to avoid.
+    local known = self.settings and self.settings.stubs
+    if known and known[path] ~= nil then return known[path] == true end
+
     local loaded, EpubStub = pcall(require, "duo/epubstub")
     if not loaded then return false end
     local read, answer = pcall(EpubStub.isPlaceholder, path)
@@ -1630,6 +1638,20 @@ function Core:isStub(path)
         return false
     end
     return answer == true
+end
+
+--[[--
+Notes down whether the file that just landed is a stand-in or a book.
+
+Kept per device rather than shared: it describes what is on this disk. A
+real book arriving where a stand-in was clears the note rather than
+rewriting it, so the register only ever holds what is still standing in.
+--]]--
+function Core:rememberStub(path, is_stub)
+    if type(path) ~= "string" or path == "" then return end
+    self.settings.stubs = self.settings.stubs or {}
+    self.settings.stubs[path] = is_stub and true or nil
+    self:save()
 end
 
 --[[--
@@ -1820,6 +1842,13 @@ function Core:handleBookRequest(link, msg)
         name = self.book_sender.name,
         size = sender.size,
         digest = "",
+        -- Said out loud, rather than left to be discovered. The receiving
+        -- device used to have to read the marker back out of the file to
+        -- learn a stand-in was a stand-in, which needs an archive library
+        -- it may not have — and when that reading failed the stand-in
+        -- passed for a book, so a tap opened the empty thing instead of
+        -- fetching what it stood for.
+        stub = sending_stub and 1 or nil,
         title = (not Protocol.bool(msg, "lib") and self.reader and self.reader.getDocument()
             and self.reader.getDocument().title) or "",
     })
@@ -1948,6 +1977,7 @@ function Core:handleBookHead(msg)
     end
     self.book_receiver = receiver
     self.book_title = msg.title ~= "" and msg.title or msg.name
+    self.book_request.arriving_stub = Protocol.bool(msg, "stub")
     if self.book_request then self.book_request.progress_at = Util.now() end
     self:changed()
 end
@@ -1977,13 +2007,14 @@ function Core:handleBookDone()
         self:alert(("Duo could not save the book: %s"):format(tostring(err)))
         return
     end
+    self:rememberStub(path, request and request.arriving_stub)
     if request and request.open_when_done then
         -- The user asked for this one by opening it, so it opens.
         self:notify(("Duo: %s is here"):format(request.title or "the book"))
         if self.browser then self.browser.refresh() end
         if self.hooks and self.hooks.openDocument then
             self.opening_file = nil
-            self.hooks.openDocument(path, { title = request.title or "", digest = "" })
+            self.hooks.openDocument(path, { title = request.title or "", digest = "", arrived = true })
         end
         return
     end
@@ -2001,7 +2032,7 @@ function Core:handleBookDone()
     -- Straight into it, which is the whole point of having asked.
     if self.hooks and self.hooks.openDocument and request then
         self.opening_file = nil
-        self.hooks.openDocument(path, { title = self.book_title or "", digest = request.digest or "" })
+        self.hooks.openDocument(path, { title = self.book_title or "", digest = request.digest or "", arrived = true })
     end
 end
 
