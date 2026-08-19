@@ -127,15 +127,70 @@ function Duo:ensurePolling()
     UIManager:insertZMQ(poller)
 end
 
---- Where a book sent by the other device is put.
--- Under the reader's own library folder when there is one, so it turns up
--- in the file manager where books are expected to be.
+--[[--
+Where a book sent by the other device is put.
+
+Books, with the books — not in a folder of Duo's own. A `Duo` subfolder was
+tidy from the plugin's point of view and wrong from the reader's: books
+arrived somewhere nobody browses, so they had to be found before they could
+be read.
+
+The shelf is looked for in the order a reader would expect to find it: what
+the user set here, then a `books` folder beside KOReader's own directory —
+`/mnt/us/books` on a Kindle, which is where books live on one — then
+KOReader's configured home, and only failing all of that a folder of our
+own making.
+--]]--
 function Duo:getBookDir()
-    local home = G_reader_settings and G_reader_settings:readSetting("home_dir")
-    if not home or home == "" then
-        home = DataStorage:getDataDir()
+    local lfs = require("libs/libkoreader-lfs")
+    local function usable(path)
+        if not path or path == "" then return nil end
+        if lfs.attributes(path, "mode") == "directory" then return path end
+        return nil
     end
-    return home .. "/Duo"
+
+    local chosen = Core:get("book_dir")
+    if chosen and chosen ~= "" then
+        if not usable(chosen) then lfs.mkdir(chosen) end
+        if usable(chosen) then return chosen end
+    end
+
+    -- KOReader sits next to the shelf rather than inside it: /mnt/us/koreader
+    -- and /mnt/us/books on a Kindle, and the same shape elsewhere.
+    local data = DataStorage:getDataDir()
+    local beside = (data:match("^(.*)/[^/]+$") or data) .. "/books"
+    if usable(beside) then return beside end
+
+    local home = usable(G_reader_settings and G_reader_settings:readSetting("home_dir"))
+    if home then return home end
+
+    -- Nothing to join: make the shelf rather than hide the books away.
+    lfs.mkdir(beside)
+    return usable(beside) or data
+end
+
+--- Lets the user say where books should land, starting from where they do.
+function Duo:chooseBookDir()
+    local ok, PathChooser = pcall(require, "ui/widget/pathchooser")
+    if not ok or not PathChooser then
+        UIManager:show(InfoMessage:new{
+            text = _("This build of KOReader has no folder chooser."),
+        })
+        return
+    end
+    UIManager:show(PathChooser:new{
+        select_directory = true,
+        select_file = false,
+        path = self:getBookDir(),
+        onConfirm = function(path)
+            Core:set("book_dir", path or "")
+            self:refreshMenu()
+            UIManager:show(InfoMessage:new{
+                text = T(_("Books from the other device will arrive in %1."), self:getBookDir()),
+                timeout = 3,
+            })
+        end,
+    })
 end
 
 --- Somewhere to build a stand-in before sending it, out of the way of the
@@ -1488,6 +1543,14 @@ On connecting, the leader's settings win. After that a change on either device m
                 Core:set("max_library_mb", steps[next_index])
                 Duo:refreshMenu()
             end,
+        },
+        {
+            text_func = function()
+                return T(_("Books arrive in: %1"), Duo:getBookDir())
+            end,
+            help_text = _("Where a book sent from the other device is saved, when it is not one of the shared folder's own. Books copied to line up a shared book list land in that folder instead, since that is the point of them."),
+            keep_menu_open = true,
+            callback = function() Duo:chooseBookDir() end,
         },
         {
             text = _("Covers now, books when you open them"),

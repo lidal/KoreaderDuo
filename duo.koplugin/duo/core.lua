@@ -159,6 +159,10 @@ local DEFAULTS = {
     covers_first = true,
     max_book_mb = 64,
     max_library_mb = 512,
+    -- Empty means "wherever this device keeps its books", worked out at the
+    -- time. Not shared: it describes this device's disk, and the two rarely
+    -- have the same one.
+    book_dir = "",
     device_name = "",
     autostart = false,
     autostart_role = "off",
