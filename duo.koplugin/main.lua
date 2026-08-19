@@ -690,17 +690,21 @@ link that survived the sleep costs a status call and nothing more.
 --[[--
 Which side of a direct link this device is, or nil for an ordinary network.
 
-Normally recorded when the link is set up from the menu. Not everybody does
-that, though — the script is meant to be run over SSH, and a link built
-that way left nothing behind saying so, which meant every automatic check
-politely decided the link was none of its business and did nothing at all.
+Three answers, not two. "host" and "join" are recorded when the link comes
+up from the menu; **"off"** is recorded when somebody hands Wi-Fi back, and
+means *do not go looking* — without it, nothing meant "ask again", and the
+answer was worked out afresh from an address that handing Wi-Fi back did
+not clear. The link then rebuilt itself moments after being dismantled,
+which from outside looks like the plugin refusing to let go.
 
-The addresses give it away. They are fixed, and nothing but this
-arrangement uses them.
+Only when nothing has been recorded at all is it worked out from the
+addresses, which are fixed and used by nothing else. That is for a link set
+up by hand over SSH, which leaves nothing else behind saying so.
 --]]--
 function Duo:directLinkRole()
     local stored = Core:get("direct_link")
     if stored == "host" or stored == "join" then return stored end
+    if stored == "off" then return nil end
 
     local DirectLink = require("duo/directlink")
     local role
@@ -714,6 +718,24 @@ function Duo:directLinkRole()
         Core:set("direct_link", role)
     end
     return role
+end
+
+--[[--
+Records that this pairing is over an ordinary network.
+
+Asked for by choosing that on the first screen, which is as plain a
+statement of intent as there is — so nothing should be quietly rebuilding a
+router-free link underneath it. The one exception is somebody who built
+such a link by hand and is now pairing across it by address: that is still
+a direct link whatever route they took to it, and the address says so.
+--]]--
+function Duo:notOnADirectLink()
+    local DirectLink = require("duo/directlink")
+    if Core:get("peer_host") == DirectLink.HOST_ADDRESS
+        or NetUtil.getLocalIP() == DirectLink.HOST_ADDRESS then
+        return
+    end
+    Core:set("direct_link", "off")
 end
 
 --[[--
@@ -860,6 +882,7 @@ function Duo:showRoleDialog(over, preamble)
                     if over == "direct" then
                         self:runDirectLink("host")
                     else
+                        self:notOnADirectLink()
                         self:startLeader()
                     end
                 end,
@@ -871,6 +894,7 @@ function Duo:showRoleDialog(over, preamble)
                     if over == "direct" then
                         self:runDirectLink("join")
                     else
+                        self:notOnADirectLink()
                         self:searchForLeader()
                     end
                 end,
@@ -935,9 +959,16 @@ function Duo:restoreWifi()
     local DirectLink = require("duo/directlink")
     Core:stop("restoring Wi-Fi")
     DirectLink.restore()
-    Core:set("direct_link", nil)
+    -- "off", not nothing: nothing means "work it out", and what it would
+    -- work it out from is the address cleared just below.
+    Core:set("direct_link", "off")
+    if Core:get("peer_host") == DirectLink.HOST_ADDRESS then
+        -- The other device is not there any more, and leaving its address
+        -- behind is what let the link put itself back up.
+        Core:set("peer_host", "")
+    end
     UIManager:show(InfoMessage:new{
-        text = _("Wi-Fi handed back to the system.\n\nRejoining your usual network may take a few seconds."),
+        text = _("Wi-Fi handed back to the system.\n\nRejoining your usual network may take a few seconds. Do this on the other device too, or it will sit waiting on a link that is no longer there."),
         timeout = 5,
     })
     if NetworkMgr.restoreWifiAsync then

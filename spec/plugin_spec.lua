@@ -396,6 +396,47 @@ T.describe("coming back after a sleep", function()
         Core.link_healed_at = nil
     end)
 
+    T.it("lets go when Wi-Fi is handed back, and stays let go", function()
+        --[[
+        The link rebuilding itself moments after being dismantled. Nothing
+        recorded did not mean "there is no direct link", it meant "work it
+        out" — and what it worked it out from was the peer address, which
+        handing Wi-Fi back left behind. So the answer came back "join", the
+        healing rebuilt the cell, and the Wi-Fi that had just been restored
+        was taken away again.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        Core.settings.peer_host = "169.254.13.1"
+
+        device.plugin:restoreWifi()
+
+        T.assertEquals(Core:get("direct_link"), "off", "silence is not an answer")
+        T.assertNil(device.plugin:directLinkRole(),
+            "it must not work the link out again from what it just dismantled")
+        T.assertEquals(Core:get("peer_host"), "",
+            "the other device is not at that address any more")
+    end)
+
+    T.it("stays let go when the pair is told to use an ordinary network", function()
+        reset()
+        Core.settings.direct_link = "host"
+        Core.settings.peer_host = ""
+        device.plugin:notOnADirectLink()
+        T.assertNil(device.plugin:directLinkRole(),
+            "choosing a Wi-Fi network is as plain a statement of intent as there is")
+    end)
+
+    T.it("but keeps a hand-built link that is being paired across by address", function()
+        -- Still a direct link, whatever route was taken to it.
+        reset()
+        Core.settings.direct_link = nil
+        Core.settings.peer_host = "169.254.13.1"
+        device.plugin:notOnADirectLink()
+        T.assertEquals(device.plugin:directLinkRole(), "join")
+        Core.settings.peer_host = ""
+    end)
+
     T.it("works out which side of a link built by hand this device is", function()
         --[[
         The script is meant to be run over SSH, and a link built that way
