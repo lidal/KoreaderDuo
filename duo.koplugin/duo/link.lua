@@ -44,6 +44,23 @@ being slow is the pair sitting there not working.
 --]]--
 Link.PING_INTERVAL = 2
 Link.PEER_TIMEOUT = 6
+
+--[[--
+How many messages one poll may hand over before going back for air.
+
+A library sync arrives as hundreds of chunks, and the socket hands them all
+over at once. Decoding and writing each one is work, and doing the lot
+inside a single poll meant minutes could pass with no heartbeat going out —
+so the *other* device, hearing nothing, decided this one had died and
+dropped a link that was in the middle of working perfectly. Hence the
+connected/disconnected churn that showed up only while books were moving.
+
+Bounded, the poll returns after a mouthful, sends its ping, and picks the
+rest up on the next tick fifty milliseconds later. Nothing is lost: what is
+left sits in the reader's buffer. Throughput is unaffected at any rate a
+Wi-Fi link can manage.
+--]]--
+Link.MAX_DISPATCH_PER_POLL = 16
 --- Seconds allowed for the handshake.
 Link.HANDSHAKE_TIMEOUT = 10
 --- Seconds between repeated challenges on a link with no connect step.
@@ -256,7 +273,8 @@ function Link:poll()
         self.reader:feed(data)
     end
 
-    while self.state ~= "closed" do
+    local handled = 0
+    while self.state ~= "closed" and handled < Link.MAX_DISPATCH_PER_POLL do
         local msg, decode_err = self.reader:next()
         if not msg then
             if decode_err then
@@ -264,6 +282,7 @@ function Link:poll()
             end
             break
         end
+        handled = handled + 1
         self:dispatch(msg)
     end
 
