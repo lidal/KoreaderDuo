@@ -137,29 +137,54 @@ local TYPOGRAPHY_EVENTS = {
     onSetPageHorizMargins = "h_page_margins",
     onSetPageTopMargin = "t_page_margin",
     onSetPageBottomMargin = "b_page_margin",
-    onSetViewMode = "view_mode",
     onSetVisiblePages = "visible_pages",
-    onToggleEmbeddedStyleSheet = "embedded_css",
     onSetFontHinting = "font_hinting",
 }
 
 local Typeset = {}
 Typeset.__index = Typeset
 
+function Typeset:applySetting(key, value)
+    self.ui.document.configurable[key] = value
+    self.ui.document:repaginate()
+    -- Relaying out can leave the reader past the end of the book.
+    local paging = self.ui.paging
+    local count = self.ui.document:getPageCount()
+    if paging.current_page > count then
+        paging.current_page = count
+    end
+    self.ui:handleEvent(self.ui.Event:new("UpdatePos"))
+    return true
+end
+
+--[[
+Two of these do not take the value that goes into `configurable`. They take
+the argument KOReader's settings dialog sends alongside it -- a boolean for
+the toggles, "page" or "scroll" for the view mode -- and work the value out
+from that.
+
+Modelled the way KOReader really does it, because the difference is
+invisible until it bites. Lua counts 0 as true, so a handler passed the
+value 0 where it expects false turns the setting on, and a stub that simply
+stored whatever it was handed would let that through and call it a pass.
+]]
+function Typeset:onToggleEmbeddedStyleSheet(toggle)
+    return self:applySetting("embedded_css", toggle and 1 or 0)
+end
+
+function Typeset:onToggleEmbeddedFonts(toggle)
+    return self:applySetting("embedded_fonts", toggle and 1 or 0)
+end
+
+function Typeset:onSetViewMode(mode)
+    return self:applySetting("view_mode", mode == "scroll" and 1 or 0)
+end
+
 function Reader.newTypeset(ui)
     local typeset = setmetatable({ ui = ui }, Typeset)
     for handler, key in pairs(TYPOGRAPHY_EVENTS) do
         typeset[handler] = function(self_, value)
-            self_.ui.document.configurable[key] = value
-            self_.ui.document:repaginate()
-            -- Relaying out can leave the reader past the end of the book.
-            local paging = self_.ui.paging
-            local count = self_.ui.document:getPageCount()
-            if paging.current_page > count then
-                paging.current_page = count
-            end
-            self_.ui:handleEvent(self_.ui.Event:new("UpdatePos"))
-            return true
+            return self_:applySetting(key, value)
         end
     end
     return typeset
@@ -488,12 +513,23 @@ function ReaderUI:onSetFlWarmth(value)
     return true
 end
 
+--[[
+The switch, which KOReader keeps apart from the brightness: turning the
+light off leaves the level it will come back to exactly where it was.
+]]
+function ReaderUI:onToggleFrontlight()
+    local powerd = package.loaded["device"].getPowerDevice()
+    powerd.is_fl_on = not powerd.is_fl_on
+    return true
+end
+
 function ReaderUI:handleEvent(event)
     if event.handler == "onHome" and self.onHome and self:onHome() then
         return true
     end
     if event.handler == "onSetFlIntensity" then return self:onSetFlIntensity(event.args[1]) end
     if event.handler == "onSetFlWarmth" then return self:onSetFlWarmth(event.args[1]) end
+    if event.handler == "onToggleFrontlight" then return self:onToggleFrontlight() end
     for _, module in ipairs(self.modules) do
         if module:handleEvent(event) then return true end
     end

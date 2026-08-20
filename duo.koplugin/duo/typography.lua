@@ -79,7 +79,29 @@ local FALLBACK_EVENTS = {
     cjk_width_scaling = "SetCJKWidthScaling",
 }
 
+--[[--
+The argument KOReader's own settings dialog sends with each event.
+
+Not the same thing as the value. An option in `creoptions` carries both:
+`values` is what goes in `configurable`, and `args` is what rides along
+with the event -- 0 and 1 against false and true for the toggles, 0 and 1
+against "page" and "scroll" for the view mode. Sending the value in the
+argument's place is what made disabling embedded styles turn them on, and
+it is not even a near miss: in Lua 0 is true, so "off" arrived as "on".
+
+Kept for the builds where `creoptions` cannot be read; anything not named
+here passes its value through, which is right for every option whose event
+really does take the value.
+--]]--
+local FALLBACK_ARGS = {
+    embedded_css = { values = { 0, 1 }, args = { false, true } },
+    embedded_fonts = { values = { 0, 1 }, args = { false, true } },
+    sync_t_b_page_margins = { values = { 0, 1 }, args = { false, true } },
+    view_mode = { values = { 0, 1 }, args = { "page", "scroll" } },
+}
+
 local event_map
+local argument_map
 
 --- name -> event, read from KOReader's own option table when available.
 function Typography.getEventMap()
@@ -99,6 +121,48 @@ function Typography.getEventMap()
         end
     end
     return event_map
+end
+
+--- name -> { values, args }, read from KOReader's own option table.
+function Typography.getArgumentMap()
+    if argument_map then return argument_map end
+    argument_map = {}
+    for key, entry in pairs(FALLBACK_ARGS) do
+        argument_map[key] = entry
+    end
+    local ok, CreOptions = pcall(require, "ui/data/creoptions")
+    if ok and type(CreOptions) == "table" then
+        for _, group in ipairs(CreOptions) do
+            for _, option in ipairs(group.options or {}) do
+                if option.name and option.event and option.values and option.args then
+                    argument_map[option.name] = {
+                        values = option.values,
+                        args = option.args,
+                    }
+                end
+            end
+        end
+    end
+    return argument_map
+end
+
+--[[--
+What to send with the event for `key` when the setting is `value`.
+
+The value itself for the great majority of settings, and the matching entry
+from `args` for the handful that take something else.
+--]]--
+function Typography.eventArgument(key, value)
+    local entry = Typography.getArgumentMap()[key]
+    if not entry then return value end
+    for index, candidate in ipairs(entry.values) do
+        if tostring(candidate) == tostring(value) then
+            local argument = entry.args[index]
+            if argument ~= nil then return argument end
+            return value
+        end
+    end
+    return value
 end
 
 --------------------------------------------------------------------------
@@ -262,7 +326,8 @@ function Typography.apply(ui, settings, Event)
                     -- back rather than trusting their argument.
                     configurable[key] = value
                     local ok, err = pcall(function()
-                        ui:handleEvent(Event:new(event, value))
+                        ui:handleEvent(Event:new(event,
+                            Typography.eventArgument(key, value)))
                     end)
                     if ok then
                         applied[#applied+1] = key

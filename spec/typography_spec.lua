@@ -103,6 +103,59 @@ T.describe("reading and applying on a device", function()
         T.assertEquals(device.ui.font.font_face, "Noto Serif", "the typeface must not have changed")
     end)
 
+    T.it("turns embedded styles off rather than on", function()
+        --[[
+        The report: disabling embedded styles on one device made the other
+        announce over and over that it had matched them, and left the
+        setting exactly as it was.
+
+        KOReader's toggle handlers do not take the value that goes into
+        `configurable`; they take the argument its settings dialog sends
+        alongside, which is a boolean. Duo sent the value, and in Lua 0 is
+        true -- so "off" arrived as "on", the two devices disagreed, and
+        each new reading of the difference was announced as a fresh match.
+        ]]
+        local reader = Instance.new{ name = "Kindle-E", page_count = 300 }
+        T.assertEquals(reader.ui.document.configurable.embedded_css, 1)
+
+        local applied = Typography.apply(reader.ui, { embedded_css = "0" }, reader.Event)
+        T.assertTableEquals(applied, { "embedded_css" })
+        T.assertEquals(reader.ui.document.configurable.embedded_css, 0,
+            "asking for embedded styles off turned them on")
+
+        -- And it settles: a second pass with the same settings is a no-op,
+        -- which is what stops the announcements repeating.
+        local again = Typography.apply(reader.ui, { embedded_css = "0" }, reader.Event)
+        T.assertEquals(#again, 0, "the same change was applied twice")
+    end)
+
+    T.it("turns them back on again", function()
+        local reader = Instance.new{ name = "Kindle-F", page_count = 300 }
+        Typography.apply(reader.ui, { embedded_css = "0" }, reader.Event)
+        Typography.apply(reader.ui, { embedded_css = "1" }, reader.Event)
+        T.assertEquals(reader.ui.document.configurable.embedded_css, 1)
+    end)
+
+    T.it("sends the view mode as the word its handler expects", function()
+        -- Same shape of bug: the value is 0 or 1, the event takes "page" or
+        -- "scroll", and nothing but the argument table says so.
+        local reader = Instance.new{ name = "Kindle-V", page_count = 300 }
+        local applied = Typography.apply(reader.ui, { view_mode = "1" }, reader.Event)
+        T.assertTableEquals(applied, { "view_mode" })
+        T.assertEquals(reader.ui.document.configurable.view_mode, 1,
+            "the view mode did not follow")
+    end)
+
+    T.it("passes an ordinary setting's value through untouched", function()
+        -- The mapping is for the handful that need it, not a free-for-all.
+        T.assertEquals(Typography.eventArgument("font_size", 26), 26)
+        T.assertEquals(Typography.eventArgument("line_spacing", 120), 120)
+        T.assertEquals(Typography.eventArgument("embedded_css", 0), false)
+        T.assertEquals(Typography.eventArgument("embedded_css", 1), true)
+        T.assertEquals(Typography.eventArgument("view_mode", 0), "page")
+        T.assertEquals(Typography.eventArgument("view_mode", 1), "scroll")
+    end)
+
     T.it("leaves paged documents alone", function()
         -- A PDF has the pages the file says it has; there is nothing to match.
         local paged = Instance.new{ name = "Kindle-P", page_count = 120 }
