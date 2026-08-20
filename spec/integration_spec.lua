@@ -106,6 +106,59 @@ T.describe("two devices, connecting", function()
 end)
 
 T.describe("two devices, one spread", function()
+    T.it("brings the leader along when the follower jumps to a page", function()
+        --[[
+        The report: tapping a link on the follower moved that device and left
+        the leader where it was, so the next page turn took you back to
+        before the link.
+
+        Only a single-screen page turn was ever forwarded. Everything else
+        that moves a follower -- a tapped link, the table of contents, a
+        bookmark, the slider -- happened locally and was never mentioned, so
+        the leader went on holding the page it had, and its next broadcast
+        pulled the follower back to it.
+        ]]
+        connectPair()
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
+
+        -- Where a tapped link lands: an absolute jump, not a turn.
+        callFollower("D:jumpToPage(120)")
+        controller:assertEventually(leader, "D:getPage()", 119,
+            "the leader stayed behind when the follower followed a link")
+        controller:assertEventually(follower, "D:getPage()", 120,
+            "and the follower must stay where it jumped to")
+
+        -- The half that was actually broken for the reader: turning a page
+        -- from there goes on from the link, not back to where it was.
+        callLeader("D:tapForward()")
+        controller:assertEventually(leader, "D:getPage()", 121)
+        controller:assertEventually(follower, "D:getPage()", 122)
+    end)
+
+    T.it("keeps a jump inside the book", function()
+        -- A link near the end must not put the leader somewhere the last
+        -- device cannot follow, which would show one page on both screens.
+        connectPair()
+        local pages = tonumber(controller:call(leader, "UI.document:getPageCount()"))
+        callFollower(("D:jumpToPage(%d)"):format(pages))
+        controller:assertEventually(leader, "D:getPage()", pages - 1,
+            "the leader should stop one short so the spread still fits")
+        controller:assertEventually(follower, "D:getPage()", pages)
+    end)
+
+    T.it("ignores a jump on a follower that may not turn pages", function()
+        -- A display-only follower is exactly that: being tapped on must not
+        -- move the pair.
+        connectPair{ follower_can_turn = false }
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
+        callFollower("D:jumpToPage(200)")
+        socket.sleep(2)
+        T.assertEquals(controller:call(leader, "D:getPage()"), "10",
+            "a follower that may not turn pages moved the pair anyway")
+    end)
+
     T.it("puts the follower on the page after the leader's", function()
         connectPair()
         setLeaderPage(10)

@@ -460,6 +460,8 @@ end
 function Core:detachReader(binding)
     if binding and self.reader and self.reader ~= binding then return end
     self.reader = nil
+    -- Page numbers mean nothing once the book they counted is gone.
+    self.assigned_page = nil
     self:changed()
 end
 
@@ -1175,13 +1177,78 @@ function Core:onPageChanged(page)
     if self:isLeader() then
         self:broadcastState()
     else
+        self:reportJump(page)
         self:changed()
     end
+end
+
+--[[--
+Tells the leader this device was moved somewhere it was not sent.
+
+A page turn on a follower is forwarded before it happens and never moves
+this screen on its own, so any page this device lands on that is not the
+one it was told to show is a jump the user made -- a tapped link, an entry
+in the table of contents, a bookmark, the slider. All of those used to go
+nowhere: this device moved, the leader stayed where it was, and the next
+page turn dragged this one back to where the link had been tapped.
+
+The page this device wants to be showing is what is sent, not the page the
+leader should hold. Where the leader has to sit for this device to show a
+given page depends on the shape of the spread, and that is the leader's
+business to work out.
+--]]--
+function Core:reportJump(page)
+    if not page or not self:isConnected() then return end
+    if not self.reader then return end
+    -- The same permission as turning a page: a follower kept as a display
+    -- should not move the pair by being tapped.
+    if not self:get("follower_can_turn") then return end
+    if self.assigned_page and page == self.assigned_page then return end
+    local link = self:getReadyLinks()[1]
+    if not link then return end
+    -- Remembered before the answer comes back, so a jump is asked for once.
+    self.assigned_page = page
+    self:log("jumped to", page, "- asking the leader to follow")
+    link:send(Protocol.GOTO, { page = page })
+end
+
+--[[--
+Puts the whole spread where a follower asked to be.
+
+The follower names the page it wants to be showing. This device works out
+where it has to sit for that to be true, which is the inverse of the sum it
+does every time it sends that follower a page, and then moves -- taking
+everyone else along with it, because the leader moving is what a spread is.
+
+Clamped to the same floor and ceiling a page turn respects: a link near the
+end of a book must not put the leader somewhere the last device cannot
+follow, which would show the same page on two screens.
+--]]--
+function Core:applyRemoteJump(link, wanted)
+    if not wanted or not self.reader then return end
+    local options = self:getSpreadOptions()
+    local page = Spread.leaderPageForSlot(wanted, link.slot, options)
+    local count = self.reader.getPageCount()
+    local followers = self:followerCount()
+    local floor = Spread.leaderFloor(count, followers, options) or 1
+    local ceiling = Spread.leaderCeiling(count, followers, options)
+    page = Util.clamp(page, math.max(floor, 1), ceiling or math.huge)
+    self.applying_remote = true
+    local ok, err = pcall(self.reader.gotoPage, page)
+    self.applying_remote = false
+    if not ok then
+        self:log("could not follow a jump to page", page, err)
+    end
+    self:broadcastState()
 end
 
 --- Applies a page the leader told us to show.
 function Core:applyRemotePage(page)
     if not self.reader or not page then return end
+    -- Recorded whether or not this device has to move for it: this is the
+    -- page it has been *sent*, and it is what tells a jump made here from
+    -- the leader's own idea of where this screen belongs.
+    self.assigned_page = page
     if self.reader.getPage() == page then return end
     self.applying_remote = true
     local ok, err = pcall(self.reader.gotoPage, page)
@@ -2617,14 +2684,9 @@ function Core:handleMessage(link, msg)
         if not self:get("follower_can_turn") then return end
         self:applyRelativeTurn(Protocol.num(msg, "dir", 1))
     elseif msg.type == Protocol.GOTO then
-        if not self:isLeader() or not self.reader then return end
-        local page = Protocol.num(msg, "page")
-        if page then
-            self.applying_remote = true
-            pcall(self.reader.gotoPage, page)
-            self.applying_remote = false
-            self:broadcastState()
-        end
+        if not self:isLeader() then return end
+        if not self:get("follower_can_turn") then return end
+        self:applyRemoteJump(link, Protocol.num(msg, "page"))
     elseif msg.type == Protocol.NAP then
         self:handleNap(msg)
     elseif msg.type == Protocol.SYNC then

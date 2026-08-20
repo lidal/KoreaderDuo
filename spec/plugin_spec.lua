@@ -857,6 +857,41 @@ T.describe("spread arithmetic", function()
         T.assertEquals(Spread.pageForSlot(10, 1, { mode = "spread", pages_per_view = 2, page_count = 300 }), 12)
     end)
 
+    T.it("works out where the leader must sit for a follower to show a page", function()
+        --[[
+        A follower can be moved by something that is not a page turn -- a
+        tapped link, the table of contents, a bookmark -- and it lands
+        somewhere the leader knows nothing about. It says the page it wants
+        to be showing; this is the sum that turns that into the leader's.
+        ]]
+        local options = { mode = "spread", page_count = 300 }
+        T.assertEquals(Spread.leaderPageForSlot(11, 1, options), 10)
+        T.assertEquals(Spread.leaderPageForSlot(12, 2, options), 10)
+    end)
+
+    T.it("undoes exactly what it does, whatever the shape of the spread", function()
+        -- The one property that matters: the two sums are inverses, or a
+        -- device asking to be somewhere ends up somewhere else.
+        local shapes = {
+            { mode = "spread", page_count = 300 },
+            { mode = "spread", page_count = 300, reverse = true },
+            { mode = "spread", page_count = 300, pages_per_view = 2 },
+            { mode = "spread", page_count = 300, reverse = true, pages_per_view = 2 },
+            { mode = "mirror", page_count = 300 },
+        }
+        for _, options in ipairs(shapes) do
+            for slot = 1, 3 do
+                local shown = Spread.pageForSlot(150, slot, options)
+                T.assertEquals(Spread.leaderPageForSlot(shown, slot, options), 150,
+                    ("slot %d did not come back to the leader's page"):format(slot))
+            end
+        end
+    end)
+
+    T.it("mirrors a jump rather than offsetting it", function()
+        T.assertEquals(Spread.leaderPageForSlot(42, 1, { mode = "mirror" }), 42)
+    end)
+
     T.it("describes the layout for the status line", function()
         T.assertEquals(Spread.describeLayout(10, 1, { mode = "spread", page_count = 300 }), "10–11")
         T.assertEquals(Spread.describeLayout(10, 2, { mode = "spread", page_count = 300 }), "10–11–12")

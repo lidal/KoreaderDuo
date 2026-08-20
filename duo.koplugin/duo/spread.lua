@@ -56,6 +56,26 @@ function Spread.pageForSlot(leader_page, slot, options)
 end
 
 --[[--
+Where the leader must sit for the device in `slot` to be showing `wanted`.
+
+The inverse of `pageForSlot`, and needed because a follower can be moved by
+something that is not a page turn -- a link, the table of contents, a
+bookmark, the slider. What that device knows afterwards is the page it
+wants to be on; where the leader has to sit for that is a question about
+the shape of the spread, and this is the answer.
+
+@number wanted the page that device should end up showing
+@number slot the follower's index, 1 for the first one
+@tparam table options mode, reverse, pages_per_view
+--]]--
+function Spread.leaderPageForSlot(wanted, slot, options)
+    options = options or {}
+    if options.mode == Spread.MIRROR then return wanted end
+    local per_screen = options.pages_per_view or 1
+    return wanted - (slot or 0) * per_screen * (options.reverse and -1 or 1)
+end
+
+--[[--
 The furthest the leader may go and still have a spread that fits.
 
 The last device in the row is the one that runs out of book first, so the

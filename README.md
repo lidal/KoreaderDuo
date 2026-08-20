@@ -493,8 +493,15 @@ on either device afterwards moves the rest.
   only one of them is ever deciding.
 - **Page turns are intercepted, not simulated.** Every tap, swipe, gesture
   and button ends up in the reader's `onGotoViewRel`, so Duo wraps that one
-  method and multiplies the distance by the number of devices. Absolute
-  jumps are left alone; the spread follows from the resulting `PageUpdate`.
+  method and multiplies the distance by the number of devices.
+- **Jumps are noticed rather than intercepted.** A tapped link, the table of
+  contents, a bookmark and the slider all move a device without going near
+  `onGotoViewRel`, and there are far too many ways in to wrap them one by
+  one. A follower is only ever *sent* to a page, so any page it finds itself
+  on that it was not sent to is a jump its reader made: it says where it
+  wants to be, and the leader works out where it must sit for that to be
+  true and takes the whole row with it. On the leader a jump needs no
+  telling — the spread follows from the resulting `PageUpdate`.
 - **The connection outlives the plugin.** KOReader rebuilds a plugin
   instance every time you open a book, so the engine lives in a module
   singleton (`duo/core.lua`) and the instance only attaches a binding to the
