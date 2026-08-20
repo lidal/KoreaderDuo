@@ -101,6 +101,9 @@ local function browseTogether(options)
     callLeader("Core:broadcastBrowser()")
 end
 
+--- Whether the device was told the book it asked for was not being shared.
+local REFUSED = "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('not in the shared folder') then return true end end return false end)()"
+
 --- Whether the device has told its user the two halves will not line up.
 local WARNED = "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('not line up') then return true end end return false end)()"
 
@@ -273,6 +276,59 @@ T.describe("keeping the whole library in step", function()
             T.assertEquals(callFollower("tostring(Core.book_receiver)"), "nil",
                 "the leader offered " .. wanted)
             callFollower("Core.book_request = nil")
+        end
+    end)
+end)
+
+T.describe("asking for a book after the leader opened one", function()
+    --[[
+    The report: opening a book on the leader left the follower saying it was
+    fetching, and then that the book "is not in the shared folder". Opening
+    the same book from the follower worked every time.
+
+    The follower follows the leader into the book, finds it has only the
+    stand-in, and asks for the real one by name. That request arrives just
+    after the leader opened the book -- which is to say just after KOReader
+    tore its file browser down. The leader answered these out of the
+    browser's live listing, so by the time it was asked there was nothing
+    left to answer from, and it said the book was not in a folder it was
+    still perfectly well sharing.
+    ]]
+
+    T.it("still knows the folder it was sharing", function()
+        browseTogether()
+        callLeader("D:openDocument{ page_count = 300 }")
+        controller:assertEventually(leader, "tostring(Core.browser)", "nil",
+            "opening a book should take the file browser away")
+        T.assertEquals(callLeader("tostring(Core:resolveSharedFile('book03.epub'))"),
+            SHARED .. "/book03.epub",
+            "the leader forgot the folder it had been sharing the moment it read from it")
+    end)
+
+    T.it("hands the book over rather than refusing it", function()
+        -- Driven through the call the stand-in makes, so this is the path
+        -- the reader actually walks rather than a hand-built request.
+        controller:assertEventually(follower, "Core:isSyncingLibrary()", false, nil, 30)
+        callFollower("UIManager.shown_log = {}")
+        callFollower("Core.book_request = nil")
+        T.assertEquals(callFollower(("tostring(Core:fetchBookFor(%q))"):format(SHARED .. "/book03.epub")),
+            "true", "the follower would not even ask")
+        -- Waiting on the receiver would be a race: a small book over a local
+        -- socket can be asked for, sent and finished between two polls. What
+        -- matters is how it ended, so that is what is waited for.
+        controller:assertEventually(follower, "tostring(Core.book_request == nil)", "true",
+            "the fetch never finished either way", 20)
+        T.assertEquals(callFollower(REFUSED), "false",
+            "the leader called it missing from a folder it is sharing")
+        callFollower("if Core.book_receiver then Core.book_receiver:abort() end Core.book_receiver = nil")
+        callFollower("Core.book_request = nil")
+    end)
+
+    T.it("still refuses what was never in that folder", function()
+        -- The folder is remembered; that is not the same as trusting a name.
+        for _, wanted in ipairs({ "../../etc/passwd", "/etc/passwd", "nowhere.epub" }) do
+            T.assertEquals(callLeader(("tostring(Core:resolveSharedFile(%q))"):format(wanted)), "nil",
+                "the leader would have handed over " .. wanted)
         end
     end)
 end)

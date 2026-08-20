@@ -1203,11 +1203,32 @@ function Core:browsingTogether()
     return self:get("share_browser") and self.browser ~= nil and self:isConnected()
 end
 
+--[[--
+The file browser's state, and a note of the folder it was showing.
+
+`getState()` answers for the browser as it is this instant. The instant this
+device opens a book that is no longer the folder being shared -- the reader
+is on top and the browser may not answer at all. The other device is still
+looking at a listing of that folder, though, and a stand-in it opens turns
+into a request for one of those books that arrives just after this device
+left. Remembering the last folder actually on show is what keeps that
+request answerable.
+--]]--
+function Core:browserState()
+    if not self.browser then return nil end
+    local showing = self.browser.getState()
+    if not showing then return nil end
+    if showing.path and showing.path ~= "" then
+        self.shared_folder = showing.path
+    end
+    return showing
+end
+
 --- Sends one device the page of the listing it should be showing.
 function Core:sendBrowserTo(link)
     if not self:isLeader() or not self.browser then return end
     if not self:get("share_browser") then return end
-    local state = self.browser.getState()
+    local state = self:browserState()
     if not state then return end
     self.browser_state = state
 
@@ -1278,7 +1299,7 @@ end
 function Core:reconcileLibrary(msg)
     if not self:get("sync_library") or self:isLeader() then return end
     if self.library or not self.browser then return end
-    local state = self.browser.getState()
+    local state = self:browserState()
     if not state then return end
     local their_count = Protocol.num(msg, "count")
     local their_signature = msg.sig
@@ -1327,7 +1348,7 @@ finishes will either match or be worth complaining about.
 function Core:checkListing(msg)
     if self.warned_listing or not self.browser then return end
     if self:isSyncingLibrary() then return end
-    local state = self.browser.getState()
+    local state = self:browserState()
     if not state then return end
 
     local their_count = Protocol.num(msg, "count")
@@ -1415,7 +1436,7 @@ end
 
 function Core:applyBrowserTurn(diff)
     if not self.browser then return end
-    local state = self.browser.getState()
+    local state = self:browserState()
     if not state then return end
     local step = Spread.stepFor(self:get("mode"), self:followerCount())
     -- Clamped rather than wrapped: cycling round to the first page would
@@ -1430,7 +1451,7 @@ function Core:checkBrowser()
     if not self:isLeader() or not self.browser then return end
     if not self:get("share_browser") or not self:isConnected() then return end
     if self.applying_remote then return end
-    local state = self.browser.getState()
+    local state = self:browserState()
     if not state then return end
     local previous = self.browser_state
     if previous and previous.page == state.page and previous.path == state.path
@@ -1474,7 +1495,7 @@ function Core:handleLibraryRequest(link, msg)
         link:send(Protocol.LIB_END, { count = 0, reason = "not sharing the library" })
         return
     end
-    local state = self.browser.getState()
+    local state = self:browserState()
     -- Only the folder actually on show: a peer does not get to enumerate
     -- the filesystem.
     if not state or state.path ~= msg.path then
@@ -1768,8 +1789,25 @@ in that listing, gets nothing.
 
 @treturn string a readable path, or nil
 --]]--
+--- Whether a path names a file we can actually open and send.
+local function fileExists(path)
+    local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok and lfs then
+        return lfs.attributes(path, "mode") == "file"
+    end
+    local handle = io.open(path, "rb")
+    if not handle then return false end
+    handle:close()
+    return true
+end
+
 function Core:resolveSharedFile(requested)
-    if not self.browser or not self:get("sync_library") then return nil end
+    -- Deliberately not conditional on a file browser being attached. The
+    -- browser is torn down the moment this device opens a book, and that is
+    -- precisely when the other device asks for one: it followed this device
+    -- into a book it does not have. What is being shared is a folder, and
+    -- the folder is still there when the widget listing it is not.
+    if not self:get("sync_library") then return nil end
     local BookTransfer = require("duo/booktransfer")
     local name = BookTransfer.safeName(requested)
     if not name then return nil end
@@ -1778,14 +1816,21 @@ function Core:resolveSharedFile(requested)
     -- no matter how it came to be asked for.
     if not BookTransfer.isBookName(name) then return nil end
 
-    local state = self.browser.getState()
-    if not state or not state.path then return nil end
-    for _, entry in ipairs(self.browser.getFiles()) do
-        if entry.name == name then
-            return state.path .. "/" .. name
-        end
-    end
-    return nil
+    -- The folder on show if there is one, and otherwise the last one that
+    -- was. Opening a book does not withdraw the books that were listed a
+    -- moment earlier, and it is exactly then that the other device asks:
+    -- it followed this one into a book it does not have yet.
+    local state = self:browserState()
+    local folder = (state and state.path) or self.shared_folder
+    if not folder or folder == "" then return nil end
+
+    -- Judged against the folder itself rather than against the browser's
+    -- listing of it, which is a view that goes away when the reader covers
+    -- it. `safeName` has already refused anything carrying a directory, so
+    -- this can only name a file sitting directly in the shared folder.
+    local path = folder .. "/" .. name
+    if not fileExists(path) then return nil end
+    return path
 end
 
 --- The leader starts sending a book a follower asked for.

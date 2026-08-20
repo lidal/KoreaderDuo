@@ -64,7 +64,20 @@ end
 function Instance:openDocument(options)
     options = options or {}
     if self.plugin then
-        self.plugin:onCloseDocument()
+        --[[
+        The hook that matches what is actually on screen. KOReader takes a
+        reader down through onCloseDocument and the file manager down through
+        onCloseWidget, and it is the second that makes the plugin let go of
+        the file browser. Calling the reader's hook on the way out of the
+        file manager left the engine believing a browser was still attached
+        after the book had opened -- which is not a state a real device is
+        ever in, and it hid a bug that real devices hit.
+        ]]
+        if self.ui and self.ui.file_chooser then
+            self.plugin:onCloseWidget()
+        else
+            self.plugin:onCloseDocument()
+        end
     end
     -- DUO_BOOK points at a plain-text book to lay out and display, which is
     -- how the demo puts real prose on the two screens.
