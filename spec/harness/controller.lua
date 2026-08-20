@@ -65,8 +65,15 @@ function Controller:spawn(name, options)
         or (options.namespace and ("ip netns exec " .. options.namespace .. " "))
         or ""
     local book = options.book and ("DUO_BOOK=%q "):format(options.book) or ""
-    os.execute(("LUA_PATH=%q %s%s%s spec/harness/instance_main.lua %s %d %d %s >%s 2>&1 &"):format(
-        "./?.lua;./duo.koplugin/?.lua;;", book, prefix, self.interpreter,
+    -- Devices under test run with their throttles turned down. A throttle
+    -- governs how long the plugin idles between two checks, not what either
+    -- check does, so this buys back most of the suite's waiting without
+    -- weakening a single assertion. Left overridable so a real delay can be
+    -- put back when a test wants to watch one.
+    local timing = ("DUO_TYPOGRAPHY_POLL=%s "):format(
+        os.getenv("DUO_TYPOGRAPHY_POLL") or "0.1")
+    os.execute(("LUA_PATH=%q %s%s%s%s spec/harness/instance_main.lua %s %d %d %s >%s 2>&1 &"):format(
+        "./?.lua;./duo.koplugin/?.lua;;", timing, book, prefix, self.interpreter,
         name, self.port, options.pages or 300, self.reach_host, log))
 
     local deadline = socket.gettime() + 20

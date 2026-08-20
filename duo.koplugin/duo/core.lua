@@ -2148,8 +2148,11 @@ end
 -- Typography
 --------------------------------------------------------------------------
 
--- How often to look for a typography change the user made here.
-local TYPOGRAPHY_POLL = 1.5
+-- How often to look for a typography change the user made here. This is a
+-- throttle and nothing more -- it keeps the plugin off the CPU between
+-- checks -- so the test suite turns it down to keep its waits short. Nothing
+-- but the delay changes: the check itself is the same check.
+local TYPOGRAPHY_POLL = tonumber(os.getenv("DUO_TYPOGRAPHY_POLL") or "") or 1.5
 
 -- How long to let a relayout settle before believing a page count. Real
 -- rendering engines finish repaginating a little after the event returns.

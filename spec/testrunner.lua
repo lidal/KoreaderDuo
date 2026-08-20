@@ -14,6 +14,15 @@ local T = {}
 local groups = {}
 local current
 
+-- Set DUO_TEST_TIMING=1 to have each test print how long it took, which is
+-- how you find the suite's slow spots. Wall clock, not CPU time: most of what
+-- is slow here is spent waiting, and waiting costs no CPU at all.
+local TIMING = os.getenv("DUO_TEST_TIMING") == "1"
+local has_socket, socket = pcall(require, "socket")
+local function now()
+    return has_socket and socket.gettime() or os.time()
+end
+
 function T.describe(name, body)
     current = { name = name, tests = {} }
     groups[#groups+1] = current
@@ -87,15 +96,17 @@ function T.run()
     for _, group in ipairs(groups) do
         print("\n# " .. group.name)
         for _, test in ipairs(group.tests) do
+            local started = TIMING and now()
             local ok, err = xpcall(test.body, function(message)
                 return tostring(message) .. "\n" .. debug.traceback("", 2)
             end)
+            local took = TIMING and string.format(" (%.1fs)", now() - started) or ""
             if ok then
                 passed = passed + 1
-                print("  ok   - " .. test.name)
+                print("  ok   - " .. test.name .. took)
             else
                 failed[#failed+1] = { name = group.name .. " / " .. test.name, err = err }
-                print("  FAIL - " .. test.name)
+                print("  FAIL - " .. test.name .. took)
             end
         end
     end
