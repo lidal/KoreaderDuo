@@ -39,6 +39,7 @@ Protocol.GOTO      = "GOTO"      -- peer -> leader: user jumped to an absolute p
 Protocol.DOC       = "DOC"       -- leader -> peer: open this document
 Protocol.HOME      = "HOME"      -- leader -> peer: I closed the book; come back to the list
 Protocol.OPEN      = "OPEN"      -- peer -> leader: open this book for the pair
+Protocol.GOHOME    = "GOHOME"    -- peer -> leader: I left the book; take us both out
 Protocol.TYPO      = "TYPO"      -- either way: lay the book out like this
 Protocol.CONF      = "CONF"      -- either way: these are the shared settings
 Protocol.LIGHT     = "LIGHT"     -- either way: set the frontlight to this

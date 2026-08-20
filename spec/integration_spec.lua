@@ -298,6 +298,37 @@ T.describe("matching typography", function()
         T.assertEquals(fontSize(follower), 30, "the follower was changed with matching switched off")
     end)
 
+    T.it("does not let a follower overrule the leader when the link returns", function()
+        --[[
+        A follower remembers the layout it last saw so a change made on it
+        can be told from the state it has been sitting in. Kept across a
+        disconnection that memory lies: anything that drifted while the two
+        were apart reads as a change somebody just made, and goes to the
+        leader the instant the link is ready -- ahead of the leader's own
+        settings, whose whole job is to be the tiebreaker.
+
+        Which one won came down to which message arrived first, so this was
+        a coin toss rather than a rule.
+        ]]
+        callFollower("Core:stop('reset')")
+        callLeader("Core:stop('reset')")
+        callFollower("Core.settings.match_typography = true")
+        callLeader("Core.settings.match_typography = true")
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 22))")
+        callFollower("UI:handleEvent(D.Event:new('SetFontSize', 30))")
+        T.assertEquals(callFollower("tostring(Core.typography_snapshot)"), "nil",
+            "a stopped device should not still be holding last session's layout")
+
+        connectPair()
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 22,
+            "the follower kept the size it drifted to while disconnected")
+        -- The half that actually catches the race: the leader must not have
+        -- been talked into the follower's size on the way.
+        socket.sleep(2)
+        T.assertEquals(fontSize(leader), 22, "the follower overruled the leader")
+        T.assertEquals(fontSize(follower), 22)
+    end)
+
     T.it("can put the follower's own settings back", function()
         callFollower("Core:stop('reset')")
         callLeader("Core:stop('reset')")
@@ -1056,6 +1087,36 @@ T.describe("two devices, when things go wrong", function()
         controller:assertEventually(follower, "UI.went_home == true", true,
             "the follower stayed in the book after the leader closed its own")
         callLeader("D:openDocument{ page_count = 300 }")
+    end)
+
+    T.it("takes the pair out of the book when the follower reaches the shelf", function()
+        --[[
+        The report: opening the bookshelf on the follower did not open it on
+        the leader, and the follower was forced straight back into the book.
+
+        Coming out was only ever signalled one way. The follower asked the
+        leader to resend the current state -- which it needs, to know where
+        it belongs in the book list -- and the leader, still sitting in its
+        book, answered with the document. So the follower was pulled back
+        in by the very message it had asked for, and the shelf could not be
+        reached from that end at all.
+        ]]
+        connectPair()
+        callLeader("Core.settings.follow_document = true")
+        callFollower("Core.settings.follow_document = true")
+        callLeader("UI.went_home = false")
+
+        callFollower("D:openFileManager{ path = '/books' }")
+        controller:assertEventually(leader, "UI.went_home == true", true,
+            "the leader stayed in the book when the follower left it")
+        -- And it has to stay out: being dragged back is the other half of
+        -- the complaint, and the leader's state is still in flight.
+        socket.sleep(2)
+        T.assertEquals(callFollower("UI.document ~= nil"), "false",
+            "the follower was forced back into the book")
+
+        callLeader("D:openDocument{ page_count = 300 }")
+        callFollower("D:openDocument{ page_count = 300 }")
     end)
 
     T.it("opens a book for the pair when the tap lands on the follower", function()

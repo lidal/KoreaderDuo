@@ -722,6 +722,18 @@ function Core:stop(reason)
     -- Stopping is a decision, and it outranks a sleep this device has not
     -- finished waking from.
     self.paused_role = nil
+    --[[
+    And what the layout and the light looked like last time is forgotten.
+
+    Both are remembered so a change made here can be told apart from the
+    state this device has been sitting in. Kept across a disconnection, the
+    memory says the wrong thing: whatever drifted while the two were apart
+    reads as a change somebody just made, and gets pushed the moment the
+    link comes back -- from a device that is about to be told what the
+    settings are anyway.
+    ]]
+    self.typography_snapshot = nil
+    self.frontlight_snapshot = nil
     self:dropTransfers()
     self.peer_napping = false
     self:setAwake(false)
@@ -967,12 +979,29 @@ function Core:onLinkReady(link)
         self:sendFrontlightTo(link)
         self:sendStateTo(link)
         self:broadcastBrowser()
-    elseif self.browser and not self.reader then
-        -- A follower in the file manager. The leader pushes the listing
-        -- from its side too, but only when it has one to push: it may be
-        -- deep in a book, or between file managers, and asking costs a
-        -- line and settles it either way.
-        link:send(Protocol.SYNC, {})
+    else
+        --[[
+        A follower takes its bearings from what it is holding right now.
+
+        Not from what it was holding before the link went away: the leader
+        is about to say what the layout and the light should be, and a
+        difference against a stale memory is not a change anybody made. Left
+        in place it is pushed at the leader the instant the link is ready,
+        which is a follower overruling the device that is supposed to be
+        the tiebreaker -- and whether it won came down to which message
+        happened to arrive first.
+        ]]
+        if self.reader and self.reader.getTypography then
+            self.typography_snapshot = self.reader.getTypography()
+        end
+        self.frontlight_snapshot = self:frontlightSnapshot()
+        if self.browser and not self.reader then
+            -- A follower in the file manager. The leader pushes the listing
+            -- from its side too, but only when it has one to push: it may be
+            -- deep in a book, or between file managers, and asking costs a
+            -- line and settles it either way.
+            link:send(Protocol.SYNC, {})
+        end
     end
     self:changed()
 end
@@ -1174,6 +1203,16 @@ function Core:attachBrowser(binding)
         ]]
         local link = self:getReadyLinks()[1]
         if link then link:send(Protocol.SYNC, {}) end
+        --[[
+        And say that this device has come out of the book.
+
+        The file manager appearing here is the same event it is on the
+        leader, and it used to go nowhere. The leader stayed in its book,
+        answered the SYNC above with the document it was still reading, and
+        the follower was pulled straight back into it -- so the shelf could
+        not be reached from this end at all.
+        ]]
+        self:requestHome()
     end
     if self:isActive() and self:isLeader() then
         --[[
@@ -2505,6 +2544,9 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.OPEN then
         if not self:isLeader() then return end
         self:handleRemoteOpen(msg)
+    elseif msg.type == Protocol.GOHOME then
+        if not self:isLeader() then return end
+        self:handleRemoteHomeRequest()
     elseif msg.type == Protocol.SLEEP then
         self:handleRemoteSleep()
     elseif msg.type == Protocol.NOTE then
@@ -2513,10 +2555,18 @@ function Core:handleMessage(link, msg)
 end
 
 --- Opens the book the leader is reading, when we are not already in it.
+--- How long a follower's request to come out of a book is given to land.
+local HOME_REQUEST_GRACE = 10
+
 function Core:handleRemoteDocument(msg)
     if not self:get("follow_document") then return end
     local file = msg.file
     if not file or file == "" then return end
+    -- Asked to come out a moment ago, and this is the leader describing the
+    -- book it has not closed yet. Following it now would undo the request.
+    if self.asked_home_at and Util.now() - self.asked_home_at < HOME_REQUEST_GRACE then
+        return
+    end
     local document = self.reader and self.reader.getDocument() or nil
     if document then
         local same = (document.file == file)
@@ -2547,6 +2597,7 @@ and a follower still sitting in one is not a spread, it is two devices doing
 different things. Going in was already followed; this is coming back out.
 --]]--
 function Core:handleRemoteHome()
+    self.asked_home_at = nil
     if not self:get("follow_document") then return end
     if not self.reader then return end        -- already out of the book
     if not self.hooks or not self.hooks.closeDocument then return end
@@ -2565,8 +2616,43 @@ leave the two devices in different books. So the tap is forwarded, the
 leader opens it, and the leader's own DOC brings the follower along — the same
 path as if the leader had been tapped.
 --]]--
+--[[--
+Asks the leader to take the pair back to the book list.
+
+The counterpart of a follower opening a book. It cannot simply close its
+own: the leader owns what the pair is reading, and a follower that walked
+out on its own would be told to come back the moment the leader mentioned
+its document again. So it asks, the leader closes, and the leader's own
+HOME brings this device out -- the same path as if the leader had been the
+one to close the book.
+--]]--
+function Core:requestHome()
+    if not self:isActive() or self:isLeader() then return false end
+    if not self:get("follow_document") then return false end
+    local link = self:getReadyLinks()[1]
+    if not link then return false end
+    -- Remembered so the leader's answer to the SYNC sent a moment ago --
+    -- which still describes the book it has not closed yet -- cannot drag
+    -- this device back in before the leader has caught up.
+    self.asked_home_at = Util.now()
+    link:send(Protocol.GOHOME, {})
+    return true
+end
+
+--- Closes the leader's book because a follower left the list.
+function Core:handleRemoteHomeRequest()
+    if not self:isLeader() or not self:get("follow_document") then return end
+    if not self.reader then return end        -- already out of the book
+    if not self.hooks or not self.hooks.closeDocument then return end
+    self.opening_file = nil
+    self:notify("Duo: back to the book list")
+    self.hooks.closeDocument()
+end
+
 function Core:requestOpen(file, title)
     if not self:isActive() or self:isLeader() then return false end
+    -- Going back into a book is the opposite of asking to come out of one.
+    self.asked_home_at = nil
     if not self:get("follow_document") then return false end
     if not self:get("follower_can_turn") then return false end
     local link = self:getReadyLinks()[1]
