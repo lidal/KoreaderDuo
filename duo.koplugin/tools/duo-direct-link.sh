@@ -76,20 +76,32 @@ has() { command -v "$1" >/dev/null 2>&1; }
 # Probing
 #--------------------------------------------------------------------------
 
+# A direct link is a Wi-Fi arrangement, so only a wireless interface may be
+# handed to it. The name settles nothing — Kobo calls its Wi-Fi eth0 — so
+# the kernel is asked instead: a wireless interface carries one of these,
+# and a wired one carries neither.
+is_wireless() {
+    [ -d "/sys/class/net/$1/wireless" ] || [ -e "/sys/class/net/$1/phy80211" ]
+}
+
 detect_iface() {
     [ -n "$IFACE" ] && { echo "$IFACE"; return; }
     for candidate in wlan0 wlan1 mlan0 eth0; do
-        if [ -e "/sys/class/net/$candidate" ]; then
+        if [ -e "/sys/class/net/$candidate" ] && is_wireless "$candidate"; then
             echo "$candidate"
             return
         fi
     done
-    # Anything that is not loopback will do.
+    # Any other wireless interface will do. A wired one will not: setting up
+    # the cell flushes the address off whatever it is given, and on a
+    # machine whose only interface is wired that takes the network down.
     for path in /sys/class/net/*; do
         name=$(basename "$path")
         [ "$name" = "lo" ] && continue
-        echo "$name"
-        return
+        if is_wireless "$name"; then
+            echo "$name"
+            return
+        fi
     done
     echo ""
 }
@@ -138,7 +150,7 @@ wpa_can_do_ap() {
 
 probe() {
     iface=$(detect_iface)
-    [ -n "$iface" ] || die "no network interface found"
+    [ -n "$iface" ] || die "no wireless interface found (set DUO_IFACE to name one)"
     driver=$(detect_driver "$iface")
     modes=$(supported_modes)
 
@@ -467,7 +479,7 @@ verify_link() {
 establish() {
     role="$1"      # host | join
     iface=$(detect_iface)
-    [ -n "$iface" ] || die "no network interface found"
+    [ -n "$iface" ] || die "no wireless interface found (set DUO_IFACE to name one)"
     method=$(probe_value method)
     address="$HOST_IP"
     [ "$role" = "join" ] && address="$JOIN_IP"
@@ -620,6 +632,7 @@ kindle_wifi() {
 #]]
 restore() {
     iface=$(detect_iface)
+    [ -n "$iface" ] || die "no wireless interface found (set DUO_IFACE to name one)"
     run_sh "killall wpa_supplicant >/dev/null 2>&1 || true"
 
     # Leave the cell before touching the mode: an interface still in one

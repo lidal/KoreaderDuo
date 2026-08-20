@@ -409,7 +409,15 @@ T.describe("coming back after a sleep", function()
         Core.settings.direct_link = "join"
         Core.settings.peer_host = "169.254.13.1"
 
+        -- Handing Wi-Fi back reconfigures the machine's network for real,
+        -- and the suite is not entitled to do that to whoever is running
+        -- it. What is under test is what Duo forgets afterwards, so the
+        -- script is stood in for.
+        local DirectLink = require("duo/directlink")
+        local ran_script = DirectLink.run
+        DirectLink.run = function() return "" end
         device.plugin:restoreWifi()
+        DirectLink.run = ran_script
 
         T.assertEquals(Core:get("direct_link"), "off", "silence is not an answer")
         T.assertNil(device.plugin:directLinkRole(),
