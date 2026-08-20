@@ -47,6 +47,13 @@ JOIN_IP="${DUO_JOIN_IP:-169.254.13.2}"
 NETMASK_BITS=16
 NETMASK="255.255.0.0"
 RUN_DIR="${DUO_RUN_DIR:-/tmp/duo-direct}"
+# How long to let a driver settle after a command, and how many seconds to
+# wait for the interface to reach the mode asked of it. Both are overridable
+# for the same reason everything else here is: the test suite drives this
+# script against fake tools, where nothing has to settle and a link that is
+# never coming up should be given up on in seconds rather than in twelve.
+SETTLE="${DUO_SETTLE:-1}"
+LINK_WAIT="${DUO_LINK_WAIT:-12}"
 DRY_RUN=0
 
 log()  { echo "$*"; }
@@ -167,7 +174,10 @@ probe() {
     ap=no
     ibss=no
     p2p_go=no
+    # Folded, for the same reason the runtime check is: a driver that spells
+    # its own supported modes in lower case still supports them.
     for mode in $modes; do
+        mode=$(printf '%s' "$mode" | tr '[:lower:]' '[:upper:]')
         [ "$mode" = "AP" ] && ap=yes
         [ "$mode" = "IBSS" ] && ibss=yes
         [ "$mode" = "P2P-GO" ] && p2p_go=yes
@@ -276,7 +286,8 @@ stop_system_wifi() {
 
 sleep_a_moment() {
     [ "$DRY_RUN" = "1" ] && return 0
-    sleep 1
+    [ "$SETTLE" = "0" ] && return 0
+    sleep "$SETTLE"
 }
 
 # DUO_ADDR_TOOL forces ip or ifconfig. Worth having: some busybox builds
@@ -367,6 +378,10 @@ cell_joined() {
     if has iw; then
         iw dev "$iface" link 2>/dev/null | grep -qi "SSID: *$SSID" && return 0
         iw dev "$iface" info 2>/dev/null | grep -qi "ssid $SSID" && return 0
+        # Some `iw` builds name the cell by address rather than by name on
+        # the link line -- "Joined IBSS 02:44:...". A cell joined under the
+        # address we asked for is the cell we asked for.
+        iw dev "$iface" link 2>/dev/null | grep -qi "joined ibss" && return 0
     fi
     if has iwconfig; then
         iwconfig "$iface" 2>/dev/null | grep -q "ESSID:\"$SSID\"" && return 0
@@ -401,11 +416,27 @@ bring_up_ibss_iw() {
 # nothing at all. Two spellings, because old drivers have no `iw`.
 current_mode() {
     iface="$1"
-    if has iw; then
-        iw dev "$iface" info 2>/dev/null | sed -n 's/^[[:space:]]*type[[:space:]]*//p'
-    elif has iwconfig; then
-        iwconfig "$iface" 2>/dev/null | sed -n 's/.*Mode:\([A-Za-z-]*\).*/\1/p'
-    fi
+    #[[
+    # Trimmed to a single bare word. A driver that answers "IBSS " with a
+    # space on the end, or with a carriage return behind it, is reporting
+    # the mode we asked for; only the comparison thought otherwise, and it
+    # said so in a message -- "never came up as ibss (it says: IBSS)" --
+    # that gave the reader no way to see what the difference even was.
+    #]]
+    {
+        if has iw; then
+            iw dev "$iface" info 2>/dev/null | sed -n 's/^[[:space:]]*type[[:space:]]*//p'
+        elif has iwconfig; then
+            iwconfig "$iface" 2>/dev/null | sed -n 's/.*Mode:\([A-Za-z-]*\).*/\1/p'
+        fi
+    } | tr -d '\r' | sed -e 's/[[:space:]]*$//' -e '/^$/d' | head -n 1
+}
+
+# The mode folded to lower case, which is how it is compared. `iw` says
+# IBSS, `iwconfig` says Ad-Hoc, and a handful of vendor builds say ibss.
+# All three mean the same thing and none of them should be a failure.
+mode_key() {
+    current_mode "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 # True once the interface is doing what we asked. `iw` says AP/IBSS,
@@ -414,13 +445,13 @@ current_mode() {
 mode_reached() {
     iface="$1"
     want="$2"      # ap | ibss | client
-    mode=$(current_mode "$iface")
+    mode=$(mode_key "$iface")
     case "$want" in
-        ap)   case "$mode" in AP|Master) return 0 ;; esac ;;
+        ap)   case "$mode" in ap|master) return 0 ;; esac ;;
         ibss)
             # Both halves: the mode, and a cell actually joined in it.
             case "$mode" in
-                IBSS|Ad-Hoc) cell_joined "$iface" && return 0 ;;
+                ibss|ad-hoc) cell_joined "$iface" && return 0 ;;
             esac
             ;;
         client)
@@ -451,7 +482,7 @@ await_link() {
     [ "$DRY_RUN" = "1" ] && return 0
 
     waited=0
-    while [ "$waited" -lt 12 ]; do
+    while [ "$waited" -lt "$LINK_WAIT" ]; do
         if mode_reached "$iface" "$want"; then
             log "verified: $iface is $(current_mode "$iface")"
             return 0
@@ -556,8 +587,8 @@ establish() {
         log "This device is hosting the link at $HOST_IP."
         log "On the other device run: $0 join"
         log "Then start Duo as the leader here, and the follower there."
-        case "$settled" in
-            IBSS|Ad-Hoc)
+        case "$(printf '%s' "$settled" | tr '[:upper:]' '[:lower:]')" in
+            ibss|ad-hoc)
                 #[[
                 # Worth spelling out. An ad-hoc cell carries the spread
                 # perfectly well between two readers, but it is not an

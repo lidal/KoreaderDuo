@@ -28,8 +28,12 @@ local function fakeEnvironment(tools)
         file:close()
         os.execute("chmod +x " .. FAKE_BIN .. "/" .. name)
     end
-    -- coreutils the script itself needs, kept out of the way of the fakes.
-    return ("PATH=%s:/usr/bin:/bin DUO_IFACE=wlan0 DUO_RUN_DIR=%s/run "):format(
+    -- coreutils the script itself needs, kept out of the way of the fakes,
+    -- and the script's two waits turned right down: nothing here is a real
+    -- driver, so there is nothing to settle, and a mode that is never going
+    -- to be reached is reached no sooner for being waited on for twelve
+    -- seconds. The loops still run -- this is the budget, not the logic.
+    return ("PATH=%s:/usr/bin:/bin DUO_IFACE=wlan0 DUO_RUN_DIR=%s/run DUO_SETTLE=0 DUO_LINK_WAIT=2 "):format(
         FAKE_BIN, FAKE_BIN)
 end
 
@@ -416,6 +420,76 @@ if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
         T.assertTrue(not output:find("error:"), "a working link must not report an error")
         T.assertMatch(output, "verified: wlan0 is AP")
         T.assertMatch(output, "This device is hosting the link")
+    end)
+end)
+
+T.describe("reading the mode a driver reports back", function()
+    --[[
+    A link that was up and working, called a failure over the spelling of
+    the word for it. The report read "never came up as ibss (it says:
+    IBSS)", which tells the reader the mode is both wrong and right, and
+    happened on the reconnect after sleep -- the moment it is least welcome.
+
+    The mode is a word from a driver, not a promise about capitalisation or
+    trailing whitespace, so it is compared as a word.
+    ]]
+
+    T.it("takes IBSS and ibss to mean the same mode", function()
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("ibss"), ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertTrue(not output:find("\nerror:"),
+            "a joined cell was called a failure over its capitalisation")
+        T.assertMatch(output, "This device is hosting the link")
+        T.assertMatch(output, "not an access point",
+            "an ad-hoc cell still has to be called one, whatever its case")
+    end)
+
+    T.it("is not thrown by whitespace behind the mode", function()
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("IBSS "), ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertTrue(not output:find("\nerror:"),
+            "a trailing space made a working link unrecognisable")
+        T.assertMatch(output, "verified: wlan0 is IBSS")
+        T.assertTrue(not output:find("IBSS "),
+            "the mode should be reported trimmed, not as the driver padded it")
+    end)
+
+    T.it("counts a cell iw named by address rather than by name", function()
+        -- `iw dev X link` has two shapes for a joined cell. This is the one
+        -- that names the BSSID and never mentions the SSID at all.
+        local iw = [==[
+if [ "$1" = "dev" ] && [ "$3" = "info" ]; then printf '\ttype IBSS\n'; exit 0; fi
+if [ "$1" = "dev" ] && [ "$3" = "link" ]; then
+    echo "Joined IBSS 02:44:55:4f:00:01 (on wlan0)"; exit 0
+fi
+]==] .. IW_LIST_AP
+        local environment = fakeEnvironment{ iw = iw, ip = "exit 0" }
+        local output = runScript(environment, "host")
+        T.assertTrue(not output:find("\nerror:"),
+            "a cell named by address was not recognised as joined")
+        T.assertMatch(output, "This device is hosting the link")
+    end)
+
+    T.it("still refuses a mode that is genuinely the wrong one", function()
+        -- The tolerance is about spelling, not about believing anything.
+        local environment = fakeEnvironment{
+            iw = iwThatSettlesOn("managed"), wpa_supplicant = "exit 0", ip = "exit 0",
+        }
+        local output = runScript(environment, "host")
+        T.assertMatch(output, "error:", "managed mode is not a link")
+    end)
+
+    T.it("reads a driver that lists its modes in lower case", function()
+        local lower = IW_LIST_AP:gsub("%* IBSS", "* ibss"):gsub("%* AP\n", "* ap\n")
+        local environment = fakeEnvironment{ iw = lower, wpa_supplicant = "exit 0" }
+        local output = runScript(environment, "probe")
+        T.assertEquals(field(output, "mode_ibss"), "yes",
+            "a driver that can do ad-hoc was told it could not")
+        T.assertEquals(field(output, "mode_ap"), "yes")
     end)
 end)
 
