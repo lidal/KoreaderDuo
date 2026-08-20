@@ -1569,22 +1569,14 @@ On connecting, the leader's settings win. After that a change on either device m
             callback = function() Core:set("sync_library", not Core:get("sync_library")) end,
         },
         {
-            text_func = function()
-                local limit = Core:get("max_library_mb")
-                if limit == 0 then return _("Most to copy in one go: no limit") end
-                return T(_("Most to copy in one go: %1 MB"), limit)
-            end,
-            help_text = _("A guard against copying the wrong folder, since the shared one is simply whichever the leader is looking at. Only books are copied in any case, whatever else is in there."),
+            text = _("Stop copying now"),
+            help_text = _("Stops whatever is being copied, at both ends. A transfer over a link like this one can take a long time, and changing your mind halfway through is allowed."),
+            enabled_func = function() return Core:isTransferring() end,
             keep_menu_open = true,
-            callback = function()
-                local steps = { 128, 512, 2048, 0 }
-                local current = Core:get("max_library_mb")
-                local next_index = 1
-                for index, value in ipairs(steps) do
-                    if value == current then next_index = (index % #steps) + 1 end
-                end
-                Core:set("max_library_mb", steps[next_index])
-                Duo:refreshMenu()
+            callback = function(touchmenu_instance)
+                self.menu_container = touchmenu_instance
+                Core:cancelTransfer(_("transfer stopped"))
+                self:refreshMenu()
             end,
         },
         {
@@ -1597,7 +1589,7 @@ On connecting, the leader's settings win. After that a change on either device m
         },
         {
             text = _("Covers now, books when you open them"),
-            help_text = _("Fill the shelf with stand-ins carrying the cover and title, and fetch each book when you first open it. Far less to copy, and the list lines up at once. EPUB only; anything else is copied whole."),
+            help_text = _("Fill the shelf with stand-ins carrying the cover and title, and fetch each book when you first open it. Far less to copy, and the list lines up at once. EPUB only; anything else is copied whole.\n\nOff by default, and not settled: it puts a transfer between the tap and the page, which needs the link up and the other device still holding the file. It may be removed."),
             enabled_func = function() return Core:get("sync_library") end,
             checked_func = function() return Core:get("covers_first") end,
             callback = function() Core:set("covers_first", not Core:get("covers_first")) end,

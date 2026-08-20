@@ -240,15 +240,22 @@ T.describe("sending and receiving a file", function()
         receiver:abort()
     end)
 
-    T.it("refuses a book over the size limit", function()
+    T.it("takes a book of any size", function()
+        --[[
+        There was a ceiling here once. It refused after the reader had
+        already tapped the book and been told it was on its way, which is
+        the worst moment to be told no, and it refused on a number nobody
+        had chosen. A long transfer is a thing to warn about and to be able
+        to stop, and both of those live a layer up.
+        ]]
         local receiver, err = BookTransfer.newReceiver{
             directory = TMP .. "/incoming",
             name = "huge.epub",
-            size = 100 * 1024 * 1024,
-            max_bytes = 8 * 1024 * 1024,
+            size = 4 * 1024 * 1024 * 1024,
         }
-        T.assertNil(receiver)
-        T.assertMatch(err, "over the")
+        T.assertNil(err)
+        T.assertTrue(receiver ~= nil, "a big book is still a book")
+        receiver:abort()
     end)
 
     T.it("reports a file it cannot read", function()

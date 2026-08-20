@@ -240,8 +240,8 @@ is greyed out because this is the device the books come **from**.
 | **Share the book list too** | Spread the file browser across the devices as well. On by default. |
 | **Lock one, lock both** | Sleeping either device sleeps the other. On by default. |
 | **Keep the whole library in step** | Fetch whatever books the shared folder is missing here. On by default. |
-| **Most to copy in one go** | Ceiling on a single library sync: 512 MB by default. |
-| **Covers now, books when you open them** | Fill the shelf with covers and titles, fetch each book when first opened. On by default. EPUB only. |
+| **Stop copying now** | Stops whatever is being copied, at both ends. |
+| **Covers now, books when you open them** | Fill the shelf with covers and titles, fetch each book when first opened. **Off by default**, EPUB only, and may be removed. |
 | **Page turns from the other device** | Off makes the follower a display only. |
 | **Follow the leader's book** | When the leader opens a book, open it here too. |
 | **Send the book if the other device lacks it** | Hand the file over the same link. On by default. |
@@ -300,10 +300,18 @@ them from what it asks for, and the leader refuses one asked for by name.
 That last gate is the one that would otherwise put a file's bytes on the
 wire.
 
-**Most to copy in one go** is a ceiling on a single sync — 512 MB by
-default, or 128 MB, 2 GB, or none. Over it, Duo reports what it was about to
-pull and stops, rather than starting a multi-gigabyte transfer over a
-router-free link and hoping you notice.
+There is **no ceiling** on how much a sync may copy. There used to be one,
+and it was the wrong shape of help: a refusal, delivered with a number
+nobody had chosen, on a feature that then needed a setting raised before it
+would work at all. What Duo owes you instead is a warning and a way out, so
+a folder past about 100 MB says how long it is likely to take and suggests
+copying the books across yourself, and **Stop copying now** in the menu ends
+a transfer at both ends whenever you have had enough. The status line
+carries the percentage, and it is announced every tenth of the way.
+
+A book that will not come is remembered for the session, so a folder that
+cannot be made to match stops asking for the same file over and over, and
+says at the end how many did not arrive.
 
 ### Covers now, books when you open them
 
@@ -319,7 +327,12 @@ Ten Gutenberg books came to 2.2 MB as stand-ins against 6.2 MB whole, and
 the one opened took five seconds. The saving depends on the covers: these
 are big scans on small books, and a more usual library saves far more.
 
-Turn it off and the whole library is copied up front.
+It is **off by default**, and not settled. Fetching on first open puts a
+transfer between the tap and the page: the link has to be up, the other
+device has to still be holding the file, and the wait lands at the one
+moment a reader cannot do anything else. It reads well and behaves less
+well, and it may be removed rather than patched around further. On, the
+shelf fills at once; off, the whole library is copied up front.
 
 Two limits. It is **EPUB only** — a stand-in must carry the name of the book
 it replaces, so it must share the format, and there is no such thing as a
@@ -394,7 +407,8 @@ status line shows progress.
 - **Books land in a `Duo` folder** inside your library.
 - **Half a book is never left behind.** Written to a part-file, moved into
   place only once it has all arrived and the size matches.
-- **There is a size limit**, 64 MB by default.
+- **There is no size limit.** A book past about 100 MB says so before it
+  starts, and can be stopped from the menu at any point.
 - **A transfer that dies says so.** A failed chunk is reported rather than
   abandoned, and a book that goes thirty seconds without a byte is written
   off at the receiving end, so one bad transfer cannot wedge the rest.

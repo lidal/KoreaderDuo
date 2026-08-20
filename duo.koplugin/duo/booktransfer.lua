@@ -25,9 +25,6 @@ BookTransfer.CHUNK = 2880
 --- Stop pushing when this much is already queued on the transport.
 BookTransfer.HIGH_WATER = 48 * 1024
 
---- Refuse anything larger than this by default (bytes).
-BookTransfer.DEFAULT_MAX = 64 * 1024 * 1024
-
 --[[--
 What counts as a book, and so as something worth copying between devices.
 
@@ -141,19 +138,18 @@ Written to a part-file first and only moved into place once the whole thing
 has arrived, so an interrupted transfer never leaves something that looks
 like a readable book.
 
-@tparam table options directory, name, size, max_bytes
+@tparam table options directory, name, size
 --]]--
 function BookTransfer.newReceiver(options)
     local name = BookTransfer.safeName(options.name)
     if not name then
         return nil, "that is not a file name"
     end
+    -- No ceiling on the size. A big book is a long wait, which is worth
+    -- saying and worth being able to stop, and neither of those is a
+    -- refusal -- least of all one delivered after the reader has already
+    -- tapped the book and been told it is on its way.
     local size = tonumber(options.size) or 0
-    local limit = options.max_bytes or BookTransfer.DEFAULT_MAX
-    if size > limit then
-        return nil, ("the book is %.1f MB, over the %.0f MB limit"):format(
-            size / 1048576, limit / 1048576)
-    end
 
     local directory = options.directory or "."
     os.execute(("mkdir -p %q 2>/dev/null"):format(directory))

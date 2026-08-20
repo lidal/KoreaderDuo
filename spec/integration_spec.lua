@@ -365,17 +365,17 @@ T.describe("agreeing on the settings", function()
         -- test that simply set everything true could not pass.
         callFollower("Core.settings.share_browser = false")
         callFollower("Core.settings.covers_first = false")
-        callFollower("Core.settings.max_library_mb = 64")
+        callFollower("Core.settings.mode = 'solo'")
         callLeader("Core.settings.share_browser = true")
         callLeader("Core.settings.covers_first = true")
-        callLeader("Core.settings.max_library_mb = 512")
+        callLeader("Core.settings.mode = 'spread'")
 
         connectPair()
         controller:assertEventually(follower, "Core:get('share_browser')", true,
             "the follower kept its own setting")
         T.assertEquals(callFollower("Core:get('covers_first')"), "true")
-        T.assertEquals(callFollower("Core:get('max_library_mb')"), "512",
-            "a number has to survive the trip as a number")
+        T.assertEquals(callFollower("Core:get('mode')"), "spread",
+            "a setting that is a word has to survive the trip as one")
     end)
 
     T.it("follows a change made on either device afterwards", function()

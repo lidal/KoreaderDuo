@@ -66,6 +66,19 @@ local RECONNECT_MAX = 4
 local BOOK_SILENCE = 30
 
 --[[--
+A transfer past this is worth a word before it starts, in bytes.
+
+Not a limit. The link between two readers carries a few hundred kilobytes a
+second on a good day, so a hundred megabytes is somewhere around ten
+minutes of watching a progress figure -- which is fine if you were told, and
+maddening if you were not.
+--]]--
+local BIG_TRANSFER = 100 * 1024 * 1024
+
+--- How much of a book has to arrive between one word about it and the next.
+local PROGRESS_STEP = 0.1
+
+--[[--
 Coming back after a sleep, in seconds and attempts.
 
 Waking is gradual: the screen is back long before the radio is, and a
@@ -156,9 +169,18 @@ local DEFAULTS = {
     sync_frontlight = true,
     sync_books = true,
     sync_library = true,
-    covers_first = true,
-    max_book_mb = 64,
-    max_library_mb = 512,
+    --[[
+    Off by default, and on probation.
+
+    Filling the shelf with stand-ins and fetching each book on the first tap
+    puts a transfer in the way of opening a book, which is the moment a
+    reader can least afford one: the link has to be up, the leader has to
+    still be holding the file, and the wait lands between the tap and the
+    page. It reads well and behaves badly, and the honest fix may be to take
+    it out rather than to keep patching around it. Until that is decided it
+    stays, switched off, for whoever wants it.
+    ]]
+    covers_first = false,
     -- Empty means "wherever this device keeps its books", worked out at the
     -- time. Not shared: it describes this device's disk, and the two rarely
     -- have the same one.
@@ -275,8 +297,6 @@ local SHARED_SETTINGS = {
     "sync_library",
     "covers_first",
     "sync_frontlight",
-    "max_book_mb",
-    "max_library_mb",
 }
 
 local IS_SHARED = {}
@@ -734,6 +754,8 @@ function Core:stop(reason)
     ]]
     self.typography_snapshot = nil
     self.frontlight_snapshot = nil
+    -- A fresh start is a fair reason to try a book that would not come.
+    self.library_failed = nil
     self:dropTransfers()
     self.peer_napping = false
     self:setAwake(false)
@@ -889,6 +911,7 @@ function Core:poll()
     self:checkBrowser()
     self:pumpBookSender()
     self:checkBookRequest()
+    self:reportTransferProgress()
     -- Connections come and go and transfers start and finish in all of the
     -- above, and each changes whether this device can afford to doze.
     self:updateAwake()
@@ -922,6 +945,7 @@ function Core:checkBookRequest()
     self:changed()
     if was_library then
         -- One book going quiet is not a reason to abandon the rest.
+        self:noteLibraryFailure(request, "it stopped arriving")
         self:pumpLibrary()
         return
     end
@@ -1607,7 +1631,16 @@ function Core:handleLibraryEnd(msg)
         if not satisfied and mine ~= nil and self:wantsStubs() then
             satisfied = self:isStub(self.library.path .. "/" .. entry.name)
         end
-        if not satisfied then
+        --[[
+        And a book that already refused to come is not asked for again.
+
+        A failure leaves the folder still not matching, so the next look at
+        it wants the same book, asks for it, fails the same way and finishes
+        still not matching -- a device fetching nothing, over and over, for
+        as long as it is left alone. Remembered for this session only: a
+        reconnect, or Duo being restarted, is a fair reason to try again.
+        ]]
+        if not satisfied and not (self.library_failed or {})[entry.name] then
             wanted[#wanted+1] = entry
             bytes = bytes + (entry.size or 0)
         end
@@ -1620,20 +1653,18 @@ function Core:handleLibraryEnd(msg)
     end
 
     --[[
-    A ceiling on one sync, because the folder being copied is whichever one
-    the leader is looking at and a wrong turn is easy to make. Nothing here
-    is destructive, but a mistake would otherwise mean a device quietly
-    pulling gigabytes over a link that has no router on it, at a few hundred
-    kilobytes a second, with a battery to pay for it. Refusing and saying
-    the number is kinder than starting and hoping somebody notices.
+    Said out loud when it is a lot, rather than refused.
+
+    There used to be a ceiling here, and it was the wrong shape of help. A
+    device that has the books and a link to send them over should send them;
+    what it owes the reader is a warning that this will take a while and a
+    way to stop, not a refusal with a number in it. The number was also a
+    setting somebody had to find and raise before the feature would work at
+    all, which is a poor way to spend a person's evening.
     ]]
-    local ceiling = self:get("max_library_mb") * 1024 * 1024
-    if ceiling > 0 and bytes > ceiling then
-        self.library = nil
-        self:changed()
-        self:alert(("That folder holds %d book%s this device lacks — %.0f MB, over Duo's %d MB limit for one sync.\n\nRaise the limit if that really is the shelf you meant; otherwise open the folder you want copied."):format(
-            #wanted, #wanted == 1 and "" or "s", bytes / 1048576, self:get("max_library_mb")))
-        return
+    if bytes > BIG_TRANSFER then
+        self:alert(("That folder holds %d book%s this device lacks — %.0f MB.\n\nOver a link like this one that will take a long time. Copying them onto both devices yourself will be far quicker if you can; otherwise leave it running, and stop it whenever you like from the Duo menu."):format(
+            #wanted, #wanted == 1 and "" or "s", bytes / 1048576))
     end
 
     self.library.wanted = wanted
@@ -1643,6 +1674,17 @@ function Core:handleLibraryEnd(msg)
         #wanted, #wanted == 1 and "" or "s", bytes / 1048576))
     self:changed()
     self:pumpLibrary()
+end
+
+--- Remembers a book that would not come, so the folder stops asking for it.
+function Core:noteLibraryFailure(request, reason)
+    local name = request and request.title
+    if not name or name == "" then return end
+    self.library_failed = self.library_failed or {}
+    self.library_failed[name] = reason or "it would not come"
+    if self.library then
+        self.library.failed = (self.library.failed or 0) + 1
+    end
 end
 
 --- Asks for the next book on the list, one at a time.
@@ -1655,7 +1697,14 @@ function Core:pumpLibrary()
     if not next_entry then
         local total = library.total or 0
         self.library = nil
-        if total > 0 then
+        local failed = library.failed or 0
+        if total > 0 and failed > 0 then
+            -- Not left to be discovered by finding a gap on the shelf later.
+            self:alert(("Duo copied %d of %d book%s; %d would not come.\n\nThe rest are on the shelf. Copy the missing one%s across yourself, or reconnect to have another go."):format(
+                total - failed, total, total == 1 and "" or "s",
+                failed, failed == 1 and "" or "s"))
+            if self.browser then self.browser.refresh() end
+        elseif total > 0 then
             self:notify(("Duo: the library is in step (%d book%s)"):format(
                 total, total == 1 and "" or "s"))
             if self.browser then self.browser.refresh() end
@@ -1934,16 +1983,6 @@ function Core:handleBookRequest(link, msg)
         link:send(Protocol.BOOK_ERR, { reason = tostring(err) })
         return
     end
-    local limit = self:get("max_book_mb") * 1024 * 1024
-    if sender.size > limit then
-        sender:close()
-        link:send(Protocol.BOOK_ERR, {
-            reason = ("the book is %.1f MB, over this device's %d MB limit"):format(
-                sender.size / 1048576, self:get("max_book_mb")),
-        })
-        return
-    end
-
     self.book_sender = {
         sender = sender,
         link = link,
@@ -2081,7 +2120,6 @@ function Core:handleBookHead(msg)
         directory = directory,
         name = msg.name,
         size = Protocol.num(msg, "size", 0),
-        max_bytes = self:get("max_book_mb") * 1024 * 1024,
     }
     if not receiver then
         self.book_request = nil
@@ -2090,6 +2128,14 @@ function Core:handleBookHead(msg)
     end
     self.book_receiver = receiver
     self.book_title = msg.title ~= "" and msg.title or msg.name
+    self.progress_reported = nil
+    -- One book can be the long wait all by itself, and the reader who
+    -- tapped it is sitting there watching nothing happen.
+    local incoming = Protocol.num(msg, "size", 0)
+    if incoming > BIG_TRANSFER and not (self.book_request and self.book_request.library) then
+        self:alert(("%s is %.0f MB.\n\nOver a link like this one that will take a while. You can stop it from the Duo menu, and copying the file across yourself will be quicker if you can."):format(
+            self.book_title or "That book", incoming / 1048576))
+    end
     self.book_request.arriving_stub = Protocol.bool(msg, "stub")
     if self.book_request then self.book_request.progress_at = Util.now() end
     self:changed()
@@ -2164,12 +2210,103 @@ function Core:handleBookError(msg)
         return
     end
     if was_library then
-        -- One book failing is not a reason to abandon the rest.
+        -- One book failing is not a reason to abandon the rest, but it is a
+        -- reason not to ask for that one again, and to say so at the end
+        -- rather than leave a folder quietly short of a book.
         self:log("library book refused:", msg.reason)
+        self:noteLibraryFailure(request, msg.reason)
         self:pumpLibrary()
         return
     end
     self:alert(("Duo could not fetch the book: %s"):format(msg.reason or "the other device refused"))
+end
+
+--[[--
+Says how far along a transfer is, now and then.
+
+A big book over a link like this one takes minutes, and a device that says
+"fetching" once and then goes quiet for six of them is indistinguishable
+from a device that has died. The status line has carried the figure all
+along, but only for as long as somebody held the menu open to read it.
+
+Every tenth of the book rather than every chunk: this ends up on an e-ink
+screen, where each notice costs a flash.
+--]]--
+function Core:reportTransferProgress()
+    local direction, fraction = self:getTransferProgress()
+    if not direction then
+        self.progress_reported = nil
+        return
+    end
+    fraction = fraction or 0
+    local last = self.progress_reported
+    if last and fraction < last + PROGRESS_STEP then return end
+    -- Nothing said at the very start: the notice that the book is coming has
+    -- just been shown, and "0%" underneath it says nothing new.
+    if not last and fraction < PROGRESS_STEP then
+        self.progress_reported = 0
+        return
+    end
+    self.progress_reported = fraction
+    self:notify(("Duo: %s %s · %d%%"):format(
+        direction == "sending" and "sending" or "fetching",
+        self.book_title or "the book", math.floor(fraction * 100)))
+end
+
+--[[--
+Stops whatever is being copied, at either end.
+
+The reader's way out. A transfer that turns out to be a bad idea -- the
+wrong folder, a book far bigger than it looked, a link too slow to be worth
+it -- was previously something to sit through or to disconnect over, and
+the whole-library sync had a stop button while a single book had none.
+
+Tells the other device, so the half-written file at its end goes away
+rather than waiting out the silence.
+--]]--
+function Core:cancelTransfer(reason)
+    local stopped = false
+    if self.library then
+        self:stopLibrarySync(reason or "stopped by hand")
+        stopped = true
+    end
+    if self.book_sender then
+        local transfer = self.book_sender
+        pcall(function()
+            transfer.link:send(Protocol.BOOK_ERR, { reason = reason or "stopped on the other device" })
+        end)
+        transfer.sender:close()
+        self:clearTemporary(transfer)
+        self.book_sender = nil
+        stopped = true
+    end
+    if self.book_receiver then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+        stopped = true
+    end
+    if self.book_request then
+        local link = self:getReadyLinks()[1]
+        if link then
+            pcall(function()
+                link:send(Protocol.BOOK_ERR, { reason = reason or "stopped on the other device" })
+            end)
+        end
+        self.book_request = nil
+        stopped = true
+    end
+    if stopped then
+        self.progress_reported = nil
+        self:notify(("Duo: %s"):format(reason or "transfer stopped"))
+        self:changed()
+    end
+    return stopped
+end
+
+--- Whether there is a transfer to stop.
+function Core:isTransferring()
+    return self.book_sender ~= nil or self.book_receiver ~= nil
+        or self.book_request ~= nil or self.library ~= nil
 end
 
 --- "sending 42%" / "receiving 42%", for the status line.

@@ -178,6 +178,100 @@ T.describe("leader page stepping", function()
     end)
 end)
 
+T.describe("saying how a transfer is going, and stopping it", function()
+    --[[
+    A big book over a link between two readers takes minutes. A device that
+    says "fetching" once and then goes quiet for six of them is
+    indistinguishable from one that has died, and the only way out used to
+    be to disconnect: the whole-library sync had a stop button and a single
+    book had none.
+    ]]
+
+    local real_getReadyLinks = Core.getReadyLinks
+
+    --- A receiver that is `fraction` of the way through and notices an abort.
+    local function pretendReceiving(fraction)
+        reset()
+        local receiver = {
+            aborted = false,
+            progress = function() return fraction end,
+            abort = function(self_) self_.aborted = true end,
+        }
+        Core.book_receiver = receiver
+        Core.book_title = "Middlemarch"
+        Core.progress_reported = nil
+        device:drainMessages()
+        return receiver
+    end
+
+    T.it("says how far along a book is", function()
+        local receiver = pretendReceiving(0.4)
+        Core:reportTransferProgress()
+        local said = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(said, "Middlemarch")
+        T.assertMatch(said, "40%%")
+        Core.book_receiver = nil
+        receiver.progress = nil
+    end)
+
+    T.it("keeps quiet between one tenth and the next", function()
+        -- This runs on every pass of the UI loop, twenty times a second,
+        -- and every notice costs an e-ink flash.
+        pretendReceiving(0.4)
+        Core:reportTransferProgress()
+        device:drainMessages()
+        Core.book_receiver.progress = function() return 0.44 end
+        Core:reportTransferProgress()
+        T.assertEquals(#device:drainMessages(), 0, "it spoke up again too soon")
+
+        Core.book_receiver.progress = function() return 0.55 end
+        Core:reportTransferProgress()
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "55%%")
+        Core.book_receiver = nil
+    end)
+
+    T.it("says nothing at all at the very start", function()
+        -- The notice that the book is coming has just been shown; "0%"
+        -- underneath it says nothing new.
+        pretendReceiving(0)
+        Core:reportTransferProgress()
+        T.assertEquals(#device:drainMessages(), 0)
+        Core.book_receiver = nil
+    end)
+
+    T.it("stops a book being fetched, and tells the other device", function()
+        local receiver = pretendReceiving(0.4)
+        local sent = {}
+        Core.getReadyLinks = function()
+            return { { send = function(_, kind) sent[#sent+1] = kind end,
+                       isReady = function() return true end } }
+        end
+        Core.book_request = { title = "Middlemarch", started = 0 }
+
+        T.assertTrue(Core:cancelTransfer("stopped by hand"), "nothing was stopped")
+        T.assertTrue(receiver.aborted, "the part-file was left behind")
+        T.assertNil(Core.book_receiver)
+        T.assertNil(Core.book_request)
+        T.assertTrue(sent[1] ~= nil, "the other device was never told")
+        T.assertTrue(not Core:isTransferring(), "it still thinks something is going on")
+        Core.getReadyLinks = real_getReadyLinks
+    end)
+
+    T.it("stops a whole library sync too", function()
+        reset()
+        Core.library = { wanted = {}, total = 3, done = 1, path = "/books" }
+        T.assertTrue(Core:isTransferring())
+        T.assertTrue(Core:cancelTransfer("stopped by hand"))
+        T.assertNil(Core.library)
+    end)
+
+    T.it("has nothing to stop when nothing is moving", function()
+        reset()
+        T.assertTrue(not Core:isTransferring())
+        T.assertTrue(not Core:cancelTransfer("stopped by hand"))
+    end)
+end)
+
 T.describe("what a library sync will and will not copy", function()
     local function pretendBrowsing(path)
         reset()
@@ -190,36 +284,73 @@ T.describe("what a library sync will and will not copy", function()
         device:drainMessages()
     end
 
-    T.it("stops before copying a folder far too big to be a shelf", function()
+    T.it("warns about a folder far too big to be a shelf, and copies it anyway", function()
         --[[
-        The shared folder is whichever one the leader is looking at, so a
-        wrong turn is easy. Refusing and naming the number beats starting a
-        multi-gigabyte pull over a link with no router on it and hoping
-        somebody notices.
+        There was a ceiling here, and it was the wrong shape of help: a
+        refusal, with a number in it, and a setting to go and raise before
+        the feature would work. A device that has the books and a link to
+        send them over should send them. What it owes the reader is the
+        warning and a way to stop.
         ]]
         pretendBrowsing("/downloads")
-        Core.settings.max_library_mb = 1
-        Core:handleLibraryItem{ name = "enormous.epub", size = 40 * 1024 * 1024 }
+        Core:handleLibraryItem{ name = "enormous.epub", size = 400 * 1024 * 1024 }
         Core:handleLibraryEnd{}
 
-        T.assertMatch(table.concat(device:drainMessages(), "\n"), "over Duo's 1 MB limit")
-        T.assertNil(Core.library, "it should not have started fetching")
-        Core.settings.max_library_mb = 512
+        local said = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(said, "take a long time")
+        T.assertMatch(said, "yourself", "it should suggest copying them across by hand")
+        T.assertTrue(not said:find("limit"), "there is no limit to talk about any more")
+        -- And it went ahead: with nothing connected it gets as far as
+        -- announcing the fetch, which is one step past where a ceiling
+        -- would have stopped it.
+        T.assertMatch(said, "fetching 1 book")
+        Core.library = nil
         Core.browser = nil
     end)
 
-    T.it("leaves the ceiling off when it is set to no limit", function()
+    T.it("says nothing about the size when there is little to copy", function()
         pretendBrowsing("/books")
-        Core.settings.max_library_mb = 0
-        Core:handleLibraryItem{ name = "enormous.epub", size = 40 * 1024 * 1024 }
+        Core:handleLibraryItem{ name = "small.epub", size = 200 * 1024 }
         Core:handleLibraryEnd{}
-        -- It gets as far as asking for the book, which with nothing
-        -- connected is where it stops; what matters is that the ceiling
-        -- never spoke up.
-        T.assertTrue(not table.concat(device:drainMessages(), "\n"):find("MB limit"),
-            "no limit should mean no limit")
+        T.assertTrue(not table.concat(device:drainMessages(), "\n"):find("take a long time"),
+            "a small shelf should not come with a warning about a long wait")
         Core.library = nil
-        Core.settings.max_library_mb = 512
+        Core.browser = nil
+    end)
+
+    T.it("stops asking for a book that would not come", function()
+        --[[
+        A failure leaves the folder still not matching, so the next look
+        wants the same book, asks for it, fails the same way and finishes
+        still not matching -- a device fetching nothing, over and over.
+        ]]
+        pretendBrowsing("/books")
+        Core:handleLibraryItem{ name = "broken.epub", size = 1024 }
+        Core:handleLibraryEnd{}
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "fetching 1 book")
+
+        -- The book is asked for and refused, which is where the loop used
+        -- to start: the folder still does not match, so the next look wants
+        -- the same book again.
+        Core.book_request = { title = "broken.epub", library = true, started = 0 }
+        Core:handleBookError{ reason = "no" }
+        T.assertTrue(Core.library_failed ~= nil and Core.library_failed["broken.epub"] ~= nil,
+            "the failure should be remembered")
+
+        -- The same folder looked at again, without a restart in between:
+        -- this is the loop, and it is where it used to go round.
+        Core.library = { collecting = true, index = {}, path = "/books" }
+        Core:handleLibraryItem{ name = "broken.epub", size = 1024 }
+        Core:handleLibraryEnd{}
+        T.assertTrue(not table.concat(device:drainMessages(), "\n"):find("fetching 1 book"),
+            "it asked for the same book all over again")
+
+        -- Stopping is a fair reason to try again, though: this is a note
+        -- about one session, not a verdict on the book.
+        Core:stop("test")
+        T.assertNil(Core.library_failed, "a fresh start should forget it")
+
+        Core.library = nil
         Core.browser = nil
     end)
 
