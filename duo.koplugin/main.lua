@@ -70,7 +70,7 @@ function Duo:init()
             -- page turn, and by then the touch menu that handed us its
             -- instance is usually long gone. Menu callbacks refresh
             -- themselves, and text_func picks up the new state on reopening.
-            onChanged = function() end,
+            onChanged = function() Duo:onCoreChanged() end,
             openDocument = function(file, msg) self:openRemoteDocument(file, msg) end,
             -- `self`, not `Duo`: this one needs the live instance's `ui`,
             -- and the module table has none.
@@ -1340,6 +1340,29 @@ end
 --------------------------------------------------------------------------
 -- Menu
 --------------------------------------------------------------------------
+
+--[[--
+Redraws the menu when the engine's idea of things has moved.
+
+This is how a setting adopted from the other device reaches the screen. The
+hook did nothing at all before, so the value crossed the link, was stored,
+was used -- and the menu went on showing what it had been showing when it
+was opened, which reads exactly like a setting that did not sync.
+
+Throttled, because this also fires for every chunk of a book being copied
+and the menu is on an e-ink screen.
+--]]--
+local MENU_REFRESH_INTERVAL = 1
+
+function Duo:onCoreChanged()
+    if not self.menu_container then return end
+    local now = require("duo/util").now()
+    if self.menu_refreshed_at and now - self.menu_refreshed_at < MENU_REFRESH_INTERVAL then
+        return
+    end
+    self.menu_refreshed_at = now
+    self:refreshMenu()
+end
 
 function Duo:refreshMenu()
     if self.menu_container and self.menu_container.updateItems then
