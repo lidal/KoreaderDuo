@@ -72,11 +72,27 @@ function Frontlight.snapshot(powerd, device)
     local snapshot = {}
     snapshot.intensity = Frontlight.toPercent(
         powerd.fl_intensity, powerd.fl_min, powerd.fl_max)
+    --[[
+    Whether the light is on at all, which is a different question from how
+    bright it is. KOReader remembers the brightness across a switch-off, so
+    a reader with its light off still reports the level it will go back to
+    -- which is why turning the light off used to cross the link as no
+    change whatsoever while every nudge of the slider crossed it fine.
+    ]]
+    if powerd.isFrontlightOn then
+        local ok, on = pcall(powerd.isFrontlightOn, powerd)
+        if ok and on ~= nil then snapshot.on = on and true or false end
+    elseif powerd.is_fl_on ~= nil then
+        snapshot.on = powerd.is_fl_on and true or false
+    end
     if device.hasNaturalLight and device:hasNaturalLight() then
         snapshot.warmth = Frontlight.toPercent(
             powerd.fl_warmth, powerd.fl_warmth_min, powerd.fl_warmth_max)
     end
-    if snapshot.intensity == nil and snapshot.warmth == nil then return nil end
+    if snapshot.intensity == nil and snapshot.warmth == nil
+            and snapshot.on == nil then
+        return nil
+    end
     return snapshot
 end
 
@@ -108,6 +124,12 @@ function Frontlight.differences(wanted, powerd, device)
         end
         if level then changes = { intensity = level } end
     end
+    -- The switch before the levels. A reader told to go dark does not need
+    -- to be walked down to its lowest step on the way.
+    if wanted.on ~= nil and current.on ~= nil and wanted.on ~= current.on then
+        changes = changes or {}
+        changes.on = wanted.on
+    end
     if wanted.warmth ~= nil and current.warmth ~= nil
             and not Frontlight.same(wanted.warmth, current.warmth) then
         local level = Frontlight.fromPercent(
@@ -123,6 +145,9 @@ end
 --- A short line for the notification, in the units people actually see.
 function Frontlight.describe(changes)
     local parts = {}
+    if changes.on ~= nil then
+        parts[#parts+1] = changes.on and "the light on" or "the light off"
+    end
     if changes.intensity then
         parts[#parts+1] = ("brightness %d"):format(changes.intensity)
     end

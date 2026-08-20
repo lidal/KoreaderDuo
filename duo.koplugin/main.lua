@@ -744,6 +744,26 @@ function Duo:applyFrontlight(wanted)
     end
     if changes.intensity then fire("SetFlIntensity", changes.intensity) end
     if changes.warmth then fire("SetFlWarmth", changes.warmth) end
+    --[[
+    The switch last, and only if it is still wrong.
+
+    Setting a brightness on a reader whose light is off turns it on by
+    itself on some devices, so the state has to be read back rather than
+    assumed. There is no event for "be on": KOReader has a toggle, which is
+    the right thing to send precisely because the two are known to differ.
+    ]]
+    if changes.on ~= nil then
+        local still_wrong = true
+        if powerd.isFrontlightOn then
+            local ok, on = pcall(powerd.isFrontlightOn, powerd)
+            if ok and on ~= nil then still_wrong = (on and true or false) ~= changes.on end
+        end
+        if still_wrong then
+            fire("ToggleFrontlight")
+        else
+            changes.on = nil
+        end
+    end
     return changes
 end
 

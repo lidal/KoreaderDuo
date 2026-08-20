@@ -89,6 +89,66 @@ T.describe("reading the light off a device", function()
     end)
 end)
 
+T.describe("the switch, which is not the brightness", function()
+    --[[
+    The report: moving the brightness synced, turning the light off did not.
+
+    KOReader keeps the level a light will come back to while it is off, so
+    a reader with the light switched off still reports the same brightness
+    it had a moment earlier. Nothing in a snapshot of levels changed, so
+    nothing crossed the link.
+    ]]
+
+    T.it("reads whether the light is on at all", function()
+        local device, powerd = reader(KINDLE)
+        powerd.fl_intensity = 12
+        powerd.is_fl_on = false
+        local snapshot = Frontlight.snapshot(powerd, device)
+        T.assertEquals(snapshot.on, false)
+        T.assertEquals(snapshot.intensity, 50,
+            "the brightness is remembered across a switch-off, and still reported")
+    end)
+
+    T.it("prefers the reader's own answer to the raw field", function()
+        local device, powerd = reader(KINDLE)
+        powerd.fl_intensity = 12
+        powerd.is_fl_on = true
+        powerd.isFrontlightOn = function() return false end
+        local snapshot = Frontlight.snapshot(powerd, device)
+        T.assertEquals(snapshot.on, false)
+        powerd.isFrontlightOn = nil
+    end)
+
+    T.it("says nothing about a switch it cannot read", function()
+        local device, powerd = reader(KOBO)
+        powerd.fl_intensity = 50
+        powerd.is_fl_on = nil
+        T.assertNil(Frontlight.snapshot(powerd, device).on,
+            "a device that cannot say must not tell the other one to go dark")
+    end)
+
+    T.it("asks for the switch when the two disagree", function()
+        local device, powerd = reader(KINDLE)
+        powerd.fl_intensity = 12
+        powerd.is_fl_on = true
+        local changes = Frontlight.differences({ intensity = 50, on = false }, powerd, device)
+        T.assertEquals(changes.on, false)
+        T.assertNil(changes.intensity, "the brightness already matched")
+    end)
+
+    T.it("leaves the switch alone when they agree", function()
+        local device, powerd = reader(KINDLE)
+        powerd.fl_intensity = 12
+        powerd.is_fl_on = true
+        T.assertNil(Frontlight.differences({ intensity = 50, on = true }, powerd, device))
+    end)
+
+    T.it("says which way it went", function()
+        T.assertMatch(Frontlight.describe({ on = false }), "the light off")
+        T.assertMatch(Frontlight.describe({ on = true }), "the light on")
+    end)
+end)
+
 T.describe("deciding what to change", function()
     T.it("converts the other device's share to a level here", function()
         local device, powerd = reader(KINDLE)

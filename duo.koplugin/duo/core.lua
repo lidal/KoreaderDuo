@@ -2313,6 +2313,9 @@ function Core:sendFrontlightTo(link)
     link:send(Protocol.LIGHT, {
         intensity = snapshot.intensity,
         warmth = snapshot.warmth,
+        -- Sent only when this device knows the answer, so a reader whose
+        -- driver cannot say does not tell the other one to go dark.
+        on = snapshot.on ~= nil and (snapshot.on and 1 or 0) or nil,
     })
 end
 
@@ -2343,6 +2346,11 @@ function Core:applyFrontlight(msg, from_link)
         intensity = Protocol.num(msg, "intensity"),
         warmth = Protocol.num(msg, "warmth"),
     }
+    -- Spelt out rather than folded into the table: `a and false or nil` is
+    -- nil, so the one value that matters here would go missing.
+    if msg.on ~= nil then
+        wanted.on = Protocol.bool(msg, "on")
+    end
     self.applying_frontlight = true
     local ok, applied = pcall(self.hooks.applyFrontlight, wanted)
     self.applying_frontlight = false
@@ -2386,7 +2394,8 @@ function Core:checkFrontlight()
     end
 
     local Frontlight = require("duo/frontlight")
-    if Frontlight.same(previous.intensity, current.intensity)
+    if previous.on == current.on
+            and Frontlight.same(previous.intensity, current.intensity)
             and Frontlight.same(previous.warmth, current.warmth) then
         return
     end

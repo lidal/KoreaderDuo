@@ -331,7 +331,12 @@ function Env.install(options)
             local powerd = {
                 fl_min = 0, fl_max = 24, fl_intensity = 12,
                 fl_warmth_min = 0, fl_warmth_max = 24, fl_warmth = 0,
+                -- Modelled because KOReader models it: the switch is not
+                -- the level, and a light switched off still remembers what
+                -- it was set to.
+                is_fl_on = true,
             }
+            powerd.isFrontlightOn = function(self_) return self_.is_fl_on end
             return {
                 model = options.device_name or "TestReader",
                 isKindle = function() return false end,

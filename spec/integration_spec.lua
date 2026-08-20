@@ -406,6 +406,38 @@ T.describe("matching the frontlight", function()
             "a change on the follower never reached the leader", 15)
     end)
 
+    T.it("follows the light being switched off, not only dimmed", function()
+        --[[
+        The report: brightness adjustments synced and the on/off toggle did
+        not. KOReader remembers the level a light will come back to while it
+        is off, so switching off changes no number a snapshot of levels
+        would notice -- and Duo was only sending numbers.
+        ]]
+        connectPair()
+        controller:assertEventually(follower, "Device.getPowerDevice().is_fl_on", true,
+            "the fixture should start with both lights on")
+
+        callLeader("Device.getPowerDevice().is_fl_on = false")
+        controller:assertEventually(follower, "Device.getPowerDevice().is_fl_on", false,
+            "the follower's light stayed on", 15)
+        -- The brightness it will come back to must survive being switched off.
+        T.assertEquals(light(follower), light(leader),
+            "switching off should not have moved the level either")
+
+        callLeader("Device.getPowerDevice().is_fl_on = true")
+        controller:assertEventually(follower, "Device.getPowerDevice().is_fl_on", true,
+            "the follower did not come back on", 15)
+    end)
+
+    T.it("follows the switch from the follower too", function()
+        connectPair()
+        callFollower("Device.getPowerDevice().is_fl_on = false")
+        controller:assertEventually(leader, "Device.getPowerDevice().is_fl_on", false,
+            "the switch never reached the leader", 15)
+        callFollower("Device.getPowerDevice().is_fl_on = true")
+        controller:assertEventually(leader, "Device.getPowerDevice().is_fl_on", true, nil, 15)
+    end)
+
     T.it("settles rather than correcting each other for ever", function()
         -- Both devices watch their own light and share what they find, so a
         -- value that rounds a step either way could have them chasing it up
