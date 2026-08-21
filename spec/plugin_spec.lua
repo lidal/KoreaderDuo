@@ -828,6 +828,82 @@ T.describe("pairing dialogs", function()
     end)
 end)
 
+T.describe("finding a book this device already has", function()
+    --[[
+    The report: a big book copied onto both Kindles by hand was not
+    recognised, so opening it on the follower set off a transfer of a file
+    that was already sitting on the disk.
+
+    Only the read history was searched, and a book copied across by hand has
+    never been opened, so it is in no history. The shelf itself is searched
+    now.
+    ]]
+    local SHELF = "/tmp/duo-shelf-spec"
+
+    local function put(path, contents)
+        os.execute(("mkdir -p %q"):format(path:gsub("/[^/]*$", "")))
+        local handle = assert(io.open(path, "w"))
+        handle:write(contents or "a book")
+        handle:close()
+        return path
+    end
+
+    local function shelf()
+        reset()
+        os.execute(("rm -rf %q"):format(SHELF))
+        os.execute(("mkdir -p %q"):format(SHELF))
+        Core.settings.book_dir = SHELF
+    end
+
+    T.it("finds a book sitting on the shelf under another name for the folder", function()
+        shelf()
+        local here = put(SHELF .. "/Fiction/big.epub")
+        T.assertEquals(device.plugin:findLocalCopy("/mnt/us/documents/big.epub"), here,
+            "a book already on the shelf was going to be sent across again")
+    end)
+
+    T.it("says so when the book really is not here", function()
+        shelf()
+        put(SHELF .. "/Fiction/something-else.epub")
+        T.assertNil(device.plugin:findLocalCopy("/mnt/us/documents/big.epub"))
+    end)
+
+    T.it("does not offer a stand-in as the book", function()
+        shelf()
+        local stub = put(SHELF .. "/big.epub")
+        Core:rememberStub(stub, true)
+        T.assertNil(device.plugin:findLocalCopy("/mnt/us/documents/big.epub"),
+            "a stand-in was offered as the book it stands in for")
+        Core:rememberStub(stub, false)
+    end)
+
+    T.it("picks the copy the other device meant when there are several", function()
+        shelf()
+        put(SHELF .. "/Fiction/big.epub", "one edition")
+        local wanted = put(SHELF .. "/Reference/big.epub", "quite another")
+        local digest = device.plugin:partialDigest(wanted)
+        T.assertEquals(device.plugin:findLocalCopy("/mnt/us/documents/big.epub",
+            { digest = digest }), wanted)
+    end)
+
+    T.it("still answers when the digest matches nothing here", function()
+        -- A name is the answer that avoids sending a whole book across, and
+        -- that is what this is for. The digest breaks ties; it is not a bar.
+        shelf()
+        local here = put(SHELF .. "/big.epub")
+        T.assertEquals(device.plugin:findLocalCopy("/mnt/us/documents/big.epub",
+            { digest = "not a digest of anything here" }), here)
+    end)
+
+    T.it("does not walk the whole card looking", function()
+        -- Deep enough for a shelf, bounded enough that a tap never stalls.
+        shelf()
+        local deep = SHELF .. "/a/b/c/d/e/f/g"
+        put(deep .. "/big.epub")
+        T.assertNil(device.plugin:findLocalCopy("/mnt/us/documents/big.epub"))
+    end)
+end)
+
 T.describe("a page number and the layout that counted it", function()
     --[[
     The report: changing the font size threw the reader a long way into the

@@ -282,9 +282,39 @@ function Env.install(options)
         end
         local handle = io.open(path, "r")
         if not handle then return nil end
+        --[[
+        A real folder opens perfectly well and only refuses to be read, so
+        opening is not the question -- reading is. Worth telling apart: a
+        device looking for a book it may already have walks the shelf, and a
+        stub that called every folder a file would have it find nothing and
+        send for a book that was sitting right there.
+        ]]
+        local byte, reason = handle:read(1)
         handle:close()
-        if what == "mode" then return "file" end
-        return { mode = "file" }
+        local mode = "file"
+        if byte == nil and reason and tostring(reason):find("directory") then
+            mode = "directory"
+        end
+        if what == "mode" then return mode end
+        return { mode = mode }
+    end
+
+    --- Real folder listings, in the shape luafilesystem hands them back.
+    function lfs_stub.dir(path)
+        if lfs_stub.attributes(path, "mode") ~= "directory" then
+            error(("cannot open %s"):format(tostring(path)))
+        end
+        local names = { ".", ".." }
+        local pipe = io.popen(("ls -A %q 2>/dev/null"):format(path))
+        if pipe then
+            for line in pipe:lines() do names[#names+1] = line end
+            pipe:close()
+        end
+        local index = 0
+        return function()
+            index = index + 1
+            return names[index]
+        end
     end
     local clock = options.clock or require("socket").gettime
 
@@ -371,6 +401,19 @@ function Env.install(options)
         ["gettext"] = setmetatable({}, { __call = function(_self, text) return text end }),
         ["ffi/util"] = { template = template },
         ["util"] = {
+            --[[
+            KOReader fingerprints a book by hashing a few blocks of it rather
+            than the whole file, which on a reader is the difference between
+            instant and a visible pause. The shape is what matters here: a
+            short string that differs when the files differ.
+            ]]
+            partialMd5 = function(path)
+                local handle = io.open(path, "rb")
+                if not handle then return nil end
+                local data = handle:read("*a") or ""
+                handle:close()
+                return require("duo/sha256").hex(data):sub(1, 32)
+            end,
             splitFilePathName = function(path)
                 local directory, name = tostring(path):match("^(.*/)([^/]*)$")
                 if not directory then return "", tostring(path) end

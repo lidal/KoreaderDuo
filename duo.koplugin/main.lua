@@ -653,7 +653,7 @@ function Duo:openRemoteDocument(file, msg)
     local standing_in = not arrived
         and lfs.attributes(file, "mode") == "file" and Core:isStub(file)
     if not here(target) then
-        target = self:findLocalCopy(file)
+        target = self:findLocalCopy(file, msg)
         if not here(target) then target = nil end
     end
     if not target then
@@ -895,24 +895,135 @@ function Duo:reviveDirectLink(quiet, force)
 end
 
 --- Looks for the same book somewhere else on this device.
-function Duo:findLocalCopy(file)
-    -- Note: `_` is gettext in this file, so the path half is discarded with
-    -- select() rather than by naming it.
-    local name = select(2, util.splitFilePathName(file))
-    local ok, ReadHistory = pcall(require, "readhistory")
-    if not ok or not ReadHistory or not ReadHistory.hist then return nil end
-    for _, item in ipairs(ReadHistory.hist) do
-        if item.file then
-            local candidate = select(2, util.splitFilePathName(item.file))
-            if candidate == name then
-                local lfs = require("libs/libkoreader-lfs")
-                if lfs.attributes(item.file, "mode") == "file" then
-                    return item.file
+--[[--
+How far down a shelf a book is looked for, and how many folders that search
+may open.
+
+A shelf is a handful of folders deep in practice. The search can afford to
+be generous, because what it saves is sending a whole book over a link that
+may be a serial cable -- but not unbounded, because a card full of files
+should not stall a tap.
+--]]--
+local SEARCH_DEPTH = 4
+local SEARCH_FOLDERS = 400
+
+--- Every folder worth looking in for a book this device may already have.
+function Duo:getSearchRoots()
+    local roots, seen = {}, {}
+    local function add(path)
+        if type(path) ~= "string" or path == "" or seen[path] then return end
+        seen[path] = true
+        roots[#roots+1] = path
+    end
+    add(self:getBookDir())
+    add(G_reader_settings and G_reader_settings:readSetting("home_dir"))
+    -- The folder the pair was last browsing together, which is where a book
+    -- copied across by hand is most likely to have been put.
+    add(Core.shared_folder)
+    return roots
+end
+
+--- Every file called `name` under `roots`, breadth first and bounded.
+function Duo:findByName(roots, name)
+    local lfs = require("libs/libkoreader-lfs")
+    if not lfs.dir then return {} end
+    local found, seen = {}, {}
+    local queue, head = {}, 1
+    for _, root in ipairs(roots) do queue[#queue+1] = { path = root, depth = 0 } end
+    local budget = SEARCH_FOLDERS
+    while head <= #queue and budget > 0 do
+        local entry = queue[head]
+        head = head + 1
+        if not seen[entry.path] then
+            seen[entry.path] = true
+            budget = budget - 1
+            local ok, iterator = pcall(lfs.dir, entry.path)
+            if ok and iterator then
+                for item in iterator do
+                    -- Hidden folders are KOReader's own bookkeeping, and
+                    -- `.` and `..` are a way to walk for ever.
+                    if item:sub(1, 1) ~= "." then
+                        local path = entry.path .. "/" .. item
+                        local mode = lfs.attributes(path, "mode")
+                        if mode == "file" then
+                            if item == name then found[#found+1] = path end
+                        elseif mode == "directory" and entry.depth < SEARCH_DEPTH then
+                            queue[#queue+1] = { path = path, depth = entry.depth + 1 }
+                        end
+                    end
                 end
             end
         end
     end
+    return found
+end
+
+--- KOReader's own cheap fingerprint for a file, when it can be had.
+function Duo:partialDigest(path)
+    if not util.partialMd5 then return nil end
+    local ok, digest = pcall(util.partialMd5, path)
+    if ok and digest and digest ~= "" then return digest end
     return nil
+end
+
+--[[--
+A copy of `file` already on this device, wherever it happens to live.
+
+The other device names a book by its own absolute path, which says nothing
+about where the same book sits here: two readers rarely agree on where the
+shelf is, and never on what a Kindle calls it versus a Kobo.
+
+The read history alone was not enough, and the gap was the common case. A
+book copied onto both devices by hand has never been opened on either, so
+it is in no history, and the device concluded it did not have the book and
+asked for it to be sent -- a long transfer of a file already sitting on the
+disk. So the shelf itself is searched too.
+
+The digest decides between several files of the same name when there are
+several and the other device said which it meant. It is a preference and
+not a requirement: matching a name is the answer that avoids sending a
+whole book across, and that is what this is for.
+
+@string file  the path the other device used
+@tparam[opt] table msg  the message describing the book, for its digest
+--]]--
+function Duo:findLocalCopy(file, msg)
+    local lfs = require("libs/libkoreader-lfs")
+    -- Note: `_` is gettext in this file, so the path half is discarded with
+    -- select() rather than by naming it.
+    local name = select(2, util.splitFilePathName(file))
+    if not name or name == "" then return nil end
+
+    local candidates, seen = {}, {}
+    local function consider(path)
+        if type(path) ~= "string" or path == "" or seen[path] then return end
+        seen[path] = true
+        if lfs.attributes(path, "mode") ~= "file" then return end
+        -- A stand-in has the book's name and none of the book.
+        if Core:isStub(path) then return end
+        candidates[#candidates+1] = path
+    end
+
+    local ok, ReadHistory = pcall(require, "readhistory")
+    if ok and ReadHistory and ReadHistory.hist then
+        for _, item in ipairs(ReadHistory.hist) do
+            if item.file and select(2, util.splitFilePathName(item.file)) == name then
+                consider(item.file)
+            end
+        end
+    end
+    for _, path in ipairs(self:findByName(self:getSearchRoots(), name)) do
+        consider(path)
+    end
+
+    if #candidates == 0 then return nil end
+    local wanted = msg and msg.digest
+    if wanted and wanted ~= "" then
+        for _, path in ipairs(candidates) do
+            if self:partialDigest(path) == wanted then return path end
+        end
+    end
+    return candidates[1]
 end
 
 --------------------------------------------------------------------------
