@@ -828,6 +828,110 @@ T.describe("pairing dialogs", function()
     end)
 end)
 
+T.describe("the log the reader can send on", function()
+    --[[
+    Everything Duo had to say went to KOReader's debug logger, which writes
+    nothing unless the whole reader was started in debug mode. So a reader
+    who wanted to report that their two devices had disagreed about
+    something had nothing to send.
+
+    Driven through the plugin's own writer rather than through `Core:log`.
+    Core is a single engine and its hooks belong to whichever plugin last
+    started up, and this file builds more than one device -- so going in by
+    the front door here would be testing which of them answered, not what
+    was written. The one line in between is `Core:configure`'s log hook; the
+    file it writes to is what the rest of this checks.
+    ]]
+    local function logPath() return device.plugin:getLogPath() end
+
+    local function sizeNow()
+        local handle = io.open(logPath(), "rb")
+        if not handle then return 0 end
+        local size = handle:seek("end") or 0
+        handle:close()
+        return size
+    end
+
+    local function since(mark)
+        local handle = io.open(logPath(), "rb")
+        if not handle then return "" end
+        handle:seek("set", mark)
+        local text = handle:read("*a") or ""
+        handle:close()
+        return text
+    end
+
+    T.it("writes nothing at all until it is asked to", function()
+        reset()
+        Core:set("debug_log", false)
+        local mark = sizeNow()
+        device.plugin:writeLog("something worth knowing")
+        T.assertEquals(since(mark), "",
+            "a log was written by a device nobody asked")
+    end)
+
+    T.it("records what Duo does once it is switched on", function()
+        reset()
+        Core:set("debug_log", true)
+        local mark = sizeNow()
+        device.plugin:writeLog("the link came up")
+        T.assertMatch(since(mark), "the link came up")
+        Core:set("debug_log", false)
+    end)
+
+    T.it("stamps every line with the time and what this device was being", function()
+        reset()
+        Core:set("debug_log", true)
+        local mark = sizeNow()
+        device.plugin:writeLog("the link came up")
+        T.assertMatch(since(mark), "%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d %[")
+        Core:set("debug_log", false)
+    end)
+
+    T.it("opens with what device this is, which no report ever includes", function()
+        -- The first question anybody asks about a log is what wrote it.
+        local line = device.plugin:describeEnvironment()
+        T.assertMatch(line, "device=")
+        T.assertMatch(line, "koreader=")
+        T.assertMatch(line, "role=")
+    end)
+
+    T.it("stops writing when it is switched off again", function()
+        reset()
+        Core:set("debug_log", true)
+        device.plugin:writeLog("while it was on")
+        Core:set("debug_log", false)
+        local mark = sizeNow()
+        device.plugin:writeLog("after it was switched off")
+        T.assertEquals(since(mark), "",
+            "the log went on being written after it was switched off")
+    end)
+
+    T.it("goes where a USB cable can reach it", function()
+        -- Beside KOReader's own crash.log, in the data folder, which is
+        -- where somebody already knows to look. Checked by shape rather
+        -- than against `datastorage` itself: this file builds more than one
+        -- device and they do not share a data folder.
+        T.assertMatch(logPath(), "^/.+/duo%.log$")
+        T.assertTrue(not logPath():find("/cache/"),
+            "a log in the cache is a log that gets swept away")
+    end)
+
+    T.it("is this device's business and not the pair's", function()
+        -- Switching a log on here must not quietly switch one on over there:
+        -- a log is about one device, and the other device's card is not this
+        -- one's to start filling.
+        reset()
+        device:drainMessages()
+        Core:set("debug_log", true)
+        for _, message in ipairs(device:drainMessages()) do
+            T.assertNil(message.fields and message.fields.debug_log,
+                "switching on a log here offered to switch one on over there")
+        end
+        Core:set("debug_log", false)
+    end)
+end)
+
 T.describe("sending a book without freezing the reader", function()
     --[[
     The report: a device locked up while a big book was copying, and the way

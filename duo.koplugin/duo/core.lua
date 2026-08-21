@@ -208,6 +208,9 @@ local DEFAULTS = {
     stays, switched off, for whoever wants it.
     ]]
     covers_first = false,
+    -- Off, and deliberately not shared: a log is about this device, and
+    -- switching one on should never quietly switch on the other's.
+    debug_log = false,
     -- Empty means "wherever this device keeps its books", worked out at the
     -- time. Not shared: it describes this device's disk, and the two rarely
     -- have the same one.

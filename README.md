@@ -582,6 +582,29 @@ on either device afterwards moves the rest.
 - **Battery.** The heartbeat is one small packet every two seconds on an
   open socket. Wi-Fi being on at all is the real cost.
 
+## Reporting something that went wrong
+
+Duo can keep a log of what it does, in a file you can copy off the device
+and send on. It is off by default and lives under **Duo → Write a log file**.
+
+The useful log is the one holding the thing that went wrong and not much
+else, so:
+
+1. Switch **Write a log file** on, on **both** devices — half a
+   conversation explains very little, and the switch is per device on
+   purpose.
+2. Tap the line below it and choose **Start a fresh log**.
+3. Do the thing that goes wrong.
+4. Connect each device over USB and copy `koreader/duo.log` off it. If a
+   `duo.log.1` sits beside it, that holds what came before; both are worth
+   having.
+5. Switch the log off again when you are done.
+
+The log is capped and rolls over once, so it cannot fill a card. It records
+book and folder names, device names and addresses, and every message Duo
+showed you. It does not record your pairing code, and it never records
+anything you have read.
+
 ## Tests
 
 ```sh

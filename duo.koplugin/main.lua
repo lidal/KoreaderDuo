@@ -55,7 +55,10 @@ function Duo:init()
     Core:configure{
         settings = settings_store:readSetting("duo", {}),
         hooks = {
-            log = function(...) logger.dbg("Duo:", ...) end,
+            log = function(...)
+                logger.dbg("Duo:", ...)
+                Duo:writeLog(...)
+            end,
             save = function(settings)
                 settings_store:saveSetting("duo", settings)
                 settings_store:flush()
@@ -125,6 +128,124 @@ function Duo:ensurePolling()
         if registered == poller then return end
     end
     UIManager:insertZMQ(poller)
+end
+
+--------------------------------------------------------------------------
+-- The log file
+--------------------------------------------------------------------------
+
+--[[--
+Where Duo's log lives.
+
+Beside KOReader's own `crash.log`, in the data folder, because that is the
+folder somebody already knows how to find over a USB cable -- and because a
+log nobody can lay hands on is not a log, it is a habit.
+--]]--
+function Duo:getLogPath()
+    return DataStorage:getDataDir() .. "/duo.log"
+end
+
+--[[--
+The open log, if there is meant to be one.
+
+Held on the module rather than the instance: KOReader rebuilds the plugin
+every time a document opens or closes, and a log that started again from
+nothing at each of those would lose the moment worth reading about.
+--]]--
+function Duo:getLogWriter()
+    if not Core:get("debug_log") then
+        if Duo.log_writer then
+            Duo.log_writer:close()
+            Duo.log_writer = nil
+        end
+        return nil
+    end
+    if Duo.log_writer then return Duo.log_writer end
+    local Log = require("duo/log")
+    -- The data folder is always there on a reader; making it anyway costs
+    -- one failed syscall and means a log is never lost to a missing folder.
+    local lfs = require("libs/libkoreader-lfs")
+    pcall(lfs.mkdir, DataStorage:getDataDir())
+    local writer, err = Log.open(self:getLogPath())
+    if not writer then
+        logger.warn("Duo: could not open the log:", tostring(err))
+        -- Switched off rather than retried on every line: a card with no
+        -- room on it will not have any by the next page turn either.
+        Core:set("debug_log", false)
+        return nil
+    end
+    Duo.log_writer = writer
+    writer:write(("-- Duo log opened %s"):format(os.date("%Y-%m-%d %H:%M:%S")))
+    writer:write(self:describeEnvironment())
+    return writer
+end
+
+--- KOReader's version, asked for rather than required: this file has no
+--- other use for it, and a build that has moved it must not stop the log.
+function Duo:getReaderVersion()
+    local ok, Version = pcall(require, "version")
+    if not ok or not Version then return "?" end
+    local read, revision = pcall(function() return Version:getCurrentRevision() end)
+    return read and tostring(revision) or "?"
+end
+
+--- One line saying what this device is, which every report needs and
+--- nobody remembers to include.
+function Duo:describeEnvironment()
+    local parts = {
+        ("device=%s"):format(tostring(Device and Device.model or "?")),
+        ("koreader=%s"):format(Duo:getReaderVersion()),
+        ("role=%s"):format(tostring(Core.role)),
+        ("transport=%s"):format(tostring(Core:get("transport"))),
+        ("mode=%s"):format(tostring(Core:get("mode"))),
+    }
+    return "-- " .. table.concat(parts, " ")
+end
+
+--[[--
+Says where the log is and offers to start a fresh one.
+
+Starting fresh matters more than it looks. The useful log is the one that
+holds the thing that went wrong and not much else, so the way to use this
+is: clear it, do the thing, copy the file off.
+--]]--
+function Duo:showLogDialog()
+    local lfs = require("libs/libkoreader-lfs")
+    local path = self:getLogPath()
+    local attributes = lfs.attributes(path)
+    local size = attributes and attributes.size or 0
+    local lines = {
+        T(_("Duo writes its log to:\n%1"), path),
+        T(_("Size: %1 KB"), math.floor(size / 1024 + 0.5)),
+        _("Connect the device over USB and copy that file off it. If a second file sits beside it ending in .1, it holds what came before; both are worth having."),
+    }
+    local dialog
+    dialog = ConfirmBox:new{
+        text = table.concat(lines, "\n\n"),
+        ok_text = _("Start a fresh log"),
+        ok_callback = function()
+            if Duo.log_writer then
+                Duo.log_writer:close()
+                Duo.log_writer = nil
+            end
+            os.remove(path .. ".1")
+            os.remove(path)
+            Core:log("log started fresh by hand")
+            UIManager:show(InfoMessage:new{
+                text = _("The log has been cleared. Do the thing that goes wrong, then copy the file off."),
+                timeout = 4,
+            })
+        end,
+        cancel_text = _("Close"),
+    }
+    UIManager:show(dialog)
+end
+
+function Duo:writeLog(...)
+    local writer = self:getLogWriter()
+    if not writer then return end
+    local Log = require("duo/log")
+    writer:write(Log.format(Core.role, ...))
 end
 
 --[[--
@@ -1738,6 +1859,44 @@ On connecting, the leader's settings win. After that a change on either device m
             text = _("Start Duo when KOReader starts"),
             checked_func = function() return Core:get("autostart") end,
             callback = function() Core:set("autostart", not Core:get("autostart")) end,
+            separator = true,
+        },
+        {
+            text = _("Write a log file"),
+            help_text = _("Keep a record of what Duo does, in a file you can copy off the device over USB. Off by default. Worth switching on before reproducing something that went wrong, and worth switching off again afterwards.\n\nThe log holds book and folder names, device names and addresses. It does not hold your pairing code or anything you have read."),
+            checked_func = function() return Core:get("debug_log") end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.menu_container = touchmenu_instance
+                local wanted = not Core:get("debug_log")
+                Core:set("debug_log", wanted)
+                if wanted then
+                    -- Opened now rather than on the next thing that happens,
+                    -- so the menu can say where it is and be right.
+                    Duo:getLogWriter()
+                    Core:log("log switched on by hand")
+                else
+                    Core:log("log switched off by hand")
+                    if Duo.log_writer then
+                        Duo.log_writer:close()
+                        Duo.log_writer = nil
+                    end
+                end
+                self:refreshMenu()
+            end,
+        },
+        {
+            text_func = function()
+                if not Core:get("debug_log") then return _("The log is off") end
+                return T(_("Log: %1"), Duo:getLogPath())
+            end,
+            help_text = _("Where the log is written. Connect the device over USB and copy this file off it; there may be a second one beside it, ending .1, holding what came before."),
+            enabled_func = function() return Core:get("debug_log") end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.menu_container = touchmenu_instance
+                Duo:showLogDialog()
+            end,
             separator = true,
         },
         {
