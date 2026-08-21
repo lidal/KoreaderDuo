@@ -1926,22 +1926,59 @@ On connecting, the leader's settings win. After that a change on either device m
     }
 end
 
+--[[--
+What Duo is doing, in a box.
+
+Every line is worked out behind a pcall and coerced to a string on the way
+in. This screen is where somebody goes when something is already wrong --
+a link that will not come up, an address that cannot be read, a peer that
+has half gone away -- which is exactly the state in which the things it
+asks about are most likely to answer strangely. A diagnostic screen that
+can take the reader down with it is worse than no diagnostic screen, so a
+line that cannot be built says so and the rest are still shown.
+--]]--
 function Duo:showStatus()
-    local lines = { Core:getStatusText() }
-    local address = NetUtil.getLocalIP()
-    if address then
-        lines[#lines+1] = T(_("This device: %1 (%2)"), Core:getDeviceName(), address)
+    local lines = {}
+    local function add(build)
+        local ok, line = pcall(build)
+        if not ok then
+            -- Named rather than swallowed: a line that keeps failing is
+            -- the most interesting thing on the screen.
+            Core:log("status line failed:", tostring(line))
+            lines[#lines+1] = _("(this line could not be read)")
+        elseif line ~= nil then
+            lines[#lines+1] = tostring(line)
+        end
     end
+
+    add(function() return Core:getStatusText() end)
+    add(function()
+        local address = NetUtil.getLocalIP()
+        if not address then return nil end
+        return T(_("This device: %1 (%2)"), tostring(Core:getDeviceName()), tostring(address))
+    end)
     for _, link in ipairs(Core:getReadyLinks()) do
-        local latency = link.latency and T(_(" · %1 ms"), math.floor(link.latency * 1000)) or ""
-        lines[#lines+1] = T(_("Peer: %1%2"), link:describe(), latency)
+        add(function()
+            local latency = ""
+            if type(link.latency) == "number" then
+                latency = T(_(" · %1 ms"), math.floor(link.latency * 1000))
+            end
+            return T(_("Peer: %1%2"), tostring(link:describe()), latency)
+        end)
     end
-    if Core:isConnected() and Core:hasReader() then
-        lines[#lines+1] = T(_("Turning a page moves %1 pages."), Core:getStep())
+    add(function()
+        if not (Core:isConnected() and Core:hasReader()) then return nil end
+        return T(_("Turning a page moves %1 pages."), tostring(Core:getStep()))
+    end)
+    add(function()
+        if Core.last_error == nil then return nil end
+        return T(_("Last error: %1"), tostring(Core.last_error))
+    end)
+    if Core:get("debug_log") then
+        add(function() return T(_("Log: %1"), Duo:getLogPath()) end)
     end
-    if Core.last_error then
-        lines[#lines+1] = T(_("Last error: %1"), Core.last_error)
-    end
+
+    if #lines == 0 then lines[1] = _("Duo has nothing to report.") end
     UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
 end
 

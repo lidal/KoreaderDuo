@@ -828,6 +828,76 @@ T.describe("pairing dialogs", function()
     end)
 end)
 
+T.describe("the status screen", function()
+    --[[
+    The report: tapping the status entry crashed KOReader.
+
+    This screen is where somebody goes when something is already wrong, and
+    that is exactly the state in which the things it asks about answer
+    strangely -- a peer half gone away, an address that cannot be read, an
+    error that is not a string. Whatever the line was, a screen that can
+    take the reader down with it is worse than no screen.
+    ]]
+    local function shown()
+        local log = device.UIManager.shown_log
+        return tostring(log[#log] and log[#log].text or "")
+    end
+
+    T.it("says what Duo is doing", function()
+        reset()
+        device.plugin:showStatus()
+        T.assertMatch(shown(), "Off")
+    end)
+
+    T.it("survives a peer that answers strangely", function()
+        reset()
+        Core.settings.port = 19891
+        T.assertTrue(Core:start("leader"))
+        -- A link that has come apart in the middle of being asked about.
+        Core.links[#Core.links+1] = {
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            latency = "not a number",
+            describe = function() error("the peer went away mid-sentence") end,
+            poll = function() end,
+            slot = 1,
+        }
+        local ok = pcall(function() device.plugin:showStatus() end)
+        T.assertTrue(ok, "the status screen took the reader down with it")
+        T.assertMatch(shown(), "could not be read")
+        Core.links = {}
+        Core:stop("done")
+    end)
+
+    T.it("survives an error that is not a string", function()
+        reset()
+        Core.last_error = { it = "was a table" }
+        local ok = pcall(function() device.plugin:showStatus() end)
+        T.assertTrue(ok, "a last error that was not text crashed the screen")
+        Core.last_error = nil
+    end)
+
+    T.it("still shows the lines it could build", function()
+        -- One bad line must not cost the reader the rest of the screen.
+        reset()
+        Core.last_error = setmetatable({}, { __tostring = function()
+            error("even saying what this is fails")
+        end })
+        local ok = pcall(function() device.plugin:showStatus() end)
+        T.assertTrue(ok)
+        T.assertMatch(shown(), "Off", "the good lines went missing with the bad one")
+        Core.last_error = nil
+    end)
+
+    T.it("points at the log when there is one", function()
+        reset()
+        Core:set("debug_log", true)
+        device.plugin:showStatus()
+        T.assertMatch(shown(), "duo%.log")
+        Core:set("debug_log", false)
+    end)
+end)
+
 T.describe("the log the reader can send on", function()
     --[[
     Everything Duo had to say went to KOReader's debug logger, which writes
