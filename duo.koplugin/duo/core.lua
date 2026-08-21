@@ -1363,8 +1363,28 @@ function Core:pageUnderOwnLayout(page, leader_pages, leader_typo)
         return page
     end
     if own_pages == leader_pages then return page end
-    local scaled = Util.round(page * own_pages / leader_pages)
-    return Util.clamp(scaled, 1, own_pages)
+
+    local scaled = Util.clamp(Util.round(page * own_pages / leader_pages), 1, own_pages)
+    --[[
+    Proportion only wins when it would actually put this device somewhere
+    else. Two books a page or two apart in length -- which is what a
+    cosmetic setting the two devices spell differently comes to -- scale to
+    a page next door, and taking that page instead of the one the leader
+    named is how a follower ends up permanently one page ahead of the
+    spread its leader is describing. It is stable, too, which is the worst
+    part: this device believes it is exactly where it was sent, so nothing
+    ever puts it right.
+
+    The leader's own number is the pair's shared language, and near enough
+    is near enough. What proportion is for is the case it was added for: two
+    books of genuinely different lengths, where the raw number is not a page
+    next door but a different part of the book.
+    ]]
+    local step = Spread.stepFor(self:get("mode"), self:followerCount())
+    if math.abs(scaled - page) <= math.max(step, 1) then
+        return Util.clamp(page, 1, own_pages)
+    end
+    return scaled
 end
 
 --[[--

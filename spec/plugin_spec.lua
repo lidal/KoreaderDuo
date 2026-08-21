@@ -1137,6 +1137,35 @@ T.describe("a page number and the layout that counted it", function()
             "a page from someone else's pagination was applied as it stood")
     end)
 
+    T.it("does not drift a page ahead when the two books are nearly the same length", function()
+        --[[
+        The report: the follower sat permanently two pages ahead of the
+        spread the leader was describing -- the leader said 219-220 and the
+        follower showed 221 -- and turning a page kept the gap. A reset was
+        the only way out.
+
+        Two books a page apart in length, which is what a cosmetic setting
+        the devices spell differently comes to, scaled page 220 to 221. The
+        follower went there and recorded 221 as the page it had been sent,
+        so nothing ever put it right: the drift was not only wrong, it was
+        stable.
+        ]]
+        withLayout("B", 301)
+        Core.layout_differed_at = Util.now() - 60
+        T.assertEquals(Core:pageUnderOwnLayout(220, 300, "A"), 220,
+            "a book one page longer moved the follower off the spread")
+    end)
+
+    T.it("keeps the pair adjacent rather than each device merely near", function()
+        -- The leader turns a page and the gap must not grow with it.
+        withLayout("B", 301)
+        Core.layout_differed_at = Util.now() - 60
+        for _, page in ipairs({ 100, 220, 221, 222, 300 }) do
+            T.assertEquals(Core:pageUnderOwnLayout(page, 300, "A"), math.min(page, 301),
+                ("page %d was moved off the spread"):format(page))
+        end
+    end)
+
     T.it("carries the position across by proportion once the difference is real", function()
         -- Held only while it might still be a relayout in flight. Two devices
         -- that go on disagreeing are two different screens, and proportion is
@@ -1146,6 +1175,8 @@ T.describe("a page number and the layout that counted it", function()
         Core.layout_differed_at = Util.now() - 60
         T.assertEquals(Core:pageUnderOwnLayout(150, 300, "A"), 200,
             "half way through a 300-page book is half way through a 400-page one")
+        -- Which is the whole point of the rule: 200 is a different part of
+        -- the book from 150, where 221 was next door to 220.
     end)
 
     T.it("stays inside the book", function()
