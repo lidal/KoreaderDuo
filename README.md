@@ -494,6 +494,12 @@ on either device afterwards moves the rest.
 - **Page turns are intercepted, not simulated.** Every tap, swipe, gesture
   and button ends up in the reader's `onGotoViewRel`, so Duo wraps that one
   method and multiplies the distance by the number of devices.
+- **Opening a book is answered, not assumed.** The leader names the book and
+  the other device says what became of it: opening it, has it open, or
+  cannot. Only silence is retried, a few times and then given up on with
+  something said out loud — a message that arrives while a device is between
+  documents or rebuilding its plugin is lost, and the pair used to sit in two
+  different books with nothing to put it right.
 - **Jumps are noticed rather than intercepted.** A tapped link, the table of
   contents, a bookmark and the slider all move a device without going near
   `onGotoViewRel`, and there are far too many ways in to wrap them one by

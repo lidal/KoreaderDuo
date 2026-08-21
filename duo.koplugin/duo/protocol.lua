@@ -37,6 +37,7 @@ Protocol.STATE     = "STATE"     -- leader -> peer: the page this peer must disp
 Protocol.TURN      = "TURN"      -- peer -> leader: user turned the page on the follower
 Protocol.GOTO      = "GOTO"      -- peer -> leader: user jumped to an absolute page
 Protocol.DOC       = "DOC"       -- leader -> peer: open this document
+Protocol.DOCACK    = "DOCACK"    -- peer -> leader: what became of the book you named
 Protocol.HOME      = "HOME"      -- leader -> peer: I closed the book; come back to the list
 Protocol.OPEN      = "OPEN"      -- peer -> leader: open this book for the pair
 Protocol.GOHOME    = "GOHOME"    -- peer -> leader: I left the book; take us both out

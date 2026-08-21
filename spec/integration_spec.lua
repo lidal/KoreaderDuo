@@ -1414,6 +1414,64 @@ T.describe("two devices, when things go wrong", function()
     end)
 end)
 
+T.describe("both devices in the same book", function()
+    --[[
+    The report: opening a book sometimes happened on only one device.
+
+    The leader announced the book once and hoped. A message that landed while
+    the other device was between documents, or rebuilding its plugin, or
+    otherwise in no state to act on it, was simply lost -- and the pair sat in
+    two different books with nothing to put it right.
+    ]]
+
+    T.it("says what became of the book it was told to open", function()
+        connectPair()
+        controller:assertEventually(leader, "tostring(Core:getReadyLinks()[1].doc_pending)", "nil",
+            "the leader is still waiting to hear about a book the follower has open")
+    end)
+
+    T.it("asks again when the other device never answers", function()
+        connectPair()
+        -- A follower that hears nothing at all: exactly the case that used
+        -- to leave the two devices in different books.
+        callFollower("Core.deaf_to_documents = true")
+        callFollower([[
+            Core.realHandleRemoteDocument = Core.realHandleRemoteDocument or Core.handleRemoteDocument
+            Core.handleRemoteDocument = function() end
+        ]])
+
+        callLeader("D:openDocument{ page_count = 120 }")
+        controller:assertEventually(leader,
+            "Core:getReadyLinks()[1].doc_pending and Core:getReadyLinks()[1].doc_pending.attempts or 0",
+            2, "the leader never asked a second time", 30)
+
+        -- And it gives up rather than asking for ever.
+        controller:assertEventually(leader, "tostring(Core:getReadyLinks()[1].doc_pending)", "nil",
+            "the leader kept asking past the point of giving up", 60)
+
+        callFollower("Core.handleRemoteDocument = Core.realHandleRemoteDocument")
+        callFollower("Core.deaf_to_documents = nil")
+    end)
+
+    T.it("stops asking as soon as the other device has the book", function()
+        connectPair()
+        callLeader("D:openDocument{ page_count = 140 }")
+        controller:assertEventually(follower, "tostring(Core.reader ~= nil)", "true",
+            "the follower never opened the book")
+        controller:assertEventually(leader, "tostring(Core:getReadyLinks()[1].doc_pending)", "nil",
+            "the leader went on waiting for a book the follower has open")
+    end)
+
+    T.it("puts the fixture back", function()
+        -- These tests open books of their own. Everything else in this file
+        -- reads the standard three hundred pages, so it is handed back.
+        connectPair()
+        callLeader("D:openDocument{ page_count = 300 }")
+        controller:assertEventually(follower, "UI.document:getPageCount()", 300,
+            "the follower never came back to the standard book")
+    end)
+end)
+
 local exit_code = T.run()
 controller:shutdown()
 os.exit(exit_code)

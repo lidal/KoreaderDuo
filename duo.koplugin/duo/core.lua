@@ -146,6 +146,20 @@ between them is visible to only one of them.
 --]]--
 local PAGINATION_SETTLE = 8
 
+--[[--
+How long a device is given to say what became of a book it was told to
+open, and how many times it is told again before the pair gives up.
+
+Opening a book on an e-reader is slow and very visible, so the wait is
+generous, and a device that says it is working on it pushes the wait back
+rather than being asked again. What this catches is silence -- the message
+that arrived while the other device was between documents, or rebuilding
+its plugin, or otherwise in no state to act on it -- which is how the two
+ended up in different books with nothing to put them right.
+--]]--
+local DOC_ACK_WAIT = 8
+local DOC_ACK_TRIES = 3
+
 local SLEEP_RACE = 10
 
 --[[--
@@ -461,6 +475,12 @@ function Core:attachReader(binding)
             -- We may have been reopened on a different book; ask where we
             -- should be rather than sitting on whatever page we landed on.
             link:send(Protocol.SYNC, {})
+        end
+        -- And the book is now really open, which is the answer the leader
+        -- has been waiting for rather than the promise it got earlier.
+        local document = binding and binding.getDocument and binding.getDocument()
+        if document and document.file then
+            self:sendDocumentAck("open", document.file)
         end
     end
 end
@@ -926,6 +946,7 @@ function Core:poll()
     self:checkTypography()
     self:checkFrontlight()
     self:checkLinkHealth()
+    self:checkDocumentAcks()
     -- A page the leader sent while this device was still relaying the book
     -- out. The leader only broadcasts when something changes, so a page held
     -- back has to be picked up here or not at all.
@@ -1101,6 +1122,12 @@ function Core:sendDocumentTo(link)
     if not self.reader then return end
     local document = self.reader.getDocument()
     if not document or not document.file then return end
+    -- Noted on the link itself, so it goes away when the link does.
+    link.doc_pending = {
+        file = document.file,
+        sent_at = Util.now(),
+        attempts = 1,
+    }
     link:send(Protocol.DOC, {
         file = document.file,
         title = document.title or "",
@@ -2853,6 +2880,9 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.DOC then
         if self:isLeader() then return end
         self:handleRemoteDocument(msg)
+    elseif msg.type == Protocol.DOCACK then
+        if not self:isLeader() then return end
+        self:handleDocumentAck(link, msg)
     elseif msg.type == Protocol.HOME then
         if self:isLeader() then return end
         self:handleRemoteHome()
@@ -2873,9 +2903,33 @@ end
 --- How long a follower's request to come out of a book is given to land.
 local HOME_REQUEST_GRACE = 10
 
+--[[--
+Tells the leader what became of the book it named.
+
+Three answers, and the difference matters. "Open" and "no" are both final --
+the leader stops asking, and in the second case has something to tell the
+reader. "Opening" is neither: it pushes the leader's wait back rather than
+ending it, because opening a book on an e-reader takes long enough that a
+device working away at one would otherwise be asked again mid-way.
+--]]--
+function Core:sendDocumentAck(state, file, reason)
+    local link = self:getReadyLinks()[1]
+    if not link then return end
+    link:send(Protocol.DOCACK, {
+        state = state,
+        file = file or "",
+        reason = reason or "",
+    })
+end
+
 function Core:handleRemoteDocument(msg)
-    if not self:get("follow_document") then return end
     local file = msg.file
+    if not self:get("follow_document") then
+        -- Silence would have the leader ask again twice more for something
+        -- this device has been told not to do.
+        self:sendDocumentAck("no", file, "not following the other device")
+        return
+    end
     if not file or file == "" then return end
     -- Asked to come out a moment ago, and this is the leader describing the
     -- book it has not closed yet. Following it now would undo the request.
@@ -2888,19 +2942,91 @@ function Core:handleRemoteDocument(msg)
             or (msg.digest ~= "" and document.digest == msg.digest)
         if same then
             self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
+            self:sendDocumentAck("open", file)
             return
         end
     end
-    if not self.hooks or not self.hooks.openDocument then return end
+    if not self.hooks or not self.hooks.openDocument then
+        self:sendDocumentAck("no", file, "this device cannot open books")
+        return
+    end
     -- Opening a book is slow and very visible, so never start the same one
     -- twice because two messages arrived close together.
     if self.opening_file == file and Util.now() - (self.opening_since or 0) < 15 then
+        -- Already working on exactly this. Saying so is what stops the
+        -- leader asking again while the book is still coming up.
+        self:sendDocumentAck("opening", file)
         return
     end
     self.opening_file = file
     self.opening_since = Util.now()
+    self:sendDocumentAck("opening", file)
     self:notify(("Duo: opening %s"):format(msg.title ~= "" and msg.title or file))
     self.hooks.openDocument(file, msg)
+end
+
+--[[--
+Takes a device's answer about the book it was told to open.
+
+"Opening" pushes the wait back without spending an attempt: a device that is
+working on a book should be left to finish, not asked again half way up.
+Anything final ends the matter, and a device that cannot open the book says
+so plainly rather than leaving the pair to work it out from silence.
+--]]--
+function Core:handleDocumentAck(link, msg)
+    local pending = link.doc_pending
+    if not pending then return end
+    local state = msg.state or ""
+    if state == "opening" then
+        pending.sent_at = Util.now()
+        return
+    end
+    link.doc_pending = nil
+    if state == "no" then
+        local why = msg.reason ~= "" and msg.reason or "it does not have the book"
+        self:log("the other device will not open", pending.file, "-", why)
+        self:notify(("Duo: the other device is not following into this book (%s)"):format(why))
+    end
+end
+
+--[[--
+Asks again when a device never said what became of the book.
+
+Opening a book used to be announced once and hoped for. A message that
+landed while the other device was between documents, or rebuilding its
+plugin, or otherwise in no state to act, was simply lost -- and the pair sat
+in two different books with nothing to put it right short of turning a page.
+--]]--
+function Core:checkDocumentAcks()
+    if not self:isLeader() or not self.reader then return end
+    local now = Util.now()
+    for _, link in ipairs(self:getReadyLinks()) do
+        local pending = link.doc_pending
+        if pending and now - pending.sent_at >= DOC_ACK_WAIT then
+            if pending.attempts >= DOC_ACK_TRIES then
+                link.doc_pending = nil
+                self:log("gave up telling the other device about", pending.file)
+                self:notify("Duo: the other device never opened the book")
+            else
+                --[[
+                Sent again rather than merely counted. The whole point is
+                that the first one may never have been acted on, and the
+                receiving side is built to recognise a book it is already in
+                or already opening -- so asking twice costs nothing when the
+                first did arrive.
+                ]]
+                pending.attempts = pending.attempts + 1
+                pending.sent_at = now
+                self:log("asking again about", pending.file,
+                    ("(attempt %d)"):format(pending.attempts))
+                self:sendDocumentTo(link)
+                -- sendDocumentTo starts a fresh note; keep the count going.
+                if link.doc_pending then
+                    link.doc_pending.attempts = pending.attempts
+                end
+            end
+        end
+    end
 end
 
 --[[--
