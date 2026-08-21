@@ -828,6 +828,102 @@ T.describe("pairing dialogs", function()
     end)
 end)
 
+T.describe("sending a book without freezing the reader", function()
+    --[[
+    The report: a device locked up while a big book was copying, and the way
+    out of the transfer could not be reached.
+
+    The pump sent chunks until the link was backed up. The high-water mark it
+    watched counts bytes still waiting for the socket, and on a link that
+    keeps up that is nearly always zero -- so the loop ran until the book ran
+    out, inside one turn of the poll loop, with no repaint and no chance to
+    touch anything. The bigger the book, the longer the freeze, which is
+    exactly when somebody reaches for the stop button.
+    ]]
+    local BookTransfer = require("duo/booktransfer")
+    local BIG = "/tmp/duo-pump-spec.epub"
+
+    local function bigBook()
+        local handle = assert(io.open(BIG, "wb"))
+        -- Comfortably more chunks than one turn of the loop may send.
+        handle:write(string.rep("x", BookTransfer.CHUNK * BookTransfer.CHUNKS_PER_POLL * 4))
+        handle:close()
+        return BIG
+    end
+
+    --- A link that always keeps up, which is the case that used to run away.
+    local function eagerLink()
+        return {
+            sent = {},
+            isClosed = function() return false end,
+            pending = function() return 0 end,
+            send = function(self_, msg_type, fields)
+                self_.sent[#self_.sent+1] = { type = msg_type, fields = fields }
+                return true
+            end,
+        }
+    end
+
+    local function countData(link)
+        local Protocol = require("duo/protocol")
+        local count = 0
+        for _, message in ipairs(link.sent) do
+            if message.type == Protocol.BOOK_DATA then count = count + 1 end
+        end
+        return count
+    end
+
+    T.it("gives the reader its turn back instead of sending the whole book", function()
+        reset()
+        local sender = assert(BookTransfer.newSender(bigBook()))
+        local link = eagerLink()
+        Core.book_sender = { sender = sender, link = link, name = "big.epub" }
+
+        Core:pumpBookSender()
+        T.assertEquals(countData(link), BookTransfer.CHUNKS_PER_POLL,
+            "one turn of the poll loop sent more of the book than it may")
+        T.assertTrue(Core.book_sender ~= nil, "the transfer should still be going")
+
+        Core:pumpBookSender()
+        T.assertEquals(countData(link), BookTransfer.CHUNKS_PER_POLL * 2,
+            "the next turn should carry on where the last one stopped")
+
+        Core:cancelTransfer("stopped by hand")
+        T.assertNil(Core.book_sender, "the transfer would not stop")
+    end)
+
+    T.it("still stops early when the link is the thing holding it up", function()
+        -- The ceiling is a floor for responsiveness, not a replacement for
+        -- flow control: a backed-up link still stops the pump at once.
+        reset()
+        local sender = assert(BookTransfer.newSender(bigBook()))
+        local link = eagerLink()
+        link.pending = function() return BookTransfer.HIGH_WATER + 1 end
+        Core.book_sender = { sender = sender, link = link, name = "big.epub" }
+
+        Core:pumpBookSender()
+        T.assertEquals(countData(link), 0, "a backed-up link was written to anyway")
+        Core:cancelTransfer("stopped by hand")
+    end)
+
+    T.it("finishes a book that fits inside one turn", function()
+        reset()
+        local small = "/tmp/duo-pump-small.epub"
+        local handle = assert(io.open(small, "wb"))
+        handle:write(string.rep("y", BookTransfer.CHUNK * 2))
+        handle:close()
+        local sender = assert(BookTransfer.newSender(small))
+        local link = eagerLink()
+        Core.book_sender = { sender = sender, link = link, name = "small.epub" }
+
+        Core:pumpBookSender()
+        T.assertNil(Core.book_sender, "a short book should be done in one turn")
+        local Protocol = require("duo/protocol")
+        T.assertEquals(link.sent[#link.sent].type, Protocol.BOOK_DONE)
+        os.remove(small)
+    end)
+end)
+
 T.describe("finding a book this device already has", function()
     --[[
     The report: a big book copied onto both Kindles by hand was not

@@ -2243,7 +2243,10 @@ function Core:pumpBookSender()
     end
 
     local BookTransfer = require("duo/booktransfer")
-    while transfer.link:pending() < BookTransfer.HIGH_WATER do
+    local sent = 0
+    while sent < BookTransfer.CHUNKS_PER_POLL
+            and transfer.link:pending() < BookTransfer.HIGH_WATER do
+        sent = sent + 1
         local chunk = transfer.sender:next()
         if not chunk then
             transfer.link:send(Protocol.BOOK_DONE, { size = transfer.sender.size })

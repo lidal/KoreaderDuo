@@ -26,6 +26,23 @@ BookTransfer.CHUNK = 2880
 BookTransfer.HIGH_WATER = 48 * 1024
 
 --[[--
+How many chunks one turn of the poll loop may send.
+
+The high-water mark alone is not a limit. It counts the bytes still waiting
+for the socket, and on a link that keeps up that number is nearly always
+zero -- the kernel takes everything offered. So "send until the link is
+backed up" meant "send the whole book", in one turn of the loop, with no
+repaint and no chance to touch anything in between: the reader froze for as
+long as the book took, and the way out of a transfer became unreachable at
+exactly the size that makes somebody want it.
+
+This is the ceiling that makes the pump yield. Set well above what any
+reader's Wi-Fi will carry in a fiftieth of a second, so it costs nothing on
+a link that is going slowly and everything on one that is not.
+--]]--
+BookTransfer.CHUNKS_PER_POLL = 48
+
+--[[--
 What counts as a book, and so as something worth copying between devices.
 
 An allowlist rather than a filter on what to leave out. The file browser
