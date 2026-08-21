@@ -67,6 +67,11 @@ function Util.normalizeToken(token)
     return (tostring(token):upper():gsub("[^%w]", ""))
 end
 
+--- Nearest whole number, halves going up.
+function Util.round(value)
+    return math.floor(value + 0.5)
+end
+
 function Util.clamp(value, min_value, max_value)
     if value < min_value then return min_value end
     if value > max_value then return max_value end

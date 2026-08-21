@@ -145,15 +145,35 @@ local Typeset = {}
 Typeset.__index = Typeset
 
 function Typeset:applySetting(key, value)
+    local paging = self.ui.paging
+    local before = self.ui.document:getPageCount()
+    local was_on = paging.current_page
+
     self.ui.document.configurable[key] = value
     self.ui.document:repaginate()
-    -- Relaying out can leave the reader past the end of the book.
-    local paging = self.ui.paging
+
+    --[[
+    A real engine keeps the reader where they were, not on the number they
+    were on. crengine holds an xpointer into the text and works the page out
+    again afterwards, so a book that grows by a third moves the reader from
+    page 150 to page 200 and shows them the same words.
+
+    Modelled by proportion, which is as close as page counts can get. It
+    matters that this is here: a harness that left `current_page` alone
+    would keep the number steady across a relayout, which is the one thing
+    a relayout never does, and every bug about position surviving a change
+    of font size would look fixed.
+    ]]
     local count = self.ui.document:getPageCount()
+    if before and before > 0 and count > 0 and was_on then
+        paging.current_page = math.max(1, math.min(count,
+            math.floor(was_on * count / before + 0.5)))
+    end
     if paging.current_page > count then
         paging.current_page = count
     end
     self.ui:handleEvent(self.ui.Event:new("UpdatePos"))
+    self.ui:handleEvent(self.ui.Event:new("PageUpdate", paging.current_page))
     return true
 end
 

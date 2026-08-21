@@ -273,6 +273,73 @@ T.describe("matching typography", function()
             "the two devices still disagree about how long the book is")
     end)
 
+    T.it("leaves the reader where they were when the size changes", function()
+        --[[
+        The report: changing the font size threw both devices a long way into
+        the book.
+
+        A page number is only meaningful together with the pagination that
+        produced it. The leader repaginates the instant the size changes --
+        300 pages become 400, and the reader is moved from page 150 to page
+        200 to keep them on the same words -- and it broadcasts that new
+        number straight away. It used to arrive while the follower was still
+        on the old pagination, where page 200 is two thirds of the way in
+        rather than half, and the follower went there.
+        ]]
+        connectPair()
+        setLeaderPage(150)
+        controller:assertEventually(follower, "D:getPage()", 151)
+        local was = pageCount(leader)
+
+        callLeader("UI:handleEvent(D.Event:new('SetFontSize', 30))")
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 30,
+            "the follower never took the new size")
+
+        -- Both devices agreeing on the book's length is what makes the page
+        -- numbers below comparable at all.
+        controller:assertEventually(follower, "UI.document:getPageCount()", pageCount(leader),
+            "the two devices still disagree about how long the book is")
+
+        local now = pageCount(leader)
+        T.assertNotEquals(now, was, "the fixture did not actually relayout")
+
+        -- Half way through the book before, and half way through after.
+        local expected = math.floor(150 * now / was + 0.5)
+        local landed = controller:number(leader, "D:getPage()")
+        T.assertTrue(math.abs(landed - expected) <= 2,
+            ("the leader was thrown from %d to %d, expected about %d"):format(
+                150, landed, expected))
+
+        controller:assertEventually(follower, "D:getPage()", landed + 1,
+            "the follower did not settle next to the leader after the relayout")
+    end)
+
+    T.it("does not mistake a relayout for a jump made by hand", function()
+        --[[
+        A relayout renumbers every page without anybody going anywhere. On a
+        follower that looks exactly like a tapped link -- the page changed and
+        nobody sent it there -- and reporting it would drag the pair somewhere
+        nobody asked to be.
+        ]]
+        connectPair()
+        setLeaderPage(100)
+        controller:assertEventually(follower, "D:getPage()", 101)
+        local was = pageCount(leader)
+
+        -- Changed on the follower, so it is the follower that relayouts
+        -- first and has every chance to report the renumbering as a jump.
+        callFollower("UI:handleEvent(D.Event:new('SetFontSize', 28))")
+        controller:assertEventually(leader, "UI.document.configurable.font_size", 28)
+        controller:assertEventually(follower, "UI.document:getPageCount()", pageCount(leader))
+
+        local now = pageCount(leader)
+        local expected = math.floor(100 * now / was + 0.5)
+        local landed = controller:number(leader, "D:getPage()")
+        T.assertTrue(math.abs(landed - expected) <= 2,
+            ("a relayout moved the pair from %d to %d, expected about %d"):format(
+                100, landed, expected))
+    end)
+
     T.it("matches a book opened after the link came up", function()
         --[[
         The layout settings sent when the link comes up arrive while a

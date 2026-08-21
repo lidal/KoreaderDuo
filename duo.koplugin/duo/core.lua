@@ -133,6 +133,19 @@ that has just been pressed wakes the device back up, so a message that
 arrives inside this window is treated as the other person having done the
 same thing at the same moment rather than as an instruction.
 --]]--
+--[[--
+How long the two devices are given to agree on a book's length after a
+layout change, before the difference is treated as real.
+
+Generous, because relaying out a long book is not quick and real rendering
+engines finish a little after the event that started them returns. Declared
+up here with the other constants because it is read from two very different
+places -- deciding whether a page number can be trusted, and deciding
+whether a mismatch is worth complaining about -- and a local declared
+between them is visible to only one of them.
+--]]--
+local PAGINATION_SETTLE = 8
+
 local SLEEP_RACE = 10
 
 --[[--
@@ -462,6 +475,9 @@ function Core:detachReader(binding)
     self.reader = nil
     -- Page numbers mean nothing once the book they counted is gone.
     self.assigned_page = nil
+    self.assigned_pages = nil
+    self.pending_page = nil
+    self.layout_differed_at = nil
     self:changed()
 end
 
@@ -910,6 +926,10 @@ function Core:poll()
     self:checkTypography()
     self:checkFrontlight()
     self:checkLinkHealth()
+    -- A page the leader sent while this device was still relaying the book
+    -- out. The leader only broadcasts when something changes, so a page held
+    -- back has to be picked up here or not at all.
+    self:applyPendingPage()
     self:checkBrowser()
     self:pumpBookSender()
     self:checkBookRequest()
@@ -1203,11 +1223,32 @@ function Core:reportJump(page)
     -- The same permission as turning a page: a follower kept as a display
     -- should not move the pair by being tapped.
     if not self:get("follower_can_turn") then return end
+
+    --[[
+    A relayout renumbers every page in the book without anybody going
+    anywhere. Change the font size and crengine keeps the reader where they
+    were and calls it a different number -- which looks exactly like a jump
+    from here, and reporting it would drag the whole pair somewhere nobody
+    asked to be.
+
+    The page count is what tells the two apart. It is recorded alongside
+    every page this device is sent, so a page count that has moved since
+    means the numbering moved, not the reader.
+    ]]
+    if self.applying_typography then return end
+    local pages = self.reader.getPageCount()
+    if self.assigned_pages and pages and pages ~= self.assigned_pages then
+        self.assigned_page = page
+        self.assigned_pages = pages
+        return
+    end
+
     if self.assigned_page and page == self.assigned_page then return end
     local link = self:getReadyLinks()[1]
     if not link then return end
     -- Remembered before the answer comes back, so a jump is asked for once.
     self.assigned_page = page
+    self.assigned_pages = pages
     self:log("jumped to", page, "- asking the leader to follow")
     link:send(Protocol.GOTO, { page = page })
 end
@@ -1242,21 +1283,99 @@ function Core:applyRemoteJump(link, wanted)
     self:broadcastState()
 end
 
---- Applies a page the leader told us to show.
-function Core:applyRemotePage(page)
+--[[--
+Whether this device lays the book out the way the leader does.
+
+Two page numbers are the same page only when the same layout produced them.
+Change the font size and a book of 300 pages becomes one of 450: page 150
+was the middle and is now the first third, and nothing about the number
+itself says so. The leader stamps every page it sends with the layout that
+counted it, and that stamp is what makes the number safe to use.
+
+Returns nil when there is nothing to compare -- an old peer, or a document
+type with no typography at all -- in which case the number is taken at face
+value, which is what it always was.
+--]]--
+function Core:layoutMatches(leader_typo)
+    if not leader_typo or leader_typo == "" then return nil end
+    local own = self:typographySignature()
+    if not own or own == "" then return nil end
+    return own == leader_typo
+end
+
+--[[--
+The page this device should show for a page the leader counted.
+
+While the two devices disagree about the layout, one of them is mid-relayout
+and the number cannot be used: the answer is nil and the caller waits. Once
+the wait has gone on longer than a relayout takes, the disagreement is real
+-- different screens, a missing font -- and the position is carried across
+by proportion instead, which is the best a page number can do when the two
+books are genuinely different lengths.
+--]]--
+function Core:pageUnderOwnLayout(page, leader_pages, leader_typo)
+    local matches = self:layoutMatches(leader_typo)
+    if matches ~= false then
+        -- Agreed, or nothing to compare: the number means what it says.
+        self.layout_differed_at = nil
+        return page
+    end
+
+    local since = self.layout_differed_at
+    if not since then
+        self.layout_differed_at = Util.now()
+        return nil
+    end
+    if Util.now() - since < PAGINATION_SETTLE then return nil end
+
+    local own_pages = self.reader and self.reader.getPageCount()
+    if not own_pages or own_pages <= 0 or not leader_pages or leader_pages <= 0 then
+        return page
+    end
+    if own_pages == leader_pages then return page end
+    local scaled = Util.round(page * own_pages / leader_pages)
+    return Util.clamp(scaled, 1, own_pages)
+end
+
+--[[--
+Applies a page the leader told us to show.
+
+Held back rather than applied while the two devices are laying the book out
+differently. Sending a device to a page counted under a layout it is not
+using any more is what threw the reader a long way from where they were --
+the leader repaginates the instant the font size changes, and its next
+broadcast used to arrive while this device was still on the old pagination.
+--]]--
+function Core:applyRemotePage(page, leader_pages, leader_typo)
     if not self.reader or not page then return end
+    local wanted = self:pageUnderOwnLayout(page, leader_pages, leader_typo)
+    if not wanted then
+        -- Kept, because the leader only broadcasts when something changes
+        -- and this device must not be left behind on the one that mattered.
+        self.pending_page = { page = page, pages = leader_pages, typo = leader_typo }
+        return
+    end
+    self.pending_page = nil
     -- Recorded whether or not this device has to move for it: this is the
     -- page it has been *sent*, and it is what tells a jump made here from
     -- the leader's own idea of where this screen belongs.
-    self.assigned_page = page
-    if self.reader.getPage() == page then return end
+    self.assigned_page = wanted
+    self.assigned_pages = self.reader.getPageCount()
+    if self.reader.getPage() == wanted then return end
     self.applying_remote = true
-    local ok, err = pcall(self.reader.gotoPage, page)
+    local ok, err = pcall(self.reader.gotoPage, wanted)
     self.applying_remote = false
     if not ok then
-        self:log("could not go to page", page, err)
+        self:log("could not go to page", wanted, err)
     end
     self:changed()
+end
+
+--- Retries a page that arrived while the layouts still disagreed.
+function Core:applyPendingPage()
+    local held = self.pending_page
+    if not held or not self.reader then return end
+    self:applyRemotePage(held.page, held.pages, held.typo)
 end
 
 --------------------------------------------------------------------------
@@ -2397,13 +2516,6 @@ end
 -- but the delay changes: the check itself is the same check.
 local TYPOGRAPHY_POLL = tonumber(os.getenv("DUO_TYPOGRAPHY_POLL") or "") or 1.5
 
--- How long to let a relayout settle before believing a page count. Real
--- rendering engines finish repaginating a little after the event returns.
---- How long the two devices are given to agree on a book's length after a
---- layout change, before a difference is treated as real. Generous,
---- because relaying out a long book is not quick.
-local PAGINATION_SETTLE = 8
-
 function Core:typographyEnabled()
     return self:get("match_typography") and self.reader ~= nil
         and self.reader.getTypography ~= nil
@@ -2677,7 +2789,8 @@ function Core:handleMessage(link, msg)
         if self:isLeader() then return end -- only the leader decides
         self.leader_page = Protocol.num(msg, "leader_page")
         self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
-        self:applyRemotePage(Protocol.num(msg, "page"))
+        self:applyRemotePage(Protocol.num(msg, "page"),
+            Protocol.num(msg, "pages"), msg.typo)
         self:noteShortBook(Protocol.bool(msg, "beyond"), Protocol.num(msg, "pages"))
     elseif msg.type == Protocol.TURN then
         if not self:isLeader() then return end

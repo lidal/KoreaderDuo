@@ -828,6 +828,66 @@ T.describe("pairing dialogs", function()
     end)
 end)
 
+T.describe("a page number and the layout that counted it", function()
+    --[[
+    The report: changing the font size threw the reader a long way into the
+    book.
+
+    The leader repaginates the instant the size changes and broadcasts the
+    new page straight away. Real engines finish repaginating a little after
+    the event returns, so that number lands on a device still holding the
+    old pagination -- where it means somewhere else entirely. Page 200 of
+    400 is half way through; page 200 of 300 is two thirds.
+    ]]
+    local function withLayout(own_signature, own_pages)
+        reset()
+        Core.reader = {
+            getPageCount = function() return own_pages end,
+            getPage = function() return 1 end,
+            gotoPage = function() end,
+        }
+        Core.typographySignature = function() return own_signature end
+        Core.layout_differed_at = nil
+    end
+
+    T.it("takes the number at face value when both lay the book out alike", function()
+        withLayout("A", 300)
+        T.assertEquals(Core:pageUnderOwnLayout(150, 300, "A"), 150)
+    end)
+
+    T.it("holds a page counted under a layout this device is not using", function()
+        withLayout("B", 300)
+        T.assertNil(Core:pageUnderOwnLayout(200, 400, "A"),
+            "a page from someone else's pagination was applied as it stood")
+    end)
+
+    T.it("carries the position across by proportion once the difference is real", function()
+        -- Held only while it might still be a relayout in flight. Two devices
+        -- that go on disagreeing are two different screens, and proportion is
+        -- the best a page number can do.
+        withLayout("B", 400)
+        T.assertNil(Core:pageUnderOwnLayout(150, 300, "A"))
+        Core.layout_differed_at = Util.now() - 60
+        T.assertEquals(Core:pageUnderOwnLayout(150, 300, "A"), 200,
+            "half way through a 300-page book is half way through a 400-page one")
+    end)
+
+    T.it("stays inside the book", function()
+        withLayout("B", 100)
+        Core.layout_differed_at = Util.now() - 60
+        T.assertEquals(Core:pageUnderOwnLayout(300, 300, "A"), 100)
+    end)
+
+    T.it("says nothing about layouts it cannot compare", function()
+        -- An older peer, or a document type with no typography at all: the
+        -- number is all there is, and it is used as it always was.
+        withLayout("A", 300)
+        T.assertEquals(Core:pageUnderOwnLayout(150, 400, nil), 150)
+        withLayout(nil, 300)
+        T.assertEquals(Core:pageUnderOwnLayout(150, 400, "A"), 150)
+    end)
+end)
+
 T.describe("spread arithmetic", function()
     local Spread = require("duo/spread")
 
