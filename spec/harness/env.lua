@@ -296,7 +296,19 @@ function Env.install(options)
             mode = "directory"
         end
         if what == "mode" then return mode end
-        return { mode = mode }
+        -- Size included, because deciding whether two devices hold the same
+        -- book turns on it: same name and same size is the test, and a stub
+        -- that answered only "file" would make every book look like a match.
+        local size = 0
+        if mode == "file" then
+            local sizer = io.open(path, "rb")
+            if sizer then
+                size = sizer:seek("end") or 0
+                sizer:close()
+            end
+        end
+        if what == "size" then return size end
+        return { mode = mode, size = size }
     end
 
     --- Real folder listings, in the shape luafilesystem hands them back.

@@ -82,6 +82,7 @@ function Duo:init()
             reviveDirectLink = function(quiet, force) return Duo:reviveDirectLink(quiet, force) end,
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
+            listFolder = function(path) return Duo:listFolder(path) end,
             getTempDir = function() return Duo:getTempDir() end,
             setAwake = function(awake) Duo:setAwake(awake) end,
             getFrontlight = function() return Duo:getFrontlight() end,
@@ -291,6 +292,38 @@ function Duo:getBookDir()
 end
 
 --- Lets the user say where books should land, starting from where they do.
+--[[--
+Picks the folder Duo copies to and from.
+
+Shared, so setting it here settles it for the pair rather than for this
+device: the two can never end up copying between folders that are not the
+same folder, which was the whole trouble with following whatever was on
+screen.
+--]]--
+function Duo:chooseSharedFolder()
+    local ok, PathChooser = pcall(require, "ui/widget/pathchooser")
+    if not ok or not PathChooser then
+        UIManager:show(InfoMessage:new{
+            text = _("This build of KOReader has no folder chooser."),
+        })
+        return
+    end
+    UIManager:show(PathChooser:new{
+        select_directory = true,
+        select_file = false,
+        path = Core:sharedFolder() or self:getBookDir(),
+        onConfirm = function(path)
+            if not path or path == "" then return end
+            Core:set("shared_folder", path)
+            self:refreshMenu()
+            UIManager:show(InfoMessage:new{
+                text = T(_("Duo copies books to and from %1, on both devices."), path),
+                timeout = 4,
+            })
+        end,
+    })
+end
+
 function Duo:chooseBookDir()
     local ok, PathChooser = pcall(require, "ui/widget/pathchooser")
     if not ok or not PathChooser then
@@ -1038,9 +1071,9 @@ function Duo:getSearchRoots()
     end
     add(self:getBookDir())
     add(G_reader_settings and G_reader_settings:readSetting("home_dir"))
-    -- The folder the pair was last browsing together, which is where a book
-    -- copied across by hand is most likely to have been put.
-    add(Core.shared_folder)
+    -- The folder the pair shares, which is where a book copied across by
+    -- hand is most likely to have been put.
+    add(Core:sharedFolder())
     return roots
 end
 
@@ -1077,6 +1110,33 @@ function Duo:findByName(roots, name)
         end
     end
     return found
+end
+
+--[[--
+What is sitting in `path`, one level down.
+
+The folder itself rather than a browser's listing of it: no filter, no
+sorting, no dependence on a widget being on screen. Folders are left out --
+what is shared is a shelf, not a tree, and walking into sub folders would
+turn "copy the shared folder" into "copy the card".
+--]]--
+function Duo:listFolder(path)
+    local lfs = require("libs/libkoreader-lfs")
+    local entries = {}
+    if not path or path == "" or not lfs.dir then return entries end
+    if lfs.attributes(path, "mode") ~= "directory" then return entries end
+    local ok, iterator = pcall(lfs.dir, path)
+    if not ok or not iterator then return entries end
+    for name in iterator do
+        if name:sub(1, 1) ~= "." then
+            local full = path .. "/" .. name
+            local attributes = lfs.attributes(full)
+            if attributes and attributes.mode == "file" then
+                entries[#entries+1] = { name = name, size = attributes.size or 0 }
+            end
+        end
+    end
+    return entries
 end
 
 --- KOReader's own cheap fingerprint for a file, when it can be had.
@@ -1795,6 +1855,17 @@ On connecting, the leader's settings win. After that a change on either device m
             callback = function() Core:set("sleep_together", not Core:get("sleep_together")) end,
         },
         {
+            text_func = function()
+                return T(_("Shared folder: %1"), Core:sharedFolder() or _("not set"))
+            end,
+            help_text = _("The one folder Duo copies books to and from. Both devices use the same one, whatever either of them happens to be browsing at the time, and nothing outside it is ever sent.\n\nThe default is /books. Set it on the leader and the follower follows."),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.menu_container = touchmenu_instance
+                Duo:chooseSharedFolder()
+            end,
+        },
+        {
             text = _("Keep the whole library in step"),
             help_text = _("Fetch whatever books the shared folder is missing here. This is what makes a shared book list line up."),
             checked_func = function() return Core:get("sync_library") end,
@@ -1831,7 +1902,7 @@ On connecting, the leader's settings win. After that a change on either device m
                 if Core:isSyncingLibrary() then return _("Stop fetching books") end
                 return _("Fetch any missing books now")
             end,
-            help_text = _("Compare this folder with the leader's and pull over what is missing. Only the other device has anything to fetch."),
+            help_text = _("Compare the shared folder with the leader's and pull over what is missing. Only the other device has anything to fetch."),
             -- The leader is where the books come from; it has nothing to fetch.
             enabled_func = function() return Core:isConnected() and not Core:isLeader() end,
             keep_menu_open = true,
@@ -1839,11 +1910,8 @@ On connecting, the leader's settings win. After that a change on either device m
                 self.menu_container = touchmenu_instance
                 if Core:isSyncingLibrary() then
                     Core:stopLibrarySync("stopped by hand")
-                elseif Core.browser then
-                    local state = Core.browser.getState()
-                    if state and not Core:requestLibrary(state.path) then
-                        Core:notify(_("Duo: nothing to fetch"))
-                    end
+                elseif not Core:requestLibrary() then
+                    Core:notify(_("Duo: nothing to fetch"))
                 end
                 self:refreshMenu()
             end,

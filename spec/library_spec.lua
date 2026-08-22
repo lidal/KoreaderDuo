@@ -65,6 +65,9 @@ os.execute(("mkdir -p %q"):format(FOLLOWER_SRC))
 for _, index in ipairs({ 1, 2 }) do
     makeBook(FOLLOWER_SRC, ("book%02d.epub"):format(index), index)
 end
+-- A folder that is not the shared one, for checking Duo ignores it however
+-- squarely a device is looking at it.
+makeBook(SHARED .. "-elsewhere", "elsewhere01.epub", 9)
 
 local controller = Controller.new{ first_port = 18300 }
 local leader = controller:spawn("lib-leader")
@@ -89,6 +92,10 @@ local function browseTogether(options)
         controller:call(device, ("Core.settings.peer_port = %d"):format(DUO_PORT))
         controller:call(device, "Core.settings.discovery_port = 19976")
         controller:call(device, "Core.settings.share_browser = true")
+        -- The folder Duo copies to and from, named rather than wandered
+        -- into. Both devices are given the same one, which is what the
+        -- setting being shared arranges on real hardware.
+        controller:call(device, ("Core.settings.shared_folder = %q"):format(SHARED))
         controller:call(device, ("Core.settings.sync_library = %s"):format(
             tostring(options.sync ~= false)))
     end
@@ -100,6 +107,9 @@ local function browseTogether(options)
     controller:assertEventually(follower, "Core:isConnected()", true, "never connected")
     callLeader("Core:broadcastBrowser()")
 end
+
+--- A folder that is not the shared one, for checking Duo ignores it.
+local ELSEWHERE = SHARED .. "-elsewhere"
 
 --- Whether the device was told the book it asked for was not being shared.
 local REFUSED = "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('not in the shared folder') then return true end end return false end)()"
@@ -333,7 +343,60 @@ T.describe("asking for a book after the leader opened one", function()
     end)
 end)
 
+T.describe("the shared folder, not the folder on screen", function()
+    --[[
+    What Duo copies used to be whatever folder the file browser happened to
+    be showing. So it depended on where each reader had wandered to, it
+    changed under them as they browsed, and a device with a book open --
+    and therefore no browser at all -- had nothing to answer with.
+
+    It is one folder now, named in the settings and shared across the pair.
+    ]]
+
+    T.it("serves the shared folder while the leader is browsing somewhere else", function()
+        browseTogether()
+        -- The leader wanders off to a folder of its own.
+        controller:call(leader, ("D:openFileManager{ path = %q, perpage = 3, real_folder = true }"):format(ELSEWHERE))
+        controller:assertEventually(leader, ("tostring(require('duo/browser').snapshot(UI).path)"), ELSEWHERE)
+
+        T.assertEquals(callLeader(("tostring(Core:resolveSharedFile('book03.epub'))")),
+            SHARED .. "/book03.epub",
+            "the leader answered for the folder it was looking at, not the one it shares")
+        T.assertEquals(callLeader("tostring(Core:resolveSharedFile('elsewhere01.epub'))"), "nil",
+            "a book outside the shared folder was offered up")
+    end)
+
+    T.it("serves it with no browser at all, because a book is open", function()
+        browseTogether()
+        callLeader("D:openDocument{ page_count = 40 }")
+        controller:assertEventually(leader, "tostring(Core.browser)", "nil",
+            "opening a book should take the file browser away")
+        T.assertEquals(callLeader("tostring(Core:resolveSharedFile('book03.epub'))"),
+            SHARED .. "/book03.epub",
+            "the shared folder stopped existing when the browser did")
+    end)
+
+    T.it("still refuses anything outside it", function()
+        browseTogether()
+        for _, wanted in ipairs({ "../../etc/passwd", "/etc/passwd", "nowhere.epub" }) do
+            T.assertEquals(callLeader(("tostring(Core:resolveSharedFile(%q))"):format(wanted)), "nil",
+                "the leader would have handed over " .. wanted)
+        end
+    end)
+
+    T.it("lists the shared folder however the leader is asked", function()
+        -- A peer does not get to name a folder of its own and be given it.
+        browseTogether()
+        callFollower(("Core.library = { path = %q, index = {}, collecting = true, done = 0 }"):format(ELSEWHERE))
+        callFollower(("Core:getReadyLinks()[1]:send('LIB_REQ', { path = %q })"):format(ELSEWHERE))
+        controller:assertEventually(follower, "tostring(Core.library == nil)", "true",
+            "the request was never answered", 20)
+        T.assertEquals(booksOn(follower), booksOn(follower),
+            "asking for another folder must not have copied anything out of it")
+    end)
+end)
+
 local exit_code = T.run()
 controller:shutdown()
-os.execute(("rm -rf %q %q"):format(SHARED, FOLLOWER_SRC))
+os.execute(("rm -rf %q %q %q"):format(SHARED, FOLLOWER_SRC, SHARED .. "-elsewhere"))
 os.exit(exit_code)
