@@ -476,8 +476,14 @@ just like the reader binding.
 function Duo:bindBrowser()
     local ui = self.ui
     if not Browser.isAvailable(ui) then return end
-    -- Already bound to this very browser: nothing to redo.
-    if self.browser_binding and self.wrapped_chooser == ui.file_chooser then return end
+    -- Already bound to this very list: nothing to redo. Compared against
+    -- the list actually on screen rather than against the file browser,
+    -- which stays where it is underneath while a library view is shown over
+    -- it -- so a reader stepping from a folder into Favourites would
+    -- otherwise keep a binding wrapping the wrong widget's page turns.
+    local list = Browser.currentList(ui)
+    if self.browser_binding and list and self.wrapped_chooser == list.menu then return end
+    self:unwrapBrowserTurns()
     self:wrapBrowserTurns()
     self:wrapFileOpening()
 
@@ -508,14 +514,21 @@ file list ends up, so wrapping them catches the lot. They are left alone
 when Duo is not sharing the listing.
 --]]--
 function Duo:wrapBrowserTurns()
-    local chooser = self.ui and self.ui.file_chooser
+    local list = Browser.currentList(self.ui)
+    local chooser = list and list.menu
     if not chooser or chooser.duo_wrapped then return end
 
     local original_next = chooser.onNextPage
     local original_prev = chooser.onPrevPage
     if not original_next or not original_prev then return end
     self.wrapped_chooser = chooser
-    self.original_browser_turns = { next = original_next, prev = original_prev }
+    self.original_browser_turns = {
+        next = original_next,
+        prev = original_prev,
+        -- Whether these were the widget's own rather than inherited, which
+        -- is what decides how to give them back.
+        owned = rawget(chooser, "onNextPage") ~= nil,
+    }
     chooser.duo_wrapped = true
 
     chooser.onNextPage = function(menu, ...)
@@ -531,8 +544,18 @@ end
 function Duo:unwrapBrowserTurns()
     local chooser = self.wrapped_chooser
     if chooser then
-        chooser.onNextPage = nil -- unshadow the class methods
-        chooser.onPrevPage = nil
+        -- Put back what was there rather than unshadowing blindly: a skin
+        -- that patched these methods on the instance owns them, and blanking
+        -- the field would hand the widget back to its class and quietly undo
+        -- somebody else's work.
+        local original = self.original_browser_turns
+        if original and original.owned then
+            chooser.onNextPage = original.next
+            chooser.onPrevPage = original.prev
+        else
+            chooser.onNextPage = nil -- unshadow the class methods
+            chooser.onPrevPage = nil
+        end
         chooser.duo_wrapped = nil
     end
     self.wrapped_chooser = nil

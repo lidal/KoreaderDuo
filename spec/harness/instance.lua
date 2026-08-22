@@ -202,6 +202,27 @@ function Instance:getStatus()
 end
 
 --- Text of everything the plugin put on screen since the last call.
+--[[--
+Opens one of the library's own views on this device, over the browser.
+
+Duo binds to whatever list is on screen, and a view is what a skin like
+ZenOS puts there instead of a folder. The plugin is told the same way
+KOReader tells it -- the browser binding is rebuilt -- so a test drives the
+path a reader walks rather than reaching into the engine.
+--]]--
+function Instance:openLibraryView(kind, options)
+    local Reader = require("spec/harness/reader")
+    local menu = Reader.openLibraryView(self.ui, kind, options)
+    if self.plugin then self.plugin:bindBrowser() end
+    return menu
+end
+
+function Instance:closeLibraryView()
+    local Reader = require("spec/harness/reader")
+    Reader.closeLibraryView(self.ui)
+    if self.plugin then self.plugin:bindBrowser() end
+end
+
 function Instance:drainMessages()
     local messages = {}
     for _, entry in ipairs(self.UIManager:drainShownLog()) do

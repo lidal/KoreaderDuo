@@ -184,4 +184,103 @@ T.describe("changing folder", function()
     end)
 end)
 
+T.describe("the library's own views, not only folders", function()
+    --[[
+    A skin like ZenOS puts a library in front of the reader instead of a
+    file browser: Favourites, History, a collection, To Be Read. Those are
+    KOReader's own list widgets wearing different clothes -- `Menu`s with
+    pages, the same as the file browser -- but they live somewhere else on
+    the file manager, and Duo could only ever see `ui.file_chooser`. So the
+    nicest half of the library was the half the spread could not touch.
+    ]]
+    local Reader = require("spec/harness/reader")
+    local device = Instance.new{
+        name = "Kindle-Z", file_manager = true,
+        path = "/books", items = books(20), perpage = 6,
+    }
+
+    local function inFolder()
+        Reader.closeLibraryView(device.ui)
+    end
+
+    T.it("pages through History the same way it pages through a folder", function()
+        inFolder()
+        Reader.openLibraryView(device.ui, "history", { items = books(20, "read"), perpage = 6 })
+        T.assertTrue(Browser.isAvailable(device.ui), "History is a list of books like any other")
+        local state = Browser.snapshot(device.ui)
+        T.assertEquals(state.kind, "history")
+        T.assertEquals(state.pages, 4)
+        T.assertTrue(Browser.goToPage(device.ui, 3))
+        T.assertEquals(Browser.snapshot(device.ui).page, 3)
+        inFolder()
+    end)
+
+    T.it("tells one list from another before either offsets a page", function()
+        --[[
+        The whole reason a view has a name. Page 2 of Favourites and page 2
+        of a folder have nothing to do with each other, and offsetting
+        between them would put two devices confidently on unrelated screens.
+        ]]
+        inFolder()
+        local folder = Browser.snapshot(device.ui).view
+        T.assertEquals(folder, "folder:/books")
+
+        Reader.openLibraryView(device.ui, "history", { items = books(8, "read") })
+        local history = Browser.snapshot(device.ui).view
+        T.assertEquals(history, "history")
+
+        Reader.closeLibraryView(device.ui)
+        Reader.openLibraryView(device.ui, "collection", { items = books(8, "fav"), name = "Favourites" })
+        local favourites = Browser.snapshot(device.ui).view
+        T.assertEquals(favourites, "collection:Favourites")
+
+        Reader.closeLibraryView(device.ui)
+        Reader.openLibraryView(device.ui, "collection", { items = books(8, "tbr"), name = "To Be Read" })
+        T.assertNotEquals(Browser.snapshot(device.ui).view, favourites,
+            "two collections are two different lists of books")
+        inFolder()
+    end)
+
+    T.it("will not send a library view off to a folder", function()
+        -- A view is something the reader chose. Duo pages along with one; it
+        -- does not swap the screen out from under that choice.
+        inFolder()
+        Reader.openLibraryView(device.ui, "collection", { items = books(8, "fav") })
+        T.assertTrue(not Browser.changeDir(device.ui, "/books"),
+            "a collection was told to change directory")
+        T.assertTrue(not Browser.isFolder(device.ui))
+        inFolder()
+        T.assertTrue(Browser.isFolder(device.ui))
+    end)
+
+    T.it("reads the books out of a view that does not label its rows", function()
+        -- A folder listing marks each row a file because it also holds
+        -- folders. A list of books is all books and often says nothing.
+        inFolder()
+        local menu = Reader.openLibraryView(device.ui, "history", { items = books(3, "read") })
+        for _, item in ipairs(menu.item_table) do item.is_file = nil end
+        T.assertEquals(#Browser.fileEntries(device.ui), 3,
+            "the books in a library view went uncounted")
+        inFolder()
+    end)
+
+    T.it("follows what is on top rather than what merely exists", function()
+        --[[
+        The file browser stays alive underneath while a view is shown over
+        it, so "is there a file browser?" is true the whole time somebody is
+        in the library. KOReader builds these menus when it shows one and
+        drops them when it closes, which is how it answers the same question
+        itself, so the view being there at all is what puts it on top.
+        ]]
+        inFolder()
+        T.assertEquals(Browser.snapshot(device.ui).kind, "folder")
+        Reader.openLibraryView(device.ui, "history", { items = books(8, "read") })
+        T.assertEquals(Browser.snapshot(device.ui).kind, "history",
+            "the folder underneath was answering for the view on top of it")
+        inFolder()
+        T.assertEquals(Browser.snapshot(device.ui).kind, "folder",
+            "closing the view should hand the screen back to the folder")
+    end)
+end)
+
 os.exit(T.run())

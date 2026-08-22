@@ -463,6 +463,50 @@ KOReader replaces the whole UI with a ReaderUI when a book is opened, so
 these really are two different things, which is why the plugin binds and
 releases each of them separately.
 --]]--
+--[[--
+One of the library's own list views: History, Favourites, a collection.
+
+Shaped the way KOReader shapes them, because that shape is the whole point
+of the test: a `Menu` hanging off a manager on the file manager, with items
+and pages and no path -- a list of books that is not a folder. A skin like
+ZenOS builds its library out of exactly these.
+
+`open` puts one on screen and `close` takes it away, so a test can have two
+devices in the same view, in different views, or one in a view and the
+other in a folder.
+--]]--
+function Reader.openLibraryView(ui, kind, options)
+    options = options or {}
+    local menu = Reader.newFileChooser{
+        path = options.path or "/books",
+        perpage = options.perpage or 6,
+        items = options.items or {},
+    }
+    -- A library view is a list of books, not a place: no path to change to,
+    -- and no refreshPath to call.
+    menu.path = nil
+    menu.refreshPath = nil
+    menu.changeToPath = nil
+    -- KOReader's book lists name the file on each row. A folder listing
+    -- marks rows `is_file` because it also holds folders; a list that is
+    -- nothing but books has no such distinction to draw.
+    for _, item in ipairs(menu.item_table) do
+        item.file = item.path
+    end
+    if kind == "collection" then
+        menu.collection_name = options.name or "Favourites"
+        ui.collections = { booklist_menu = menu, coll_name = menu.collection_name }
+    else
+        ui.history = { booklist_menu = menu }
+    end
+    return menu
+end
+
+function Reader.closeLibraryView(ui)
+    ui.history = nil
+    ui.collections = nil
+end
+
 function Reader.newFileManager(options)
     options = options or {}
     local ui = setmetatable({

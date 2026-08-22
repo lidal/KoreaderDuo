@@ -582,6 +582,71 @@ on either device afterwards moves the rest.
 - **Battery.** The heartbeat is one small packet every two seconds on an
   open socket. Wi-Fi being on at all is the real cost.
 
+## Using Duo with ZenOS
+
+[ZenOS](https://github.com/AnthonyGress/zen_ui.koplugin) replaces KOReader's
+file browser with a library: Favourites, History, Collections, Series, To Be
+Read. Duo spreads those the same way it spreads a folder — the leader shows
+the first screenful, the follower shows the next.
+
+It works because ZenOS is a set of patches over KOReader's own widgets
+rather than a new interface. Its library views *are* KOReader's list widgets
+wearing different clothes, and every one of them is a `Menu` underneath with
+the same `page`, `perpage` and `onGotoPage` the spread arithmetic already
+uses. Duo binds to whichever list is on screen rather than to the file
+browser alone, so nothing about ZenOS in particular is hard-coded — the same
+support arrives for any skin that leans on those widgets, and for KOReader's
+own History and Collections with no skin at all.
+
+**Both devices have to be in the same list.** Page 2 of Favourites and page 2
+of a folder have nothing to do with each other, so every listing carries a
+name — the folder's path, or which view it is, or which collection — and the
+two devices compare names before either offsets a page. When they differ,
+the follower says so and stays where it is rather than paging along with
+something unrelated.
+
+**Duo will not put you in a view.** It follows you into a *folder*, because a
+folder is a place and both devices can go there. A library view is a choice
+you made on that device, and swapping the screen out from under it would be
+worse than not following. So open the same view on both and they page
+together; open different ones and Duo says so.
+
+### On whether spreading a library is a good idea
+
+Twelve covers across two screens instead of six is the appeal, and the
+mechanism works. Two things decide whether it is pleasant:
+
+- **The two devices must fit the same number of books on a screen.** Duo
+  already matches items-per-page, and matches a grid as a grid, but a
+  navigation bar on one device and not the other — or two different ZenOS
+  layouts, or two different screen sizes — changes what a screenful is. When
+  it cannot be matched, Duo says the listings will not line up rather than
+  showing you a silently wrong half.
+- **A grid spread reads worse than a book spread.** A book is one continuous
+  thing and the eye crosses the gap happily. A library is a grid, and a grid
+  broken across two bezels with a gap in the middle is not obviously better
+  than two independent grids. This is a matter of taste rather than of
+  mechanism, and it is worth trying both ways before deciding.
+
+### What has not been verified
+
+The ZenOS support here is written against ZenOS's source and KOReader's
+widget structure, and it is covered by tests against a harness that models
+those widgets — a list with pages and no folder path, a view that names its
+books without marking each row a file, a view shown over a browser that is
+still alive underneath. None of that is the same as having run it on a pair
+of Kindles with ZenOS installed. In particular:
+
+- Which field holds a view's menu has changed between KOReader releases.
+  Duo probes several and gives up gracefully, but a build that keeps it
+  somewhere else costs you the library spread with no warning beyond the
+  listings not lining up.
+- ZenOS's home screen is not a list at all, so there is nothing there to
+  spread. Duo ignores it.
+- Duo's whole-library copying still works in terms of *folders*. A view is
+  not a folder, so "fetch the missing books" has nothing to compare while
+  you are in one.
+
 ## Reporting something that went wrong
 
 Duo can keep a log of what it does, in a file you can copy off the device
