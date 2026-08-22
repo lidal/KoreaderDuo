@@ -582,6 +582,26 @@ on either device afterwards moves the rest.
 - **Battery.** The heartbeat is one small packet every two seconds on an
   open socket. Wi-Fi being on at all is the real cost.
 
+## The shared folder
+
+Duo copies books to and from **one folder, named in the settings** — `/books`
+by default, and the same on both devices. Nothing outside it is ever sent,
+and nothing about it depends on what either device happens to be looking at.
+
+**Duo → Shared folder** sets it. The setting is shared like the other Duo
+settings, so changing it on the leader changes it on the follower, and the
+two can never end up copying between folders that are not the same folder.
+
+This is deliberately separate from what is on screen. Browsing is browsing:
+the two devices still page through a listing together, and you can wander
+anywhere you like. What may be copied is a different question, and it has
+the same answer wherever you have wandered to — including when there is no
+browser at all because a book is open, which is exactly when the other
+device asks for a book it has just been told about.
+
+Books that arrive from a library sync land in the shared folder. A book sent
+one-off, because the other device opened something that is not in the shared
+folder, still lands in **Books arrive in** instead.
 ## Using Duo with ZenOS
 
 [ZenOS](https://github.com/AnthonyGress/zen_ui.koplugin) replaces KOReader's
@@ -643,9 +663,10 @@ of Kindles with ZenOS installed. In particular:
   listings not lining up.
 - ZenOS's home screen is not a list at all, so there is nothing there to
   spread. Duo ignores it.
-- Duo's whole-library copying still works in terms of *folders*. A view is
-  not a folder, so "fetch the missing books" has nothing to compare while
-  you are in one.
+- Copying is anchored to the shared folder and does not care which view you
+  are in — that is the point of anchoring it. Being in Favourites while the
+  books are copied out of `/books` is fine and expected; what a view changes
+  is only which listing the two devices page through together.
 
 ## Reporting something that went wrong
 

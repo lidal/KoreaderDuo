@@ -208,6 +208,17 @@ local DEFAULTS = {
     stays, switched off, for whoever wants it.
     ]]
     covers_first = false,
+    --[[
+    The one folder Duo copies books to and from.
+
+    Anchored rather than followed. Duo used to sync whichever folder the
+    file browser happened to be showing, which meant what got copied
+    depended on where somebody had wandered to, and a device reading a book
+    -- with no browser at all -- had nothing to answer with. A folder named
+    once is a folder both devices can agree on, whatever either of them is
+    looking at.
+    ]]
+    shared_folder = "/books",
     -- Off, and deliberately not shared: a log is about this device, and
     -- switching one on should never quietly switch on the other's.
     debug_log = false,
@@ -326,6 +337,8 @@ local SHARED_SETTINGS = {
     "sync_books",
     "sync_library",
     "covers_first",
+    -- Shared, so the pair cannot disagree about what is being copied.
+    "shared_folder",
     "sync_frontlight",
 }
 
@@ -950,6 +963,7 @@ function Core:poll()
     self:checkFrontlight()
     self:checkLinkHealth()
     self:checkDocumentAcks()
+    self:checkLibrary()
     -- A page the leader sent while this device was still relaying the book
     -- out. The leader only broadcasts when something changes, so a page held
     -- back has to be picked up here or not at all.
@@ -1503,24 +1517,16 @@ function Core:browsingTogether()
 end
 
 --[[--
-The file browser's state, and a note of the folder it was showing.
+The file browser's state, as it is this instant.
 
-`getState()` answers for the browser as it is this instant. The instant this
-device opens a book that is no longer the folder being shared -- the reader
-is on top and the browser may not answer at all. The other device is still
-looking at a listing of that folder, though, and a stand-in it opens turns
-into a request for one of those books that arrives just after this device
-left. Remembering the last folder actually on show is what keeps that
-request answerable.
+Only ever about what is on the screen: which page of which listing the two
+devices are showing each other. What may be copied is a different question
+with a different answer -- see `sharedFolder` -- and the two were tangled
+together for far too long.
 --]]--
 function Core:browserState()
     if not self.browser then return nil end
-    local showing = self.browser.getState()
-    if not showing then return nil end
-    if showing.path and showing.path ~= "" then
-        self.shared_folder = showing.path
-    end
-    return showing
+    return self.browser.getState()
 end
 
 --- Sends one device the page of the listing it should be showing.
@@ -1606,7 +1612,6 @@ function Core:applyBrowser(msg)
     self.browser.goToPage(Protocol.num(msg, "page", 1))
     self.applying_remote = false
 
-    self:reconcileLibrary(msg)
     self:checkListing(msg)
     self:changed()
 end
@@ -1649,20 +1654,88 @@ function Core:refuseListing(text, view)
     self:alert(text)
 end
 
---- Fetches whatever is missing when the two folders do not match.
-function Core:reconcileLibrary(msg)
-    if not self:get("sync_library") or self:isLeader() then return end
-    if self.library or not self.browser then return end
-    local state = self:browserState()
-    if not state then return end
-    local their_count = Protocol.num(msg, "count")
-    local their_signature = msg.sig
-    local differs = (their_count and their_count ~= state.count)
-        or (their_signature and their_signature ~= "" and state.signature
-            and their_signature ~= state.signature)
-    if differs then
-        self:requestLibrary(state.path)
+--[[--
+The folder Duo copies books to and from, with any trailing slash trimmed.
+
+Not the folder on screen. Everything about copying books hangs off this one
+answer, so that a transfer means the same thing whether the reader is in the
+file browser, in a library view, or halfway through a novel.
+--]]--
+function Core:sharedFolder()
+    local path = tostring(self:get("shared_folder") or "")
+    path = path:gsub("/+$", "")
+    if path == "" then return nil end
+    return path
+end
+
+--[[--
+The books sitting in `path`, read from the disk rather than from a listing.
+
+A browser's listing is a view: it has a filter on it, it is sorted, it may
+be a library view that is not a folder at all, and it does not exist while a
+book is open. The folder is none of those things -- it is just what is
+there, which is the only sound basis for deciding what has to be copied.
+
+@treturn table array of { name =, size = }
+--]]--
+function Core:folderFiles(path)
+    if not path or not self.hooks or not self.hooks.listFolder then return {} end
+    local ok, entries = pcall(self.hooks.listFolder, path)
+    if not ok or type(entries) ~= "table" then
+        self:log("could not read the shared folder", path, "-", tostring(entries))
+        return {}
     end
+    local BookTransfer = require("duo/booktransfer")
+    local books = {}
+    for _, entry in ipairs(entries) do
+        if entry.name and BookTransfer.isBookName(entry.name) then
+            books[#books+1] = { name = entry.name, size = entry.size or 0 }
+        end
+    end
+    return books
+end
+
+--[[--
+Asks for the shared folder's index once the pair is connected.
+
+Driven by the link rather than by browsing. It used to hang off whatever the
+file browser was showing: a folder somebody happened to open, compared with
+the leader's view of the same, which made what got copied depend on where
+each reader had wandered to -- and left a device with a book open, and so no
+browser at all, unable to take part.
+--]]--
+function Core:checkLibrary()
+    if not self:get("sync_library") or self:isLeader() then return end
+    if not self:isConnected() then
+        self.library_asked = false
+        self.library_settled = false
+        return
+    end
+    if self.library or self.book_receiver then
+        return -- a pass is running; it has not had its say yet
+    end
+    if self.library_asked then
+        -- Asked, and nothing left running: the pass is over, whatever it
+        -- found. Anything still not lining up after that is worth saying.
+        self.library_settled = true
+        return
+    end
+    self.library_asked = true
+    self:requestLibrary()
+end
+
+--[[--
+Whether the shared folder may yet fix itself.
+
+A folder that does not match is only worth complaining about once the
+copying has finished and left it that way. Between connecting and that
+moment, a difference is a difference about to be repaired, and saying so is
+alarming somebody about the thing that is already being handled.
+--]]--
+function Core:librarySettling()
+    if not self:get("sync_library") or self:isLeader() then return false end
+    if not self:isConnected() then return false end
+    return not self.library_settled
 end
 
 --[[--
@@ -1701,7 +1774,7 @@ finishes will either match or be worth complaining about.
 --]]--
 function Core:checkListing(msg)
     if self.warned_listing or not self.browser then return end
-    if self:isSyncingLibrary() then return end
+    if self:isSyncingLibrary() or self:librarySettling() then return end
     local state = self:browserState()
     if not state then return end
 
@@ -1829,45 +1902,45 @@ Asks the other device what it has in the shared folder.
 Only worth doing when the two listings already disagree — which is exactly
 what makes the two halves of a shared book list fail to line up.
 --]]--
-function Core:requestLibrary(path)
+function Core:requestLibrary()
     if not self:get("sync_library") then return false end
-    if self:isLeader() or not self.browser then return false end
+    if self:isLeader() then return false end
     if self.library or self.book_receiver then return false end
     local link = self:getReadyLinks()[1]
     if not link then return false end
+    local folder = self:sharedFolder()
+    if not folder then return false end
 
-    self.library = { path = path, index = {}, collecting = true, done = 0 }
-    link:send(Protocol.LIB_REQ, { path = path })
-    self:log("asked for the library index of", path)
+    self.library = { path = folder, index = {}, collecting = true, done = 0 }
+    link:send(Protocol.LIB_REQ, { path = folder })
+    self:log("asked for the library index of", folder)
     return true
 end
 
 --- The leader lists the folder it is sharing.
 function Core:handleLibraryRequest(link, msg)
-    if not self:isLeader() or not self.browser then return end
+    if not self:isLeader() then return end
     if not self:get("sync_library") then
         link:send(Protocol.LIB_END, { count = 0, reason = "not sharing the library" })
         return
     end
-    local state = self:browserState()
-    -- Only the folder actually on show: a peer does not get to enumerate
-    -- the filesystem.
-    if not state or state.path ~= msg.path then
+    local folder = self:sharedFolder()
+    if not folder then
+        link:send(Protocol.LIB_END, { count = 0, reason = "no shared folder is set" })
+        return
+    end
+    -- One folder, named in the settings, and no other: a peer does not get
+    -- to enumerate the filesystem by asking for a path of its own choosing.
+    if msg.path and msg.path ~= "" and msg.path ~= folder then
         link:send(Protocol.LIB_END, { count = 0, reason = "that is not the folder being shared" })
         return
     end
 
-    -- Books only, whatever else is sitting in the folder. The listing the
-    -- file browser shows is not a promise: "show unsupported files" is a
-    -- setting, and the shared folder is only ever whichever one this device
-    -- happens to be looking at.
-    local BookTransfer = require("duo/booktransfer")
-    local entries = {}
-    for _, entry in ipairs(self.browser.getFiles()) do
-        if BookTransfer.isBookName(entry.name) then
-            entries[#entries+1] = entry
-        end
-    end
+    -- Read from the folder rather than from a browser's listing of it. The
+    -- listing has a filter on it, may be a library view that is not a folder
+    -- at all, and does not exist at all while a book is open -- which is
+    -- exactly when the other device asks, having followed this one into it.
+    local entries = self:folderFiles(folder)
     if #entries > MAX_LIBRARY_ENTRIES then
         link:send(Protocol.LIB_END, { count = 0, reason = "that folder holds too many files to copy" })
         return
@@ -1906,8 +1979,11 @@ function Core:handleLibraryEnd(msg)
         return
     end
 
+    -- What is in the shared folder, off the disk. Not what a browser is
+    -- listing: this has to be answerable with a book open and no browser
+    -- anywhere, which is the common case.
     local here = {}
-    for _, entry in ipairs(self.browser and self.browser.getFiles() or {}) do
+    for _, entry in ipairs(self:folderFiles(self.library.path)) do
         here[entry.name] = entry.size or 0
     end
 
@@ -2181,11 +2257,9 @@ local function fileExists(path)
 end
 
 function Core:resolveSharedFile(requested)
-    -- Deliberately not conditional on a file browser being attached. The
-    -- browser is torn down the moment this device opens a book, and that is
-    -- precisely when the other device asks for one: it followed this device
-    -- into a book it does not have. What is being shared is a folder, and
-    -- the folder is still there when the widget listing it is not.
+    -- Deliberately not conditional on a file browser being attached. What is
+    -- shared is a folder named in the settings, and a folder is still there
+    -- when no widget is listing it.
     if not self:get("sync_library") then return nil end
     local BookTransfer = require("duo/booktransfer")
     local name = BookTransfer.safeName(requested)
@@ -2195,13 +2269,12 @@ function Core:resolveSharedFile(requested)
     -- no matter how it came to be asked for.
     if not BookTransfer.isBookName(name) then return nil end
 
-    -- The folder on show if there is one, and otherwise the last one that
-    -- was. Opening a book does not withdraw the books that were listed a
-    -- moment earlier, and it is exactly then that the other device asks:
-    -- it followed this one into a book it does not have yet.
-    local state = self:browserState()
-    local folder = (state and state.path) or self.shared_folder
-    if not folder or folder == "" then return nil end
+    -- The folder named in the settings, whatever this device is looking at.
+    -- What may be handed over does not depend on where somebody wandered to,
+    -- and is answerable with a book open and no browser anywhere -- which is
+    -- exactly when the other device asks, having followed this one into it.
+    local folder = self:sharedFolder()
+    if not folder then return nil end
 
     -- Judged against the folder itself rather than against the browser's
     -- listing of it, which is a view that goes away when the reader covers
