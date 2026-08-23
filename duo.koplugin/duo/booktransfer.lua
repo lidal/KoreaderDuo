@@ -26,7 +26,7 @@ BookTransfer.CHUNK = 2880
 BookTransfer.HIGH_WATER = 48 * 1024
 
 --[[--
-How many chunks one turn of the poll loop may send.
+How long one turn of the poll loop may spend pushing the book.
 
 The high-water mark alone is not a limit. It counts the bytes still waiting
 for the socket, and on a link that keeps up that number is nearly always
@@ -36,11 +36,33 @@ repaint and no chance to touch anything in between: the reader froze for as
 long as the book took, and the way out of a transfer became unreachable at
 exactly the size that makes somebody want it.
 
-This is the ceiling that makes the pump yield. Set well above what any
-reader's Wi-Fi will carry in a fiftieth of a second, so it costs nothing on
-a link that is going slowly and everything on one that is not.
+A stretch of time rather than a number of chunks, because a number of
+chunks is a guess about how fast the device is, and one number cannot be
+right for two devices. Forty-eight chunks is a hundred and forty kilobytes,
+which was most of a fifty-millisecond poll on a desktop before the encoding
+was made cheaper -- and a reader is slower than a desktop, so on the devices
+this is for it was the whole poll and more. The same number on a quick link
+is a fraction of one, which is what capped a transfer here at under three
+megabytes a second however much the link could carry.
+
+A deadline asks the question the count was standing in for: how much of this
+poll may Duo have? Twenty milliseconds of fifty, and the device works out
+for itself what fits in that.
+
+Always at least one chunk, whatever the clock says, so a transfer cannot
+stall on a slow device.
 --]]--
-BookTransfer.CHUNKS_PER_POLL = 48
+BookTransfer.POLL_BUDGET = 0.02
+
+--[[--
+And a ceiling on top of the deadline.
+
+Belt and braces: a clock that does not move -- a device asleep and back, a
+platform without a sub-second timer -- would otherwise turn the deadline
+into no limit at all. High enough that it never binds on a link doing
+honest work.
+--]]--
+BookTransfer.CHUNKS_PER_POLL = 512
 
 --[[--
 What counts as a book, and so as something worth copying between devices.

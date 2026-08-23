@@ -413,10 +413,20 @@ status line shows progress.
   abandoned, and a book that goes thirty seconds without a byte is written
   off at the receiving end, so one bad transfer cannot wedge the rest.
 
-Over Wi-Fi, a few hundred kilobytes takes a handful of seconds — about
-100 KB/s, since the bytes travel as text on the same line-based link. Over
-serial it takes as long as the line takes: the transfer is paced by how fast
-the other end drains it, so a slow link is slow rather than broken.
+How fast that goes is mostly a question of how fast the two devices are, not
+how fast the link is. The bytes travel as text on the same line-based link
+the page numbers use, so every byte is encoded on the way out and decoded on
+the way in, and on a reader's processor that arithmetic used to cost more
+than the Wi-Fi it was feeding. Both ends of that have been dealt with — the
+encoding runs off lookup tables now, and each turn of the poll loop spends a
+slice of time on the transfer rather than a fixed number of chunks, so a
+quick device is not held to a slow device's pace. Measured between two
+KOReaders on one machine, a 30.7 MB book went from 19.3 s to 7.1 s. Real
+hardware over real Wi-Fi will be slower than that; a Kindle's processor and
+its radio both have a say.
+
+Over serial it takes as long as the line takes: the transfer is paced by how
+fast the other end drains it, so a slow link is slow rather than broken.
 
 Books travel base64-encoded in the **URL-safe** alphabet. That detail
 matters more than it looks. The protocol's lines carry a restricted
@@ -767,7 +777,7 @@ make test LUA=lua5.1
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
-| `protocol_spec` | 24 | Framing, escaping, byte-at-a-time reassembly, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
+| `protocol_spec` | 26 | Framing, escaping, byte-at-a-time reassembly, a poll's worth of messages read out with a cursor rather than copied again for each one, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
 | `plugin_spec` | 42 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
 | `integration_spec` | 66 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
@@ -775,7 +785,7 @@ make test LUA=lua5.1
 | `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
 | `library_spec` | 14 | **The whole library brought into step**: the follower in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
 | `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it, and refusing a folder the device does not have |
-| `booktransfer_spec` | 19 | Both base64 alphabets against the published vectors, every byte value round-tripped, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
+| `booktransfer_spec` | 21 | Both base64 alphabets against the published vectors, every length from nothing to several batches round-tripped through both, a bad character caught wherever in the string it sits, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
 | `frontlight_spec` | 17 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
 | `directlink_spec` | 30 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |

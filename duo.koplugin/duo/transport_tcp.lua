@@ -76,15 +76,22 @@ end
 --[[--
 How much may be taken off the socket in one turn of the poll loop.
 
-Matched to what the sending side puts on in one turn. It used to read a
-single eight-kilobyte block, which at the rate a reader polls comes to about
-a hundred and fifty kilobytes a second -- while the sender was pushing more
-than twenty times that. The difference did not go anywhere: it piled up in
-the kernel's buffers, so the sending device announced a book finished while
-the receiving one was minutes from having it, and a book of any size looked
-like it had hung.
+Generous, because taking bytes off a socket is nearly free -- it is a copy,
+with none of the decoding that follows. It used to read a single
+eight-kilobyte block, which at the rate a reader polls comes to about a
+hundred and fifty kilobytes a second, while the sender was pushing more than
+twenty times that. The difference did not go anywhere: it piled up in the
+kernel's buffers, so the sending device announced a book finished while the
+receiving one was minutes from having it, and a book of any size looked like
+it had hung.
+
+What keeps this from being the same mistake in reverse -- a process holding
+a book in memory because it can read faster than it can decode -- is the
+link, which stops calling this at all while it still has a backlog to work
+through. Bytes then stay in the kernel's buffer, where they belong: that is
+what makes TCP tell the sender to ease off.
 --]]--
-local READ_BUDGET = 192 * 1024
+local READ_BUDGET = 512 * 1024
 local READ_BLOCK = 8192
 
 --- Reads whatever has arrived, up to a bounded amount.

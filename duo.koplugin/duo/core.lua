@@ -2664,6 +2664,10 @@ function Core:pumpBookSender()
     end
 
     local BookTransfer = require("duo/booktransfer")
+    -- A slice of this poll, not a fixed number of chunks: what a device can
+    -- push between two polls is the device's business, and guessing it as a
+    -- count got both a Kindle and a fast link wrong.
+    local deadline = Util.now() + BookTransfer.POLL_BUDGET
     local sent = 0
     while sent < BookTransfer.CHUNKS_PER_POLL
             and transfer.link:pending() < BookTransfer.HIGH_WATER do
@@ -2686,6 +2690,10 @@ function Core:pumpBookSender()
             self:abortBookSend(err or "the chunk could not be sent")
             return
         end
+        -- Checked after a chunk rather than before one, so every poll makes
+        -- progress even on a device slow enough to spend its whole budget
+        -- on a single chunk.
+        if Util.now() >= deadline then break end
     end
     self:changed()
 end

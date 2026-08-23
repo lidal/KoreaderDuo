@@ -1212,8 +1212,13 @@ T.describe("sending a book without freezing the reader", function()
 
     local function bigBook()
         local handle = assert(io.open(BIG, "wb"))
-        -- Comfortably more chunks than one turn of the loop may send.
-        handle:write(string.rep("x", BookTransfer.CHUNK * BookTransfer.CHUNKS_PER_POLL * 4))
+        --[[
+        More chunks than one turn of the loop may send, on any machine. The
+        turn stops at a deadline now, so how much it gets through depends on
+        how fast the machine is -- but never past the ceiling that sits over
+        the deadline, so sizing the book past that holds everywhere.
+        ]]
+        handle:write(string.rep("x", BookTransfer.CHUNK * (BookTransfer.CHUNKS_PER_POLL + 16)))
         handle:close()
         return BIG
     end
@@ -1246,17 +1251,79 @@ T.describe("sending a book without freezing the reader", function()
         local link = eagerLink()
         Core.book_sender = { sender = sender, link = link, name = "big.epub" }
 
+        local chunks_in_book = math.ceil(sender.size / BookTransfer.CHUNK)
         Core:pumpBookSender()
-        T.assertEquals(countData(link), BookTransfer.CHUNKS_PER_POLL,
-            "one turn of the poll loop sent more of the book than it may")
+        local first = countData(link)
+        T.assertTrue(first > 0, "the poll sent nothing at all")
+        T.assertTrue(first < chunks_in_book,
+            "one turn of the poll loop sent the whole book and froze the reader")
         T.assertTrue(Core.book_sender ~= nil, "the transfer should still be going")
 
         Core:pumpBookSender()
-        T.assertEquals(countData(link), BookTransfer.CHUNKS_PER_POLL * 2,
-            "the next turn should carry on where the last one stopped")
+        T.assertTrue(countData(link) > first,
+            "the next turn did not carry on where the last one stopped")
 
         Core:cancelTransfer("stopped by hand")
         T.assertNil(Core.book_sender, "the transfer would not stop")
+    end)
+
+    T.it("keeps one turn inside the slice of the poll it was given", function()
+        --[[
+        What the count used to stand in for, asked directly. KOReader polls
+        every fifty milliseconds, and a plugin that spends all of that is a
+        plugin nobody can tap through. The measurement is generous -- a
+        shared build machine is not a quiet one -- but it is measuring the
+        right thing, which the old ceiling of forty-eight chunks was not:
+        that number was minutes of work on a Kindle and a rounding error on
+        anything else.
+        ]]
+        reset()
+        local sender = assert(BookTransfer.newSender(bigBook()))
+        local link = eagerLink()
+        Core.book_sender = { sender = sender, link = link, name = "big.epub" }
+
+        local Util = require("duo/util")
+        local started = Util.now()
+        Core:pumpBookSender()
+        local spent = Util.now() - started
+        T.assertTrue(spent < BookTransfer.POLL_BUDGET * 5,
+            ("one turn held the reader for %.0f ms, against a budget of %.0f ms")
+                :format(spent * 1000, BookTransfer.POLL_BUDGET * 1000))
+        Core:cancelTransfer("stopped by hand")
+    end)
+
+    T.it("still sends something when there is no time at all to send it in", function()
+        -- A budget that has already run out must not mean a transfer that
+        -- never moves. The deadline is checked after a chunk, not before.
+        reset()
+        local was = BookTransfer.POLL_BUDGET
+        BookTransfer.POLL_BUDGET = -1
+        local sender = assert(BookTransfer.newSender(bigBook()))
+        local link = eagerLink()
+        Core.book_sender = { sender = sender, link = link, name = "big.epub" }
+
+        Core:pumpBookSender()
+        BookTransfer.POLL_BUDGET = was
+        T.assertEquals(countData(link), 1,
+            "a poll with no time in it should still move the transfer along by one")
+        Core:cancelTransfer("stopped by hand")
+    end)
+
+    T.it("gets the whole book across, a poll at a time", function()
+        -- The budget bounds one turn; it must not bound the transfer.
+        reset()
+        local sender = assert(BookTransfer.newSender(bigBook()))
+        local link = eagerLink()
+        Core.book_sender = { sender = sender, link = link, name = "big.epub" }
+
+        local total = sender.size
+        for _ = 1, 5000 do
+            if not Core.book_sender then break end
+            Core:pumpBookSender()
+        end
+        T.assertNil(Core.book_sender, "the transfer never finished")
+        T.assertEquals(countData(link), math.ceil(total / BookTransfer.CHUNK),
+            "the book did not go across in one piece")
     end)
 
     T.it("still stops early when the link is the thing holding it up", function()

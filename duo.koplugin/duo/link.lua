@@ -77,30 +77,53 @@ function Link:expectAnswers()
 end
 
 --[[--
-How many messages one poll may hand over before going back for air.
+How long one poll may spend acting on what arrived, before going back for air.
 
-A library sync arrives as hundreds of chunks, and the socket hands them all
-over at once. Decoding and writing each one is work, and doing the lot
-inside a single poll meant minutes could pass with no heartbeat going out —
-so the *other* device, hearing nothing, decided this one had died and
-dropped a link that was in the middle of working perfectly. Hence the
-connected/disconnected churn that showed up only while books were moving.
+A book arrives as thousands of chunks, and the socket hands them over
+faster than they can be decoded and written. Working through the lot inside
+a single poll meant minutes could pass with no heartbeat going out -- so the
+*other* device, hearing nothing, decided this one had died and dropped a
+link that was in the middle of working perfectly. That is the
+connected/disconnected churn that only ever showed up while books were
+moving.
 
 Bounded, the poll returns after a mouthful, sends its ping, and picks the
 rest up on the next tick fifty milliseconds later. Nothing is lost: what is
-left sits in the reader's buffer. Throughput is unaffected at any rate a
-Wi-Fi link can manage.
---]]--
---[[--
-How many messages one turn of the poll loop may act on.
+left sits in the reader's buffer, and what has not been read yet sits in the
+kernel's.
 
-Enough to keep up with the side sending a book: the sender puts out a set
-number of chunks per turn and the reader has to be able to take them in at
-the same rate, or the difference piles up in the kernel's buffers and a
-transfer that is really crawling looks, from the sending end, as if it has
-already finished.
+A stretch of time rather than a number of messages, for the same reason the
+sending side takes a slice of the poll rather than a set number of chunks:
+one number cannot be right for two devices. Sixty-four messages is a hundred
+and eighty kilobytes to decode and write, which on a slow reader is more
+than a poll -- so the heartbeat this was meant to protect went out late
+anyway -- and on a quick one a fraction of it. A deadline asks the question
+the count was standing in for.
 --]]--
-Link.MAX_DISPATCH_PER_POLL = 64
+Link.DISPATCH_BUDGET = 0.02
+
+--[[--
+And a ceiling on top of the deadline, for a clock that is not moving.
+
+A device asleep and back, or a platform with no sub-second timer, would
+otherwise turn the deadline into no limit at all.
+--]]--
+Link.MAX_DISPATCH_PER_POLL = 512
+
+--[[--
+Stop taking bytes off the socket once this much is waiting to be read.
+
+Without it the two budgets fight: reading is nearly free and decoding is
+not, so a poll that reads two hundred kilobytes and decodes eighty leaves
+the difference growing in this process's memory, poll after poll, for the
+length of a book. That is the old bug in a new place -- the sending device
+sure the book has gone, the receiving one still minutes from having it --
+and it also throws away the one thing that stops it happening, because
+bytes left in the kernel's buffer make TCP tell the sender to slow down.
+Leaving them there is the whole point.
+--]]--
+Link.READ_WHEN_BELOW = 128 * 1024
+
 --- Seconds allowed for the handshake.
 Link.HANDSHAKE_TIMEOUT = 10
 --- Seconds between repeated challenges on a link with no connect step.
@@ -302,17 +325,20 @@ end
 function Link:poll()
     if self.state == "closed" then return end
 
-    local data, err = self.stream:receive()
-    if not data then
-        self:close(err == "closed" and "peer disconnected" or (err or "read failed"))
-        return
-    end
-    if #data > 0 then
-        self.last_rx = Util.now()
-        self.heard_from_peer = true
-        self.reader:feed(data)
+    if self.reader:backlog() < Link.READ_WHEN_BELOW then
+        local data, err = self.stream:receive()
+        if not data then
+            self:close(err == "closed" and "peer disconnected" or (err or "read failed"))
+            return
+        end
+        if #data > 0 then
+            self.last_rx = Util.now()
+            self.heard_from_peer = true
+            self.reader:feed(data)
+        end
     end
 
+    local deadline = Util.now() + Link.DISPATCH_BUDGET
     local handled = 0
     while self.state ~= "closed" and handled < Link.MAX_DISPATCH_PER_POLL do
         local msg, decode_err = self.reader:next()
@@ -323,7 +349,14 @@ function Link:poll()
             break
         end
         handled = handled + 1
+        -- Messages still in hand are as good as messages off the wire for
+        -- knowing the peer is there. Without this a device deep enough in a
+        -- backlog to skip its reads would stop hearing from a peer that is
+        -- in fact talking to it constantly, and drop the link mid-transfer.
+        local now = Util.now()
+        self.last_rx = now
         self:dispatch(msg)
+        if now >= deadline then break end
     end
 
     if self.state == "closed" then return end
