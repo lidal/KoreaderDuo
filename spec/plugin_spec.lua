@@ -1074,6 +1074,49 @@ T.describe("the log the reader can send on", function()
     end)
 end)
 
+T.describe("opening a book on both devices at once", function()
+    T.it("does not report the page a book opens on as a jump", function()
+        --[[
+        Seen in a real reader's log: "jumped to 1 - asking the leader to
+        follow", moments after a book was opened. A device that has not been
+        told where to stand has not jumped anywhere -- it has just opened a
+        book and landed where it left off -- and reporting that dragged the
+        pair to page one of a book neither had finished opening.
+        ]]
+        reset()
+        local sent = {}
+        Core.links = { {
+            slot = 1,
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            poll = function() end,
+            send = function(_self, msg_type) sent[#sent+1] = msg_type return true end,
+        } }
+        Core.role = Core.ROLE_FOLLOWER
+        Core.reader = {
+            getPage = function() return 1 end,
+            getPageCount = function() return 300 end,
+            gotoPage = function() end,
+        }
+        Core.assigned_page = nil
+        Core.assigned_pages = nil
+
+        Core:reportJump(1)
+        T.assertEquals(#sent, 0, "opening a book was reported as a jump")
+
+        -- Once it has been told where to stand, a real jump still counts.
+        Core.assigned_page = 10
+        Core.assigned_pages = 300
+        Core.last_seen_pages = 300
+        Core:reportJump(120)
+        T.assertEquals(#sent, 1, "a jump made by hand should still be reported")
+
+        Core.links = {}
+        Core.role = Core.ROLE_OFF
+        Core.reader = nil
+    end)
+end)
+
 T.describe("stopping a copy stops it at both ends", function()
     --[[
     Found by watching two real readers: a device fetching a whole library

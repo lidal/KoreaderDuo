@@ -800,6 +800,10 @@ function Duo:wrapFileOpening()
     self.original_open_file = original
     ui.openFile = function(manager, file, ...)
         if Duo:fetchBeforeOpening(file) then return true end
+        -- Said before the opening rather than after it, so the other device
+        -- starts on the same book at the same moment instead of waiting for
+        -- this one to finish and then taking its own turn.
+        Core:announceOpening(file)
         return original(manager, file, ...)
     end
 end

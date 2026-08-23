@@ -488,6 +488,10 @@ Attaches the currently open document.
 --]]--
 function Core:attachReader(binding)
     self.reader = binding
+    -- This device is done opening, so it is answering again too.
+    for _, link in ipairs(self.links) do
+        if link.expectAnswers then link:expectAnswers() end
+    end
     self.warned_pagination = false
     self.warned_short_book = false
     self.opening_file = nil -- whatever we were opening has now arrived
@@ -1153,11 +1157,50 @@ function Core:broadcastState()
     self:changed()
 end
 
+--[[--
+Tells the other device which book is being opened, before opening it.
+
+Opening a book on a reader is not quick -- a large one is seconds of
+parsing and laying out -- and this used to be announced afterwards, so the
+two devices did it one after the other and the reader waited for both in
+turn. Sent from the tap instead, so both are working on it at once.
+
+Deliberately thin: the path and nothing else. What the book turns out to
+be -- its title, its length, how it is laid out -- is not known yet on this
+device either, and follows in the usual announcement once it is open.
+--]]--
+function Core:announceOpening(file)
+    if not self:isLeader() or not self:isConnected() then return false end
+    if not self:get("follow_document") then return false end
+    if not file or file == "" then return false end
+    if self:isShelfGated() then return false end
+    self:log("opening", file, "- telling the other device now")
+    for _, link in ipairs(self:getReadyLinks()) do
+        -- Both ends are about to go quiet while they parse it, and neither
+        -- should take the other's silence for a peer that has gone away.
+        link:allowSilence()
+        link.doc_pending = {
+            file = file,
+            sent_at = Util.now(),
+            attempts = 1,
+        }
+        link:send(Protocol.DOC, {
+            file = file,
+            title = "",
+            digest = "",
+            pages = 0,
+            typo = "",
+        })
+    end
+    return true
+end
+
 function Core:sendDocumentTo(link)
     if not self.reader then return end
     local document = self.reader.getDocument()
     if not document or not document.file then return end
     -- Noted on the link itself, so it goes away when the link does.
+    if link.allowSilence then link:allowSilence() end
     link.doc_pending = {
         file = document.file,
         sent_at = Util.now(),
@@ -1338,7 +1381,18 @@ function Core:reportJump(page)
         return
     end
 
-    if self.assigned_page and page == self.assigned_page then return end
+    --[[
+    And a device that has not been told where to stand yet has not jumped
+    anywhere: it has just opened a book and landed wherever it left off.
+    Reported, that dragged the whole pair to page one of a book nobody had
+    finished opening.
+    ]]
+    if not self.assigned_page then
+        self.assigned_page = page
+        self.assigned_pages = pages
+        return
+    end
+    if page == self.assigned_page then return end
     local link = self:getReadyLinks()[1]
     if not link then return end
     -- Remembered before the answer comes back, so a jump is asked for once.
@@ -3232,6 +3286,9 @@ function Core:handleMessage(link, msg)
         self:handleBookError(msg)
     elseif msg.type == Protocol.DOC then
         if self:isLeader() then return end
+        -- This device is about to spend a while opening a book, and the
+        -- other one has just said it is doing the same.
+        if link.allowSilence then link:allowSilence() end
         self:handleRemoteDocument(msg)
     elseif msg.type == Protocol.DOCACK then
         if not self:isLeader() then return end
@@ -3327,6 +3384,9 @@ Anything final ends the matter, and a device that cannot open the book says
 so plainly rather than leaving the pair to work it out from silence.
 --]]--
 function Core:handleDocumentAck(link, msg)
+    -- Whatever it says, the other device is answering again, so the silence
+    -- it was being forgiven for is over.
+    if link.expectAnswers then link:expectAnswers() end
     local pending = link.doc_pending
     if not pending then return end
     local state = msg.state or ""

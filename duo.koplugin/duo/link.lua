@@ -46,6 +46,37 @@ Link.PING_INTERVAL = 2
 Link.PEER_TIMEOUT = 6
 
 --[[--
+How long a device is forgiven for going quiet while it opens a book.
+
+Opening one is not quick and it is not interruptible: a large book is
+seconds of parsing during which the reader answers nothing at all, and six
+seconds of silence is how a dead peer looks. So a pair that is opening a
+book -- which each end knows, having just sent or received the message
+saying so -- stops counting the silence against each other for a while.
+
+Bounded, and only ever granted by a book being opened, so a peer that has
+really gone away is still noticed shortly after.
+--]]--
+Link.OPEN_GRACE = 45
+
+--- Forgives silence from this peer for the next `seconds`.
+function Link:allowSilence(seconds)
+    self.grace_until = Util.now() + (seconds or Link.OPEN_GRACE)
+end
+
+--[[--
+Stops forgiving it, because the peer has spoken.
+
+Granted for a book being opened and given up the moment that is over,
+rather than left to run its length: a link that really does die just after
+a book opens should be noticed in the usual few seconds, not in the
+three-quarters of a minute the opening was allowed.
+--]]--
+function Link:expectAnswers()
+    self.grace_until = nil
+end
+
+--[[--
 How many messages one poll may hand over before going back for air.
 
 A library sync arrives as hundreds of chunks, and the socket hands them all
@@ -344,7 +375,8 @@ function Link:checkTimers()
         end
         return
     end
-    if now - self.last_rx > Link.PEER_TIMEOUT then
+    if now - self.last_rx > Link.PEER_TIMEOUT
+            and now > (self.grace_until or 0) then
         self:close("peer stopped responding")
         return
     end

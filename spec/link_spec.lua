@@ -340,4 +340,52 @@ T.describe("discovery", function()
     end)
 end)
 
+T.describe("forgiving a device that is opening a book", function()
+    --[[
+    Opening a book is not quick and cannot be interrupted: a large one is
+    tens of seconds of parsing during which the reader answers nothing at
+    all, and six seconds of silence is how a dead peer looks. Two real
+    readers opening the same big book dropped the link every time -- which
+    is what made a book arriving over the link fail half way.
+    ]]
+    local Link = require("duo/link")
+    local Util = require("duo/util")
+
+    local function quietLink()
+        return setmetatable({
+            state = "ready",
+            last_rx = Util.now() - (Link.PEER_TIMEOUT + 5),
+            last_tx = Util.now(),
+            closed_with = nil,
+            close = function(self, reason) self.closed_with = reason end,
+        }, { __index = Link })
+    end
+
+    T.it("closes a link that has simply gone quiet", function()
+        local link = quietLink()
+        T.assertTrue(link.grace_until == nil)
+        T.assertTrue(Util.now() - link.last_rx > Link.PEER_TIMEOUT,
+            "the fixture is not actually silent")
+    end)
+
+    T.it("forgives the silence while a book is being opened", function()
+        local link = quietLink()
+        link:allowSilence()
+        T.assertTrue(link.grace_until > Util.now(),
+            "the silence should be forgiven for a while")
+        T.assertTrue(link.grace_until - Util.now() <= Link.OPEN_GRACE + 1,
+            "and only for a while: a peer that has really gone must still be noticed")
+    end)
+
+    T.it("stops forgiving it the moment the peer speaks", function()
+        -- Given up as soon as the opening is over rather than left to run
+        -- its length, so a link that dies just afterwards is still noticed
+        -- in the usual few seconds.
+        local link = quietLink()
+        link:allowSilence()
+        link:expectAnswers()
+        T.assertNil(link.grace_until, "it went on forgiving a peer that had answered")
+    end)
+end)
+
 os.exit(T.run())
