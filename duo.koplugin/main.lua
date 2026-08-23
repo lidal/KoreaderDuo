@@ -2025,7 +2025,16 @@ function Duo:showStatus()
         if not address then return nil end
         return T(_("This device: %1 (%2)"), tostring(Core:getDeviceName()), tostring(address))
     end)
-    for _, link in ipairs(Core:getReadyLinks()) do
+    --[[
+    Not `for _, link`: `_` is gettext in this file, and a loop variable of
+    that name shadows it for everything inside the loop -- so the two
+    translated strings below became calls to a number, and the status screen
+    took the reader down with it. Only ever when there was a peer to
+    describe, which is to say only ever once the two devices were connected,
+    which is exactly when somebody looks at the status screen.
+    ]]
+    for index = 1, #Core:getReadyLinks() do
+        local link = Core:getReadyLinks()[index]
         add(function()
             local latency = ""
             if type(link.latency) == "number" then

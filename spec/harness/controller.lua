@@ -29,6 +29,7 @@ function Controller.new(options)
     options = options or {}
     local server, port
     local first = options.first_port or 18800
+
     for candidate = first, first + 200 do
         server = socket.bind(options.bind or "127.0.0.1", candidate)
         if server then port = candidate break end
@@ -38,6 +39,9 @@ function Controller.new(options)
     return setmetatable({
         server = server,
         port = port,
+        -- Builds the shell command that starts one device. Absent, the
+        -- simulated device is started.
+        launcher = options.launcher,
         reach_host = options.reach_host or "127.0.0.1",
         interpreter = options.interpreter or (arg and arg[-1]) or "luajit",
         devices = {},
@@ -72,9 +76,21 @@ function Controller:spawn(name, options)
     -- put back when a test wants to watch one.
     local timing = ("DUO_TYPOGRAPHY_POLL=%s "):format(
         os.getenv("DUO_TYPOGRAPHY_POLL") or "0.1")
-    os.execute(("LUA_PATH=%q %s%s%s%s spec/harness/instance_main.lua %s %d %d %s >%s 2>&1 &"):format(
-        "./?.lua;./duo.koplugin/?.lua;;", timing, book, prefix, self.interpreter,
-        name, self.port, options.pages or 300, self.reach_host, log))
+    --[[
+    A launcher may be handed in instead, which is how the same controller
+    drives two real KOReaders rather than two simulated ones. Everything
+    past this point -- the check-in, `call`, `assertEventually` -- is about
+    a device on the other end of a socket and does not care which it is.
+    ]]
+    local command
+    if self.launcher then
+        command = self.launcher(name, self.port, log, options)
+    else
+        command = ("LUA_PATH=%q %s%s%s%s spec/harness/instance_main.lua %s %d %d %s >%s 2>&1 &"):format(
+            "./?.lua;./duo.koplugin/?.lua;;", timing, book, prefix, self.interpreter,
+            name, self.port, options.pages or 300, self.reach_host, log)
+    end
+    os.execute(command)
 
     local deadline = socket.gettime() + 20
     while socket.gettime() < deadline do
