@@ -108,6 +108,8 @@ local function browseTogether(options)
     callLeader("Core:broadcastBrowser()")
 end
 
+--- Whether the device said it is not in the list the other one is showing.
+local REFUSED_VIEW = "(function() for _, m in ipairs(UIManager.shown_log) do if tostring(m.text):find('is not in') then return true end end return false end)()"
 --- A folder that is not the shared one, for checking Duo ignores it.
 local ELSEWHERE = SHARED .. "-elsewhere"
 
@@ -340,6 +342,76 @@ T.describe("asking for a book after the leader opened one", function()
             T.assertEquals(callLeader(("tostring(Core:resolveSharedFile(%q))"):format(wanted)), "nil",
                 "the leader would have handed over " .. wanted)
         end
+    end)
+end)
+
+T.describe("spreading one of the library's own views", function()
+    --[[
+    A skin like ZenOS puts a library in front of the reader rather than a
+    file browser, and its nicest parts -- Favourites, History, a collection
+    -- are KOReader's own list widgets rather than folders. Duo could only
+    see the file browser, so the half of the library worth looking at was
+    the half the spread could not touch.
+
+    The arithmetic is the same arithmetic: these are `Menu`s with pages.
+    What had to be added is knowing *which* list, because offsetting between
+    two different ones puts two devices confidently on unrelated screens.
+    ]]
+
+    local function openView(device, kind, name)
+        controller:call(device, ("D:openLibraryView(%q, { items = { %s }, perpage = 3, name = %q })"):format(
+            kind,
+            table.concat({ "'a.epub'", "'b.epub'", "'c.epub'", "'d.epub'", "'e.epub'", "'f.epub'" }, ", "),
+            name or "Favourites"))
+    end
+
+    local function pageOf(device)
+        return controller:call(device, "tostring(require('duo/browser').snapshot(UI).page)")
+    end
+
+    T.it("gives the second device the screenful after the first", function()
+        browseTogether{ sync = false }
+        openView(leader, "collection", "Favourites")
+        openView(follower, "collection", "Favourites")
+        callLeader("Core:broadcastBrowser()")
+
+        controller:assertEventually(follower,
+            "tostring(require('duo/browser').snapshot(UI).kind)", "collection",
+            "the follower never bound to the view")
+        controller:assertEventually(follower, "tostring(require('duo/browser').snapshot(UI).page)", "2",
+            "the follower did not take the page after the leader's")
+        T.assertEquals(pageOf(leader), "1")
+    end)
+
+    T.it("refuses to offset between two different lists", function()
+        --[[
+        The reason a view carries a name at all. The leader in Favourites and
+        the follower in a folder are not two halves of anything, and paging
+        one against the other would be worse than doing nothing: it would
+        look like it had worked.
+        ]]
+        browseTogether{ sync = false }
+        openView(leader, "collection", "Favourites")
+        -- The follower stays in the folder it was already browsing.
+        callFollower("UIManager.shown_log = {} Core.warned_listing = false Core.warned_view = nil")
+        callLeader("Core:broadcastBrowser()")
+
+        controller:assertEventually(follower, REFUSED_VIEW, "true",
+            "the follower said nothing about being in a different list")
+        T.assertEquals(controller:call(follower,
+            "tostring(require('duo/browser').snapshot(UI).kind)"), "folder",
+            "the follower was dragged out of the folder it had open")
+    end)
+
+    T.it("tells one collection from another", function()
+        browseTogether{ sync = false }
+        openView(leader, "collection", "Favourites")
+        openView(follower, "collection", "To Be Read")
+        callFollower("UIManager.shown_log = {} Core.warned_listing = false Core.warned_view = nil")
+        callLeader("Core:broadcastBrowser()")
+
+        controller:assertEventually(follower, REFUSED_VIEW, "true",
+            "two different collections were treated as one list")
     end)
 end)
 

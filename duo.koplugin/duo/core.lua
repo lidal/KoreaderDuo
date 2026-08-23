@@ -1590,6 +1590,12 @@ function Core:sendBrowserTo(link)
                 link.slot, page))
     link:send(Protocol.BROWSE, {
         path = state.path,
+        -- What list this is, not merely where it is. A folder is named by
+        -- its path as it always was; the library's own views -- History,
+        -- Favourites, a collection -- are named by what they are, because
+        -- page 2 of Favourites and page 2 of a folder have nothing to do
+        -- with each other.
+        view = state.view or "",
         page = page,
         leader_page = state.page,
         pages = state.pages,
@@ -1618,15 +1624,26 @@ function Core:applyBrowser(msg)
     if self:isLeader() then return end
 
     self.applying_remote = true
-    -- Same folder first: a page number means nothing until the two devices
-    -- are looking at the same list.
+    -- Same list first: a page number means nothing until the two devices
+    -- are looking at the same one.
     local path = msg.path
-    if path and path ~= "" and not self.browser.changeDir(path) then
-        self.applying_remote = false
-        if not self.warned_listing then
-            self.warned_listing = true
-            self:alert(("The other device is browsing a folder this one does not have:\n\n%s"):format(path))
+    if path and path ~= "" then
+        if not self.browser.changeDir(path) then
+            self.applying_remote = false
+            self:refuseListing(("The other device is browsing a folder this one does not have:\n\n%s"):format(path), msg.view)
+            return
         end
+    elseif not self:sameBrowserView(msg.view) then
+        --[[
+        One of the library's own views -- History, Favourites, a collection
+        -- rather than a folder. Duo will page along with one when both
+        devices are already in it, and will not put anybody there: a view is
+        something the reader chose, and swapping the screen out from under
+        that choice is worse than not following it.
+        ]]
+        self.applying_remote = false
+        self:refuseListing(("The other device is looking at a list this one is not in (%s).\n\nOpen the same one here and the two will page together."):format(
+            self:describeBrowserView(msg.view)), msg.view)
         return
     end
     if self:get("match_typography") then
@@ -1640,6 +1657,44 @@ function Core:applyBrowser(msg)
 
     self:checkListing(msg)
     self:changed()
+end
+
+--- Whether this device is showing the same list the other one named.
+function Core:sameBrowserView(view)
+    if not view or view == "" then return true end -- an older peer: as before
+    local state = self:browserState()
+    if not state then return false end
+    return (state.view or "") == view
+end
+
+--- "History", "Favourites", "a folder" -- for saying which list is meant.
+function Core:describeBrowserView(view)
+    view = tostring(view or "")
+    if view == "history" then return "History" end
+    local collection = view:match("^collection:(.*)$")
+    if collection then
+        return collection ~= "" and collection or "a collection"
+    end
+    local folder = view:match("^folder:(.*)$")
+    if folder then return folder ~= "" and folder or "a folder" end
+    return view ~= "" and view or "another list"
+end
+
+--[[--
+Says why the two listings are not being lined up, once per listing.
+
+Once, because a device that cannot follow the other's list says so on every
+message otherwise, which is every swipe. Per listing, because moving to a
+different one is a different situation: a reader told about Favourites,
+who then goes and opens History somewhere else, is owed the same courtesy
+again rather than silence.
+--]]--
+function Core:refuseListing(text, view)
+    view = tostring(view or "")
+    if self.warned_listing and self.warned_view == view then return end
+    self.warned_listing = true
+    self.warned_view = view
+    self:alert(text)
 end
 
 --[[--
