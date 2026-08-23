@@ -69,6 +69,47 @@ T.describe("base64", function()
         T.assertEquals(Base64.decodeUrl(Base64.encodeUrl(all_bytes)), all_bytes)
     end)
 
+    T.it("round-trips every length, not merely the tidy ones", function()
+        --[[
+        The encoder works twelve bytes at a time and the decoder sixteen
+        characters, because a call into C per four characters was costing
+        more than the work it fetched. What that buys in speed it risks in
+        edges: the run that does not divide evenly, the last one or two
+        bytes that pad out, the batch that fills exactly as the input ends.
+        None of those are reachable by testing a handful of lengths, and all
+        of them corrupt a book rather than failing loudly.
+
+        So: every length from nothing to several batches, both alphabets.
+        ]]
+        local every_byte = {}
+        for value = 0, 255 do every_byte[#every_byte+1] = string.char(value) end
+        local material = table.concat(every_byte):rep(20)
+
+        for length = 0, #material do
+            local piece = material:sub(1, length)
+            local standard = Base64.encode(piece)
+            T.assertEquals(#standard, math.ceil(length / 3) * 4,
+                ("%d bytes encoded to the wrong length"):format(length))
+            T.assertEquals(Base64.decode(standard), piece,
+                ("%d bytes did not survive the standard alphabet"):format(length))
+            T.assertEquals(Base64.decodeUrl(Base64.encodeUrl(piece)), piece,
+                ("%d bytes did not survive the URL-safe alphabet"):format(length))
+        end
+    end)
+
+    T.it("catches a bad character wherever in the string it sits", function()
+        -- The decoder handles the bulk of a string one way and its last
+        -- group another, so a checked-everywhere claim has to be tested at
+        -- the front, in the middle and at the end.
+        local good = ("Zm9v"):rep(20)
+        T.assertNil(Base64.decode("!!!!" .. good), "rubbish at the front was let through")
+        T.assertNil(Base64.decode(good .. "!!!!"), "rubbish at the end was let through")
+        T.assertNil(Base64.decode(("Zm9v"):rep(9) .. "!!!!" .. ("Zm9v"):rep(9)),
+            "rubbish in the middle was let through")
+        T.assertNil(Base64.decode("Zg==Zm9v"), "padding in the middle was let through")
+        T.assertNil(Base64.decode("Z=9v"), "a stray = was let through")
+    end)
+
     T.it("keeps the two alphabets apart", function()
         T.assertNil(Base64.decodeUrl("+/+/"), "the standard alphabet is not URL-safe base64")
         T.assertNil(Base64.decode("-_-_"), "and the URL-safe one is not standard base64")

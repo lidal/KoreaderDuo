@@ -91,6 +91,49 @@ T.describe("protocol stream reader", function()
         T.assertEquals(msg.page, "3")
     end)
 
+    T.it("keeps up with a poll's worth of messages without copying them all again", function()
+        --[[
+        The reader used to cut the front off its buffer after every message.
+        One poll during a transfer takes a couple of hundred kilobytes off
+        the socket, which is dozens of messages, and each cut copied
+        everything still unread -- so delivering a poll's worth of book
+        meant moving several times that in memory, over and over, for the
+        length of the book.
+
+        What is asserted is the behaviour, not the speed: read with a
+        cursor, and what has already been read stops counting as waiting.
+        ]]
+        local reader = Protocol.newReader()
+        local lines = {}
+        for index = 1, 50 do
+            lines[index] = Protocol.encode("STATE", { page = index, pad = string.rep("x", 2000) })
+        end
+        reader:feed(table.concat(lines))
+        local whole = reader:backlog()
+        T.assertTrue(whole > 100000, "the fixture is not big enough to be worth asking about")
+
+        for index = 1, 50 do
+            local msg = assert(reader:next())
+            T.assertEquals(msg.page, tostring(index), "the messages came out in the wrong order")
+        end
+        T.assertEquals(reader:backlog(), 0, "the reader still thinks it has work left")
+        T.assertNil(reader:next())
+    end)
+
+    T.it("carries on across a feed that lands mid-message", function()
+        -- The cursor has to survive more bytes arriving, which is the case
+        -- the naive version got for free by throwing the buffer away.
+        local reader = Protocol.newReader()
+        reader:feed("PING a=1\nPING a=2\nPI")
+        T.assertEquals(assert(reader:next()).a, "1")
+        T.assertEquals(assert(reader:next()).a, "2")
+        T.assertNil(reader:next())
+        T.assertEquals(reader:backlog(), 2, "the half-message should still be waiting")
+        reader:feed("NG a=3\n")
+        T.assertEquals(assert(reader:next()).a, "3")
+        T.assertEquals(reader:backlog(), 0)
+    end)
+
     T.it("errors out instead of buffering forever", function()
         local reader = Protocol.newReader()
         reader:feed(string.rep("x", Protocol.MAX_LINE + 10))

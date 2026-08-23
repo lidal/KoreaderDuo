@@ -66,14 +66,34 @@ for c in ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"):g
     SAFE[c] = true
 end
 
+--[[--
+Percent-encodes anything outside the safe set.
+
+The fast path is not a micro-optimisation, it is the point. Nearly every
+value that crosses this link is already safe from end to end -- a page
+number, a slot, a digest, and above all a chunk of a book, which travels
+under the URL-safe base64 alphabet precisely so that nothing in it ever
+needs escaping. Rewriting those a character at a time, with a Lua call per
+byte, was costing more than the base64 that produced them: a megabyte of
+book is a million calls that all hand back the character they were given.
+Looking once, in C, and handing the string straight back is what a value
+with nothing to escape in it deserves.
+--]]--
+local UNSAFE_PATTERN = "[^A-Za-z0-9._%-]"
+
 local function escape(value)
-    return (tostring(value):gsub(".", function(c)
+    value = tostring(value)
+    if not value:find(UNSAFE_PATTERN) then return value end
+    return (value:gsub(".", function(c)
         if SAFE[c] then return c end
         return string.format("%%%02X", string.byte(c))
     end))
 end
 
+--- The other half of the same bargain: a value with no `%` in it is
+--- already the value, and copying it to prove that is work for nothing.
 local function unescape(value)
+    if not value:find("%", 1, true) then return value end
     return (value:gsub("%%(%x%x)", function(hex)
         return string.char(tonumber(hex, 16))
     end))
@@ -155,37 +175,64 @@ Reader.__index = Reader
 -- TCP gives us no message boundaries, so everything received is appended
 -- here and pulled out again one complete line at a time.
 function Protocol.newReader()
-    return setmetatable({ buffer = "" }, Reader)
+    return setmetatable({ buffer = "", at = 1 }, Reader)
 end
 
 --- Appends received bytes to the reader.
 function Reader:feed(data)
-    if data and #data > 0 then
-        self.buffer = self.buffer .. data
+    if not data or #data == 0 then return end
+    if self.at > 1 then
+        -- Drop what has already been read before growing the buffer, so a
+        -- long-lived reader does not carry a transferred book around in it.
+        self.buffer = self.buffer:sub(self.at)
+        self.at = 1
     end
+    self.buffer = self.buffer .. data
 end
 
 --- Pops the next complete message.
 -- @treturn table message, or nil when no complete line is buffered.
 -- On a protocol violation it returns nil plus an error message; the caller
 -- should drop the connection, as the stream can no longer be trusted.
+--[[--
+Read with a cursor rather than by cutting the front off the buffer.
+
+One turn of the poll loop takes a couple of hundred kilobytes off the
+socket, which during a transfer is fifty messages. Slicing the buffer after
+each of them copied everything still unread -- fifty times, over a buffer
+shrinking from the top -- so the reader was moving several megabytes to
+deliver a couple of hundred kilobytes. The cursor moves instead, and `feed`
+throws away what is behind it when there is more to add.
+--]]--
 function Reader:next()
+    local buffer, at = self.buffer, self.at
     while true do
-        local newline = self.buffer:find("\n", 1, true)
+        local newline = buffer:find("\n", at, true)
         if not newline then
-            if #self.buffer >= Protocol.MAX_LINE then
-                self.buffer = ""
+            if #buffer - at + 1 >= Protocol.MAX_LINE then
+                self.buffer, self.at = "", 1
                 return nil, "message too long"
             end
+            self.at = at
             return nil
         end
-        local line = self.buffer:sub(1, newline - 1):gsub("\r$", "")
-        self.buffer = self.buffer:sub(newline + 1)
+        local stop = newline - 1
+        if stop >= at and buffer:byte(stop) == 13 then stop = stop - 1 end -- a trailing \r
+        local line = buffer:sub(at, stop)
+        at = newline + 1
         if #line > 0 then
+            self.at = at
             return Protocol.decode(line)
         end
         -- Skip blank lines; keepalive newlines are cheap and harmless.
     end
+end
+
+--- How many bytes are buffered but not yet turned into messages.
+--- The link uses this to stop taking more off the socket while it is still
+--- working through what it already has.
+function Reader:backlog()
+    return #self.buffer - self.at + 1
 end
 
 return Protocol
