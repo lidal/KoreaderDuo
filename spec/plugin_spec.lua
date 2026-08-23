@@ -284,28 +284,86 @@ T.describe("what a library sync will and will not copy", function()
         device:drainMessages()
     end
 
-    T.it("warns about a folder far too big to be a shelf, and copies it anyway", function()
+    T.it("asks before copying anything, and says how much there is", function()
         --[[
-        There was a ceiling here, and it was the wrong shape of help: a
-        refusal, with a number in it, and a setting to go and raise before
-        the feature would work. A device that has the books and a link to
-        send them over should send them. What it owes the reader is the
-        warning and a way to stop.
+        Copying used to start here, on its own, while somebody read -- and a
+        book crossing the link takes the same poll loop that turns pages, so
+        every turn queued behind it. Between two real readers that was fifty
+        milliseconds a turn when the link was quiet and over a second while a
+        book was copying.
+
+        So the difference is now something to be told about rather than
+        something to start doing.
         ]]
         pretendBrowsing("/downloads")
+        local asked_about
+        Core.hooks.shelvesDiffer = function(count, bytes)
+            asked_about = { count = count, bytes = bytes }
+        end
         Core:handleLibraryItem{ name = "enormous.epub", size = 400 * 1024 * 1024 }
         Core:handleLibraryEnd{}
 
-        local said = table.concat(device:drainMessages(), "\n")
-        T.assertMatch(said, "take a long time")
-        T.assertMatch(said, "yourself", "it should suggest copying them across by hand")
-        T.assertTrue(not said:find("limit"), "there is no limit to talk about any more")
-        -- And it went ahead: with nothing connected it gets as far as
-        -- announcing the fetch, which is one step past where a ceiling
-        -- would have stopped it.
-        T.assertMatch(said, "fetching 1 book")
+        T.assertTrue(asked_about ~= nil, "it started copying without asking")
+        T.assertEquals(asked_about.count, 1)
+        T.assertTrue(asked_about.bytes > 300 * 1024 * 1024)
+        T.assertNil(Core.library, "nothing should be copying until somebody says so")
+        T.assertTrue(Core:isShelfGated(), "the pair should be waiting on an answer")
+
+        -- And when they say yes, it goes ahead.
+        T.assertTrue(Core:startShelfSync())
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "fetching 1 book")
+
+        Core.hooks.shelvesDiffer = nil
+        Core:setShelfGate(nil)
         Core.library = nil
         Core.browser = nil
+    end)
+
+    T.it("lets the reader take the books across themselves instead", function()
+        -- Carrying a big shelf over by USB is often the better idea, and
+        -- always the quicker one. Saying so disconnects rather than nags.
+        pretendBrowsing("/downloads")
+        Core.hooks.shelvesDiffer = function() end
+        Core:handleLibraryItem{ name = "enormous.epub", size = 400 * 1024 * 1024 }
+        Core:handleLibraryEnd{}
+        T.assertTrue(Core:isShelfGated())
+
+        T.assertTrue(Core:abandonShelfSync())
+        T.assertNil(Core.library, "it copied anyway")
+        T.assertTrue(not Core:isShelfGated(), "the pair should not still be waiting")
+        T.assertTrue(not Core:isActive(), "saying no should disconnect")
+
+        Core.hooks.shelvesDiffer = nil
+        Core.browser = nil
+    end)
+
+    T.it("holds page turns while the shelves are being settled", function()
+        -- A pair still working out which books it has is not a pair that
+        -- should be reading, and one screen wandering off while the other
+        -- waits is how they end up in different places.
+        reset()
+        local sent = {}
+        Core.links = { {
+            slot = 1,
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            poll = function() end,
+            send = function(_self, msg_type) sent[#sent+1] = msg_type return true end,
+        } }
+        Core.role = Core.ROLE_FOLLOWER
+
+        Core.shelf_gate = "waiting"
+        T.assertTrue(Core:handleRelativeTurn(1),
+            "a turn should be swallowed rather than passed on while waiting")
+        T.assertEquals(#sent, 0, "the turn was forwarded while the pair was still waiting")
+
+        -- And once the shelves are settled it goes through as before.
+        Core.shelf_gate = nil
+        T.assertTrue(Core:handleRelativeTurn(1))
+        T.assertEquals(#sent, 1, "a turn should be forwarded once there is nothing in the way")
+
+        Core.links = {}
+        Core.role = Core.ROLE_OFF
     end)
 
     T.it("says nothing about the size when there is little to copy", function()
@@ -325,6 +383,9 @@ T.describe("what a library sync will and will not copy", function()
         still not matching -- a device fetching nothing, over and over.
         ]]
         pretendBrowsing("/books")
+        -- The reader is asked first now; this scenario is about what happens
+        -- after they have said yes.
+        Core.hooks.shelvesDiffer = function() Core:startShelfSync() end
         Core:handleLibraryItem{ name = "broken.epub", size = 1024 }
         Core:handleLibraryEnd{}
         T.assertMatch(table.concat(device:drainMessages(), "\n"), "fetching 1 book")

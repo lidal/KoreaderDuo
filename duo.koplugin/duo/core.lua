@@ -1196,6 +1196,13 @@ drift apart — the leader remains the only thing that decides what is shown.
 --]]--
 function Core:handleRelativeTurn(diff)
     if not self:isActive() or not self:isConnected() then return false end
+    --[[
+    Nothing moves while the shelves are being settled. Swallowed rather than
+    passed through: a pair that is still working out which books it has is
+    not a pair that should be reading, and letting one screen wander off
+    while the other waits is how they end up in different places.
+    ]]
+    if self:isShelfGated() then return true end
     if self:isLeader() then
         self:applyRelativeTurn(diff)
         return true
@@ -1281,6 +1288,7 @@ business to work out.
 --]]--
 function Core:reportJump(page)
     if not page or not self:isConnected() then return end
+    if self:isShelfGated() then return end
     if not self.reader then return end
     -- The same permission as turning a page: a follower kept as a display
     -- should not move the pair by being tapped.
@@ -1739,32 +1747,111 @@ function Core:folderFiles(path)
 end
 
 --[[--
-Asks for the shared folder's index once the pair is connected.
+Looks at the two shelves as soon as the pair is connected.
 
 Driven by the link rather than by browsing. It used to hang off whatever the
-file browser was showing: a folder somebody happened to open, compared with
-the leader's view of the same, which made what got copied depend on where
-each reader had wandered to -- and left a device with a book open, and so no
+file browser was showing, which made what got copied depend on where each
+reader had wandered to -- and left a device with a book open, and so no
 browser at all, unable to take part.
+
+What it does with the answer is the important part, and it changed. Copying
+used to start on its own, quietly, in the background, while somebody was
+reading -- and a book crossing the link takes the same poll loop that turns
+pages, so every turn queued behind a few hundred kilobytes of book. Measured
+between two real readers: fifty milliseconds when the link is quiet, and
+over a second while a book is copying.
+
+So it asks first and copies second. A pair whose shelves match reads
+immediately and never copies anything; a pair whose shelves differ is told
+so, and nothing else happens until somebody decides what to do about it.
 --]]--
 function Core:checkLibrary()
     if not self:get("sync_library") or self:isLeader() then return end
     if not self:isConnected() then
         self.library_asked = false
         self.library_settled = false
+        self:setShelfGate(nil)
         return
     end
     if self.library or self.book_receiver then
         return -- a pass is running; it has not had its say yet
     end
     if self.library_asked then
-        -- Asked, and nothing left running: the pass is over, whatever it
-        -- found. Anything still not lining up after that is worth saying.
         self.library_settled = true
         return
     end
     self.library_asked = true
+    self:setShelfGate("checking")
     self:requestLibrary()
+end
+
+--------------------------------------------------------------------------
+-- The shelf gate
+--------------------------------------------------------------------------
+
+--[[--
+Whether the pair is waiting on its shelves rather than reading.
+
+Four states, and only the last is reading: `checking` while the two are
+being compared, `waiting` while somebody decides what to do about a
+difference, `syncing` while the books cross, and nothing at all when there
+is nothing in the way.
+--]]--
+function Core:setShelfGate(state)
+    if self.shelf_gate == state then return end
+    self.shelf_gate = state
+    self:log("shelf gate:", tostring(state))
+    -- The leader is held up by this as much as the follower is: a pair is
+    -- two screens showing one thing, and one of them reading while the
+    -- other waits for a book is not that.
+    if not self:isLeader() then
+        for _, link in ipairs(self:getReadyLinks()) do
+            link:send(Protocol.SHELF, { state = state or "clear" })
+        end
+    end
+    self:changed()
+end
+
+--- True while the pair has something to settle before it can read.
+function Core:isShelfGated()
+    local state = self.shelf_gate
+    return state == "checking" or state == "waiting" or state == "syncing"
+end
+
+--- What the other device says about the shelves, for the leader.
+function Core:handleShelfState(msg)
+    if not self:isLeader() then return end
+    local state = msg.state
+    if state == "clear" or state == nil or state == "" then
+        self.shelf_gate = nil
+    else
+        self.shelf_gate = state
+    end
+    self:log("the other device says the shelves are:", tostring(state))
+    self:changed()
+end
+
+--[[--
+Takes the answer to "the shelves do not match; what now?".
+
+Copying is the whole point of asking, so it is the first offer. Handing the
+books across by USB is often the better idea for a big shelf and always the
+faster one, and a reader who says so is disconnected rather than nagged.
+--]]--
+function Core:startShelfSync()
+    if not self.shelf_pending then return false end
+    self:setShelfGate("syncing")
+    local pending = self.shelf_pending
+    self.shelf_pending = nil
+    self:beginLibraryFetch(pending)
+    return true
+end
+
+function Core:abandonShelfSync()
+    self.shelf_pending = nil
+    self:setShelfGate(nil)
+    self:stop("the shelves are yours to sort out")
+    return true
 end
 
 --[[--
@@ -2057,31 +2144,51 @@ function Core:handleLibraryEnd(msg)
     end
 
     if #wanted == 0 then
+        -- The shelves match. Nothing to copy, nothing to decide, and the
+        -- pair can get on with reading.
         self.library = nil
+        self:setShelfGate(nil)
         self:changed()
         return
     end
 
     --[[
-    Said out loud when it is a lot, rather than refused.
+    The shelves differ, and that is now something to be told about rather
+    than something to start doing.
 
-    There used to be a ceiling here, and it was the wrong shape of help. A
-    device that has the books and a link to send them over should send them;
-    what it owes the reader is a warning that this will take a while and a
-    way to stop, not a refusal with a number in it. The number was also a
-    setting somebody had to find and raise before the feature would work at
-    all, which is a poor way to spend a person's evening.
+    Copying used to begin here, quietly, while somebody read -- and a book
+    crossing the link takes the same poll loop that turns pages, so every
+    turn queued behind it. What is on the two shelves is also the sort of
+    thing a reader would rather settle once, at the start, than discover a
+    chapter in.
     ]]
-    if bytes > BIG_TRANSFER then
-        self:alert(("That folder holds %d book%s this device lacks — %.0f MB.\n\nOver a link like this one that will take a long time. Copying them onto both devices yourself will be far quicker if you can; otherwise leave it running, and stop it whenever you like from the Duo menu."):format(
-            #wanted, #wanted == 1 and "" or "s", bytes / 1048576))
-    end
-
     self.library.wanted = wanted
     self.library.total = #wanted
     self.library.bytes = bytes
+    self.shelf_pending = self.library
+    self.library = nil
+    self:setShelfGate("waiting")
+    self:changed()
+
+    if self.hooks and self.hooks.shelvesDiffer then
+        self.hooks.shelvesDiffer(#wanted, bytes)
+    else
+        -- A build with no way to ask goes on as it always did.
+        self:startShelfSync()
+    end
+end
+
+--[[--
+Starts the copying somebody has just agreed to.
+
+The half of the old `handleLibraryEnd` that did the work, now that deciding
+whether to do it at all happens first.
+--]]--
+function Core:beginLibraryFetch(pending)
+    if not pending then return end
+    self.library = pending
     self:notify(("Duo: fetching %d book%s (%.1f MB)"):format(
-        #wanted, #wanted == 1 and "" or "s", bytes / 1048576))
+        pending.total, pending.total == 1 and "" or "s", (pending.bytes or 0) / 1048576))
     self:changed()
     self:pumpLibrary()
 end
@@ -2124,6 +2231,16 @@ function Core:pumpLibrary()
             local ready = self:getReadyLinks()[1]
             if ready then ready:send(Protocol.SYNC, {}) end
         end
+        --[[
+        And then look again rather than take it on trust. Whatever came
+        across, the question the pair is waiting on is whether the two
+        shelves match *now* -- so it is asked again, and the answer either
+        opens the gate or says what is still missing. A pass that ends
+        without checking leaves the pair waiting for ever on a copy that
+        finished.
+        ]]
+        self.library_asked = false
+        self:setShelfGate("checking")
         self:changed()
         return
     end
@@ -2239,6 +2356,11 @@ function Core:stopLibrarySync(reason)
         self.book_receiver = nil
     end
     self.book_request = nil
+    -- Stopped on purpose, so the pair is not left waiting on it. What is
+    -- missing stays missing, and Duo says as much rather than holding
+    -- everything up over it.
+    self.shelf_pending = nil
+    self:setShelfGate(nil)
     self:notify(("Duo: stopped fetching books%s"):format(reason and (" (" .. reason .. ")") or ""))
     self:changed()
     return true
@@ -3090,6 +3212,8 @@ function Core:handleMessage(link, msg)
         if self:isLeader() and self:get("follower_can_turn") then
             self:applyBrowserTurn(Protocol.num(msg, "dir", 1))
         end
+    elseif msg.type == Protocol.SHELF then
+        self:handleShelfState(msg)
     elseif msg.type == Protocol.LIB_REQ then
         self:handleLibraryRequest(link, msg)
     elseif msg.type == Protocol.LIB_ITEM then
@@ -3484,6 +3608,19 @@ end
 function Core:getStatusText()
     if not self:isActive() then
         return "Off"
+    end
+    if self:isShelfGated() and not self.library then
+        if self.shelf_gate == "checking" then return "Comparing the two shelves…" end
+        if self.shelf_gate == "syncing" then
+            -- The leader's side of a copy the other device is doing: it is
+            -- sending, and its own progress line says how far along.
+            local direction, progress = self:getTransferProgress()
+            if direction then
+                return ("Copying the shelf across · %d%%"):format(math.floor((progress or 0) * 100))
+            end
+            return "Copying the shelf across"
+        end
+        return "Waiting: the two shelves do not match"
     end
     local direction, progress = self:getTransferProgress()
     if self.library and self.library.total then

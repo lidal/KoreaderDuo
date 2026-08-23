@@ -96,6 +96,10 @@ local function browseTogether(options)
         -- into. Both devices are given the same one, which is what the
         -- setting being shared arranges on real hardware.
         controller:call(device, ("Core.settings.shared_folder = %q"):format(SHARED))
+        -- Duo asks before copying anything now. These scenarios are about
+        -- what happens once somebody has said yes, so they say yes.
+        controller:call(device,
+            "Core.hooks.shelvesDiffer = function() Core:startShelfSync() end")
         controller:call(device, ("Core.settings.sync_library = %s"):format(
             tostring(options.sync ~= false)))
     end

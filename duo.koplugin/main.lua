@@ -83,6 +83,9 @@ function Duo:init()
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
             listFolder = function(path) return Duo:listFolder(path) end,
+            shelvesDiffer = function(count, bytes)
+                Duo:showShelfDialog(count, bytes)
+            end,
             getTempDir = function() return Duo:getTempDir() end,
             setAwake = function(awake) Duo:setAwake(awake) end,
             getFrontlight = function() return Duo:getFrontlight() end,
@@ -134,6 +137,60 @@ end
 --------------------------------------------------------------------------
 -- The log file
 --------------------------------------------------------------------------
+
+--[[--
+Says the two shelves do not match, and asks what to do about it.
+
+Put in front of the reader at the start rather than discovered a chapter
+in. Copying is offered first because it is why the pair is asking; carrying
+the books across by USB is often the better idea for a big shelf and always
+the quicker one, and a reader who would rather do that is disconnected and
+left alone rather than nagged.
+
+Nothing else happens until this is answered. That is the point of it: a
+pair that is still working out which books it has is not a pair that should
+be reading, and the copying used to run in the background while somebody
+did, which made every page turn wait behind a few hundred kilobytes of book.
+--]]--
+function Duo:showShelfDialog(count, bytes)
+    local megabytes = (bytes or 0) / 1048576
+    local how_long = ""
+    if megabytes > 20 then
+        how_long = _("\n\nOver a link like this one that will take a long time. Copying them across by USB will be far quicker if you can.")
+    end
+    local dialog
+    dialog = ConfirmBox:new{
+        text = T(_("The two shelves do not hold the same books.\n\n%1 book%2 to copy — %3 MB.%4"),
+            count, count == 1 and "" or "s", string.format("%.0f", megabytes), how_long),
+        ok_text = _("Copy them now"),
+        ok_callback = function()
+            Core:startShelfSync()
+        end,
+        cancel_text = _("I will copy them myself"),
+        cancel_callback = function()
+            Core:abandonShelfSync()
+            UIManager:show(InfoMessage:new{
+                text = _("Duo has disconnected. Put the same books in the shared folder on both devices, then connect again."),
+                timeout = 5,
+            })
+        end,
+        other_buttons = {{
+            {
+                text = _("Read anyway"),
+                callback = function()
+                    -- Allowed, and said plainly: the spread will only line
+                    -- up for books both devices actually have.
+                    Core:setShelfGate(nil)
+                    UIManager:show(InfoMessage:new{
+                        text = _("Duo will only line up on books both devices have."),
+                        timeout = 4,
+                    })
+                end,
+            },
+        }},
+    }
+    UIManager:show(dialog)
+end
 
 --[[--
 Where Duo's log lives.

@@ -46,6 +46,7 @@ Protocol.CONF      = "CONF"      -- either way: these are the shared settings
 Protocol.LIGHT     = "LIGHT"     -- either way: set the frontlight to this
 Protocol.BROWSE    = "BROWSE"    -- leader -> peer: show this part of the book list
 Protocol.BTURN     = "BTURN"     -- peer -> leader: user swiped the book list
+Protocol.SHELF     = "SHELF"     -- peer -> leader: the two shelves differ / match
 Protocol.LIB_REQ   = "LIB_REQ"   -- peer -> leader: what is in the shared folder?
 Protocol.LIB_ITEM  = "LIB_ITEM"  -- leader -> peer: one book in it
 Protocol.LIB_END   = "LIB_END"   -- leader -> peer: that is the whole folder
