@@ -236,8 +236,14 @@ T.describe("the library's own views, not only folders", function()
 
         Reader.closeLibraryView(device.ui)
         Reader.openLibraryView(device.ui, "collection", { items = books(8, "tbr"), name = "To Be Read" })
+        T.assertEquals(Browser.snapshot(device.ui).view, "collection:To Be Read")
         T.assertNotEquals(Browser.snapshot(device.ui).view, favourites,
             "two collections are two different lists of books")
+
+        -- And the name is not mistaken for somewhere on the disk: it is a
+        -- collection's name, and a peer told to open it as a folder would
+        -- go looking for a folder that was never there.
+        T.assertEquals(Browser.snapshot(device.ui).path, "")
         inFolder()
     end)
 

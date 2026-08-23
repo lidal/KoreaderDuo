@@ -648,14 +648,42 @@ mechanism works. Two things decide whether it is pleasant:
   than two independent grids. This is a matter of taste rather than of
   mechanism, and it is worth trying both ways before deciding.
 
+### What has been verified, and how
+
+Against two real KOReaders (v2026.03) driven side by side, with no ZenOS
+installed — the library views are KOReader's own, so they can be tested
+without it:
+
+- A collection is spread across the pair: eleven books, two pages, the
+  leader on the first screenful and the follower on the second.
+- Each list is told from every other. Favourites and To Be Read come out as
+  different lists, History as a third, and a folder as a fourth.
+- A device in a different list from the other says so — "The other device is
+  looking at a list this one is not in (favorites)" — and stays where it is
+  rather than being dragged out of what its reader chose.
+
+And with ZenOS itself installed alongside Duo on both readers: both plugins
+load together, the pair pairs and spreads pages through a book normally, and
+Duo reads ZenOS's patched collection view as the collection it is.
+
+One thing that fell out of running it for real: KOReader keeps a
+collection's name in the menu's `path` field — a name, not a place on the
+disk. The harness had invented a tidier field, so every collection came out
+nameless and any two of them looked like the same list. The harness models
+the real shape now.
+
 ### What has not been verified
 
-The ZenOS support here is written against ZenOS's source and KOReader's
-widget structure, and it is covered by tests against a harness that models
-those widgets — a list with pages and no folder path, a view that names its
-books without marking each row a file, a view shown over a browser that is
-still alive underneath. None of that is the same as having run it on a pair
-of Kindles with ZenOS installed. In particular:
+- The multi-page library spread **under ZenOS specifically**. ZenOS runs a
+  guided tour of its menus the first time it starts, which drives its own
+  widgets and does not survive a reader with no screen and nobody looking at
+  it. That is ZenOS's onboarding rather than anything of Duo's, and it
+  stopped the session before the list could be paged. The same spread is
+  verified on plain KOReader, over the same widgets ZenOS patches.
+- Anything on real e-ink hardware. Two emulators on one machine share a
+  clock, a disk and a loopback network, and agree about fonts.
+
+In particular:
 
 - Which field holds a view's menu has changed between KOReader releases.
   Duo probes several and gives up gracefully, but a build that keeps it

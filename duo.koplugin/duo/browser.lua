@@ -96,10 +96,20 @@ function Browser.currentList(ui)
             if source.kind == "folder" then
                 view = "folder:" .. (path or "")
             elseif source.kind == "collection" then
-                -- Which collection, not merely that it is one: Favourites
-                -- and To Be Read are different lists of books.
+                --[[
+                Which collection, not merely that it is one: Favourites and
+                To Be Read are different lists of books, and offsetting
+                between them would put two devices confidently on unrelated
+                screens.
+
+                KOReader keeps the name in the menu's `path`, which is a
+                name here rather than anywhere on the disk -- so it is read
+                from there and deliberately not passed on as a folder. The
+                other spellings are for builds that have moved it.
+                ]]
                 local name = menu.collection_name or menu.coll_name
                     or (ui.collections and ui.collections.coll_name)
+                    or menu.path
                 view = "collection:" .. tostring(name or "")
             end
             return { menu = menu, kind = source.kind, view = view, path = path }

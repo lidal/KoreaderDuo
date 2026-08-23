@@ -482,8 +482,8 @@ function Reader.openLibraryView(ui, kind, options)
         perpage = options.perpage or 6,
         items = options.items or {},
     }
-    -- A library view is a list of books, not a place: no path to change to,
-    -- and no refreshPath to call.
+    -- A library view is a list of books, not a place: nothing to change
+    -- directory to, and no refreshPath to call.
     menu.path = nil
     menu.refreshPath = nil
     menu.changeToPath = nil
@@ -494,8 +494,15 @@ function Reader.openLibraryView(ui, kind, options)
         item.file = item.path
     end
     if kind == "collection" then
-        menu.collection_name = options.name or "Favourites"
-        ui.collections = { booklist_menu = menu, coll_name = menu.collection_name }
+        --[[
+        KOReader keeps the collection's name in the menu's `path`, which
+        here is a name rather than anywhere on the disk. Modelled that way
+        on purpose: the stub used to invent a `collection_name` field, so
+        Duo read a name that does not exist on a real device and every
+        collection looked like the same nameless one.
+        ]]
+        menu.path = options.name or "Favourites"
+        ui.collections = { booklist_menu = menu }
     else
         ui.history = { booklist_menu = menu }
     end
