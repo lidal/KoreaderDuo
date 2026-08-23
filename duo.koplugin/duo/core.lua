@@ -345,6 +345,17 @@ local SHARED_SETTINGS = {
 local IS_SHARED = {}
 for _, key in ipairs(SHARED_SETTINGS) do IS_SHARED[key] = true end
 
+--[[--
+The settings that decide where each device sits, rather than merely what it
+is allowed to do.
+
+Changing one of these rearranges the spread, and rearranging it is no use
+until everybody is told where they now stand. Switching to mirror mode used
+to leave the follower a page ahead until somebody happened to turn a page --
+which is to say mirror mode looked broken for as long as nobody used it.
+--]]--
+local AFFECTS_LAYOUT = { mode = true, reverse = true }
+
 function Core:set(key, value)
     local changed = self.settings[key] ~= value
     self.settings[key] = value
@@ -353,7 +364,12 @@ function Core:set(key, value)
     -- Told, rather than discovered by polling: every route into a setting —
     -- the menu, a gesture, a profile — comes through here.
     if changed and IS_SHARED[key] and not self.applying_settings then
+        -- The setting first, so the other device reads what follows under
+        -- the arrangement it is about to be part of.
         self:pushSettings(key)
+        if AFFECTS_LAYOUT[key] and self:isLeader() then
+            self:broadcastState()
+        end
     end
 end
 

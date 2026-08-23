@@ -106,6 +106,39 @@ T.describe("two devices, connecting", function()
 end)
 
 T.describe("two devices, one spread", function()
+    T.it("rearranges the pair the moment the shape of the spread changes", function()
+        --[[
+        Found on two real readers. Switching to mirror mode left the follower
+        a page ahead until somebody happened to turn a page -- which is to
+        say mirror mode looked broken for exactly as long as nobody used it.
+        The setting reached the other device; where it should now stand did
+        not.
+        ]]
+        connectPair()
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
+
+        callLeader("Core:set('mode', 'mirror')")
+        controller:assertEventually(follower, "D:getPage()", 10,
+            "mirror mode left the follower on the page after the leader's")
+
+        callLeader("Core:set('mode', 'spread')")
+        controller:assertEventually(follower, "D:getPage()", 11,
+            "going back to a spread left both devices on one page")
+    end)
+
+    T.it("does the same when the change is made on the follower", function()
+        connectPair()
+        setLeaderPage(10)
+        controller:assertEventually(follower, "D:getPage()", 11)
+
+        callFollower("Core:set('mode', 'mirror')")
+        controller:assertEventually(follower, "D:getPage()", 10,
+            "a mode set on the follower never rearranged the pair")
+        callLeader("Core:set('mode', 'spread')")
+        controller:assertEventually(follower, "D:getPage()", 11)
+    end)
+
     T.it("brings the leader along when the follower jumps to a page", function()
         --[[
         The report: tapping a link on the follower moved that device and left
