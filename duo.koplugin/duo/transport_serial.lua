@@ -94,13 +94,42 @@ function SerialTransport.open(path, options)
         return nil, ("could not open %s (errno %d)"):format(path, ffi.errno())
     end
 
-    return setmetatable({
+    local stream = setmetatable({
         fd = fd,
         path = path,
         out_buffer = "",
         closed = false,
         read_buffer = ffi.new("char[?]", READ_SIZE),
     }, Stream)
+    stream:discardStaleTraffic()
+    return stream
+end
+
+--[[--
+Throws away whatever was already on the line.
+
+A serial line is not a connection. There is nothing to hang up, so bytes the
+last session wrote are still sitting in the device's buffer when the next
+one opens it -- and the next one reads them as though they had just been
+sent. That is not a small mess: the leader restarts, sends a fresh
+challenge, and the follower answers the challenge from *before* the restart,
+so the proof is against a nonce nobody is holding any more. Each side then
+reports the other as having the wrong pairing code, for ever, one message
+out of step and getting no closer.
+
+Reading the line dry before saying a word is what a connection gets for
+free. Bounded, because a device that hands back bytes indefinitely is a
+device to give up on rather than to keep reading.
+--]]--
+function Stream:discardStaleTraffic()
+    local dropped = 0
+    for _ = 1, 64 do
+        local count = tonumber(ffi.C.read(self.fd, self.read_buffer, READ_SIZE))
+        if count <= 0 then break end
+        dropped = dropped + count
+        if count < READ_SIZE then break end
+    end
+    return dropped
 end
 
 function Stream:send(data)

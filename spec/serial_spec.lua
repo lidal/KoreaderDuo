@@ -76,15 +76,15 @@ local function connectOverSerial()
     controller:call(leader, "Core:start('leader')")
     controller:call(follower, "Core:start('follower')")
     --[[
-    A generous window. The handshake over a serial line is a call and an
-    answer with a second between attempts, and this suite shares a machine
-    with whatever else is running -- two whole readers, in the case that
-    kept failing. The waiting costs nothing when the line is quick.
+    The ordinary window, deliberately. This used to fail here and be widened
+    on the theory that a shared machine was just being slow; it was not, and
+    the waiting only delayed the report. What was actually happening is in
+    the restart test below.
     ]]
     controller:assertEventually(leader, "Core:isConnected()", true,
-        "no follower on the serial line", 30)
+        "no follower on the serial line")
     controller:assertEventually(follower, "Core:isConnected()", true,
-        "did not reach the leader", 30)
+        "did not reach the leader")
 end
 
 T.describe("serial transport", function()
@@ -155,6 +155,29 @@ T.describe("two devices over a serial link", function()
         controller:call(leader, "Core:start('leader')")
         controller:assertEventually(follower, "Core:isConnected()", true,
             "the repeated challenge never got through")
+    end)
+
+    T.it("comes back after being stopped and started again", function()
+        --[[
+        A serial line is not a connection: there is nothing to hang up, so
+        the bytes the last session wrote are still in the device's buffer
+        when the next one opens it, and the next one reads them as though
+        they had just arrived. The leader restarted, sent a fresh challenge,
+        and the follower answered the one from before the restart -- a proof
+        against a nonce nobody was holding any more. Each side then reported
+        the other as having the wrong pairing code, for ever: one message out
+        of step, and every retry read more of the backlog rather than less.
+
+        It showed up here as a test that failed every few runs, which is
+        what a race looks like when you do not look at it. It is not a race.
+        Restart the pair twice and it never came back at all.
+        ]]
+        connectOverSerial()
+        for _ = 1, 3 do
+            connectOverSerial()
+        end
+        T.assertEquals(controller:call(leader, "Core:isConnected()"), "true",
+            "the pair would not go back together over the same line")
     end)
 
     T.it("runs the spread over Bluetooth just as over Wi-Fi", function()
