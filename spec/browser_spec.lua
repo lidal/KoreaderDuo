@@ -289,4 +289,54 @@ T.describe("the library's own views, not only folders", function()
     end)
 end)
 
+T.describe("telling two shelves apart by what is on them", function()
+    --[[
+    Reported from a pair that had just finished copying: "both devices show
+    the same number of books, but not the same ones". They held exactly the
+    same books. What differed was the words on the screen -- one device had
+    read the titles out of the books and cached them, the other had not --
+    and the listings were being compared on their appearance.
+    ]]
+    local Reader = require("spec/harness/reader")
+    local device = Instance.new{
+        name = "Kindle-S", file_manager = true,
+        path = "/books", items = books(6), perpage = 3,
+    }
+
+    T.it("does not mind what a listing calls a book", function()
+        local before = Browser.signature(device.ui)
+        -- The same files, shown by title rather than by filename, which is
+        -- what a device that has read the metadata does.
+        for index, item in ipairs(device.ui.file_chooser.item_table) do
+            item.text = ("A Book About Things, Volume %d"):format(index)
+        end
+        -- The cache is keyed on the listing, so it has to be told to look
+        -- again the way a real change would.
+        device.ui.file_chooser:setItems({ "book01.epub", "book02.epub", "book03.epub",
+            "book04.epub", "book05.epub", "book06.epub" })
+        for index, item in ipairs(device.ui.file_chooser.item_table) do
+            item.text = ("A Book About Things, Volume %d"):format(index)
+        end
+        T.assertEquals(Browser.signature(device.ui), before,
+            "two shelves holding the same books were called different ones")
+    end)
+
+    T.it("still notices books that really are different", function()
+        local before = Browser.signature(device.ui)
+        device.ui.file_chooser:setItems({ "book01.epub", "something-else.epub" })
+        T.assertNotEquals(Browser.signature(device.ui), before,
+            "a shelf holding different books should look different")
+    end)
+
+    T.it("still notices the same books in a different order", function()
+        -- Order is what the spread is made of: the second device shows the
+        -- screenful after the first.
+        device.ui.file_chooser:setItems({ "a.epub", "b.epub", "c.epub" })
+        local ordered = Browser.signature(device.ui)
+        device.ui.file_chooser:setItems({ "c.epub", "b.epub", "a.epub" })
+        T.assertNotEquals(Browser.signature(device.ui), ordered,
+            "two devices sorting the same books differently do not line up")
+    end)
+end)
+
 os.exit(T.run())

@@ -102,6 +102,7 @@ function Duo:init()
     }
 
     self:ensurePolling()
+    self:wrapShowReader()
     self:onDispatcherRegisterActions()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
@@ -597,6 +598,37 @@ function Duo:bindBrowser()
 end
 
 --[[--
+Says which book is opening, from the one place every opening goes through.
+
+A tap in the file browser is only one of the ways a book gets opened. There
+is the history, the last book reopened at startup, a bookmark, and the other
+device asking for one -- and hooking the file browser caught the first of
+those and none of the rest, so most of the time the pair still opened one
+after the other.
+
+`ReaderUI:showReader` is where all of them end up, so it is where this
+belongs. Wrapped on the class and once only: KOReader builds a new reader
+for every book, and the plugin is rebuilt with it, but the class outlives
+both.
+--]]--
+function Duo:wrapShowReader()
+    if Duo.wrapped_show_reader then return end
+    local ok, ReaderUI = pcall(require, "apps/reader/readerui")
+    if not ok or type(ReaderUI) ~= "table" then return end
+    local original = ReaderUI.showReader
+    if type(original) ~= "function" then return end
+    Duo.wrapped_show_reader = true
+    Duo.original_show_reader = original
+    ReaderUI.showReader = function(reader, file, ...)
+        -- Before the opening rather than after it, so the other device
+        -- starts on the same book at the same moment instead of waiting for
+        -- this one to finish and then taking its own turn.
+        pcall(function() Core:announceOpening(file) end)
+        return original(reader, file, ...)
+    end
+end
+
+--[[--
 Wraps the browser's page turns, the same trick as in the reader.
 
 `onNextPage` and `onPrevPage` are where every swipe and button press in the
@@ -800,10 +832,6 @@ function Duo:wrapFileOpening()
     self.original_open_file = original
     ui.openFile = function(manager, file, ...)
         if Duo:fetchBeforeOpening(file) then return true end
-        -- Said before the opening rather than after it, so the other device
-        -- starts on the same book at the same moment instead of waiting for
-        -- this one to finish and then taking its own turn.
-        Core:announceOpening(file)
         return original(manager, file, ...)
     end
 end
@@ -1120,7 +1148,11 @@ function Duo:reviveDirectLink(quiet, force)
     end
 
     logger.dbg("Duo: rebuilding the direct link, role", role, "forced", tostring(force))
-    Core:notify(_("Duo: rebuilding the direct link…"))
+    -- `quiet` means quiet. It used to cover only the "nothing needed doing"
+    -- line, so a device healing itself in the background announced a
+    -- rebuild and a success every twenty seconds while it waited for the
+    -- other one -- which read as the link going up over and over.
+    if not quiet then Core:notify(_("Duo: rebuilding the direct link…")) end
     local output = (role == "host" and DirectLink.host() or DirectLink.join()) or ""
     local failure = output:match("\nerror: ([^\n]*)") or output:match("^error: ([^\n]*)")
     if failure then
@@ -1128,7 +1160,7 @@ function Duo:reviveDirectLink(quiet, force)
         Core:alert(T(_("Duo could not rebuild the direct link.\n\n%1"), failure))
         return "failed"
     end
-    Core:notify(_("Duo: the direct link is back"))
+    if not quiet then Core:notify(_("Duo: the direct link is back")) end
     return "rebuilt"
 end
 

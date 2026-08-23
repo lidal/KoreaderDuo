@@ -99,7 +99,34 @@ function Discovery.newScanner(options)
     local udp, err = socket.udp()
     if not udp then return nil, err or "no socket" end
     udp:settimeout(0)
-    udp:setsockname("*", 0)
+
+    --[[
+    Bound to a port Duo knows the number of, rather than whichever one the
+    system hands out.
+
+    A reader with a default-deny firewall -- which is every Kindle -- lets a
+    reply in only through a hole somebody opened or because its connection
+    tracking recognises it. Neither applied here: the probe goes out to the
+    broadcast address, the offer comes back from the leader's own address,
+    and those are not the same conversation as far as the kernel is
+    concerned. So the offers were dropped before Duo ever saw them, and
+    finding the other device by searching never worked at all -- the address
+    had to be typed in every time.
+
+    A known port can have a hole opened for it. The ephemeral one it used to
+    take could not.
+    ]]
+    local listen_port = tonumber(options.listen_port)
+    local bound = false
+    if listen_port and listen_port > 0 then
+        bound = udp:setsockname("*", listen_port) and true or false
+    end
+    if not bound then
+        -- Something else has it -- this device is the leader, most likely,
+        -- and already listening there. Searching still works when the
+        -- firewall is not in the way, so it is worth trying anyway.
+        udp:setsockname("*", 0)
+    end
     pcall(function() udp:setoption("broadcast", true) end)
 
     local targets = { "255.255.255.255" }
@@ -112,6 +139,7 @@ function Discovery.newScanner(options)
 
     return setmetatable({
         udp = udp,
+        listening_on = bound and listen_port or nil,
         port = options.port or Discovery.PORT,
         targets = targets,
         deadline = Util.now() + (options.duration or 4),

@@ -154,13 +154,29 @@ function Browser.hashNames(names)
     return string.format("%x", hash)
 end
 
---- The names in the current listing, in the order they are displayed.
+--[[--
+What is in the current listing, in the order it is displayed.
+
+The file names rather than the words on the screen. A listing shows
+whatever it likes -- a title out of the book's metadata rather than the
+name of the file, most obviously -- and two devices holding exactly the
+same books disagree about that constantly, because one has read the
+metadata and cached it and the other has not. Compared on appearances, two
+identical shelves looked like different ones, and Duo said so out loud
+after a copy had just finished making them match.
+
+Order is kept, because order is what the spread is made of: the second
+device shows the screenful after the first, and two devices sorting the
+same books differently really do not line up.
+--]]--
 function Browser.itemNames(ui)
     local names = {}
     local menu = menuOf(ui)
     if not menu then return names end
     for _, item in ipairs(menu.item_table or {}) do
-        names[#names+1] = tostring(item.text or item.path or "")
+        local path = item.file or item.path
+        local name = path and tostring(path):match("([^/]+)/?$") or nil
+        names[#names+1] = name or tostring(item.text or "")
     end
     return names
 end
@@ -172,8 +188,19 @@ function Browser.signature(ui)
     local list = Browser.currentList(ui)
     if not list then return "" end
     local menu = list.menu
-    local count = #(menu.item_table or {})
-    local key = list.view .. "#" .. count
+    local items = menu.item_table or {}
+    local count = #items
+    --[[
+    Keyed on the ends of the listing as well as its length. Sorting the same
+    books a different way changes neither the folder nor how many are in it,
+    so a key made of those alone handed back the answer from before the sort
+    -- and two devices ordering a shelf differently really do not line up.
+    ]]
+    local function edge(item)
+        if not item then return "" end
+        return tostring(item.file or item.path or item.text or "")
+    end
+    local key = ("%s#%d#%s#%s"):format(list.view, count, edge(items[1]), edge(items[count]))
     if signature_cache.key == key then
         return signature_cache.value
     end

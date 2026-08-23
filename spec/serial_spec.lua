@@ -75,8 +75,16 @@ local function connectOverSerial()
     controller:call(follower, ("Core.settings.serial_device = %q"):format(PTY_B))
     controller:call(leader, "Core:start('leader')")
     controller:call(follower, "Core:start('follower')")
-    controller:assertEventually(leader, "Core:isConnected()", true, "no follower on the serial line")
-    controller:assertEventually(follower, "Core:isConnected()", true, "did not reach the leader")
+    --[[
+    A generous window. The handshake over a serial line is a call and an
+    answer with a second between attempts, and this suite shares a machine
+    with whatever else is running -- two whole readers, in the case that
+    kept failing. The waiting costs nothing when the line is quick.
+    ]]
+    controller:assertEventually(leader, "Core:isConnected()", true,
+        "no follower on the serial line", 30)
+    controller:assertEventually(follower, "Core:isConnected()", true,
+        "did not reach the leader", 30)
 end
 
 T.describe("serial transport", function()

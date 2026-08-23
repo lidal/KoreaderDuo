@@ -798,6 +798,9 @@ function Core:stop(reason)
         link:close(reason or "stopped", true)
     end
     self.links = {}
+    -- Starting again is a fresh reason to try the link once more, whatever
+    -- was concluded about it last time.
+    self.healed_before_first = nil
     if self.server then
         self.server:close()
         self.server = nil
@@ -902,13 +905,29 @@ function Core:startScan(on_done)
     if self.scanner then
         self.scanner:close()
     end
+    --[[
+    Listening on a port Duo can open a hole for. A reader with a
+    default-deny firewall drops an offer that arrives on a port nobody asked
+    about, which is what an ephemeral one always is -- so searching found
+    nothing, ever, and the address had to be typed in.
+    ]]
+    local listen_port = tonumber(self:get("discovery_port")) or Discovery.PORT
+    if not self:isLeader() then
+        -- The leader already has this port open and is listening on it.
+        listen_port = listen_port + 1
+    end
     local scanner, err = Discovery.newScanner{
         port = self:get("discovery_port"),
+        listen_port = listen_port,
         duration = 4,
     }
     if not scanner then
         self:alert(("Could not search the network: %s"):format(tostring(err)))
         return false
+    end
+    if scanner.listening_on and self.hooks and self.hooks.openFirewall then
+        self.hooks.openFirewall(scanner.listening_on)
+        self.scan_hole = scanner.listening_on
     end
     self.scanner = scanner
     self.scan_callback = on_done
@@ -928,6 +947,11 @@ function Core:pollScanner()
     self.scanner:close()
     self.scanner = nil
     self.scan_callback = nil
+    -- The hole was for the search; it closes with it.
+    if self.scan_hole and self.hooks and self.hooks.closeFirewall then
+        self.hooks.closeFirewall(self.scan_hole)
+        self.scan_hole = nil
+    end
     if callback then callback(results) end
 end
 
@@ -3870,6 +3894,7 @@ function Core:checkLinkHealth()
     if self:isConnected() then
         self.disconnected_since = nil
         self.has_connected = true
+        self.healed_before_first = nil
         return
     end
     local now = Util.now()
@@ -3890,6 +3915,22 @@ function Core:checkLinkHealth()
     of the one thing that works. Rebuilding a link nobody is using costs a
     few seconds; not rebuilding it costs the feature.
     ]]
+    --[[
+    Rebuilt over and over only when the pair has been together and come
+    apart. A device that has never connected is usually waiting for
+    somebody to finish setting up the other one -- and rebuilding the cell
+    every twenty seconds while they do is not patience, it is knocking the
+    other device off the moment it arrives. Once, then, and then left alone
+    until there is a connection to lose.
+    ]]
+    if not self.has_connected then
+        if self.healed_before_first then
+            self:log("still waiting for the other device; leaving the link alone")
+            return
+        end
+        self.healed_before_first = true
+    end
+
     self:log("apart for a while; rebuilding the link rather than asking after it")
     local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true)
     if ok and outcome == "rebuilt" then self:dialNow() end
