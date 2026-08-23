@@ -1114,9 +1114,9 @@ function Duo:findByName(roots, name)
         if not seen[entry.path] then
             seen[entry.path] = true
             budget = budget - 1
-            local ok, iterator = pcall(lfs.dir, entry.path)
-            if ok and iterator then
-                for item in iterator do
+            -- Both of what `lfs.dir` returns, for the reason given above.
+            pcall(function()
+                for item in lfs.dir(entry.path) do
                     -- Hidden folders are KOReader's own bookkeeping, and
                     -- `.` and `..` are a way to walk for ever.
                     if item:sub(1, 1) ~= "." then
@@ -1129,7 +1129,7 @@ function Duo:findByName(roots, name)
                         end
                     end
                 end
-            end
+            end)
         end
     end
     return found
@@ -1148,16 +1148,26 @@ function Duo:listFolder(path)
     local entries = {}
     if not path or path == "" or not lfs.dir then return entries end
     if lfs.attributes(path, "mode") ~= "directory" then return entries end
-    local ok, iterator = pcall(lfs.dir, path)
-    if not ok or not iterator then return entries end
-    for name in iterator do
-        if name:sub(1, 1) ~= "." then
-            local full = path .. "/" .. name
-            local attributes = lfs.attributes(full)
-            if attributes and attributes.mode == "file" then
-                entries[#entries+1] = { name = name, size = attributes.size or 0 }
+    --[[
+    `lfs.dir` hands back an iterator *and* the directory it is walking, and
+    the loop needs both -- the iterator alone is passed no directory to read
+    from and refuses. Written out in the loop rather than picked apart into
+    locals, which is what got this wrong, and also what keeps the directory
+    alive until the walk is finished.
+    ]]
+    local ok, err = pcall(function()
+        for name in lfs.dir(path) do
+            if name:sub(1, 1) ~= "." then
+                local full = path .. "/" .. name
+                local attributes = lfs.attributes(full)
+                if attributes and attributes.mode == "file" then
+                    entries[#entries+1] = { name = name, size = attributes.size or 0 }
+                end
             end
         end
+    end)
+    if not ok then
+        logger.warn("Duo: could not read", path, "-", tostring(err))
     end
     return entries
 end

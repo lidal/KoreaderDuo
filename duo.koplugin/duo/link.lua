@@ -60,7 +60,16 @@ rest up on the next tick fifty milliseconds later. Nothing is lost: what is
 left sits in the reader's buffer. Throughput is unaffected at any rate a
 Wi-Fi link can manage.
 --]]--
-Link.MAX_DISPATCH_PER_POLL = 16
+--[[--
+How many messages one turn of the poll loop may act on.
+
+Enough to keep up with the side sending a book: the sender puts out a set
+number of chunks per turn and the reader has to be able to take them in at
+the same rate, or the difference piles up in the kernel's buffers and a
+transfer that is really crawling looks, from the sending end, as if it has
+already finished.
+--]]--
+Link.MAX_DISPATCH_PER_POLL = 64
 --- Seconds allowed for the handshake.
 Link.HANDSHAKE_TIMEOUT = 10
 --- Seconds between repeated challenges on a link with no connect step.

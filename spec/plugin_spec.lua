@@ -992,13 +992,102 @@ T.describe("the log the reader can send on", function()
         -- a log is about one device, and the other device's card is not this
         -- one's to start filling.
         reset()
-        device:drainMessages()
+        local sent = {}
+        Core.links = { {
+            slot = 1,
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            poll = function() end,
+            send = function(_self, msg_type, fields)
+                sent[#sent+1] = { type = msg_type, fields = fields or {} }
+                return true
+            end,
+        } }
         Core:set("debug_log", true)
-        for _, message in ipairs(device:drainMessages()) do
-            T.assertNil(message.fields and message.fields.debug_log,
+        for _, message in ipairs(sent) do
+            T.assertNil(message.fields.debug_log,
                 "switching on a log here offered to switch one on over there")
         end
         Core:set("debug_log", false)
+        Core.links = {}
+    end)
+end)
+
+T.describe("stopping a copy stops it at both ends", function()
+    --[[
+    Found by watching two real readers: a device fetching a whole library
+    aborted its own half and told the other end nothing, so the other end
+    went on sending. For a thirty megabyte book that is minutes of pushing
+    at somebody who has stopped listening.
+
+    Only two of the four ways to stop ever spoke up, and the one a reader
+    actually reaches -- stopping while books are being fetched -- was not
+    among them.
+    ]]
+    local Protocol = require("duo/protocol")
+
+    --- A link that writes down what it was asked to send.
+    local function recordingLink(sent)
+        return {
+            slot = 1,
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            poll = function() end,
+            send = function(_self, msg_type)
+                sent[#sent+1] = msg_type
+                return true
+            end,
+        }
+    end
+
+    local function countOf(sent, wanted)
+        local count = 0
+        for _, msg_type in ipairs(sent) do
+            if msg_type == wanted then count = count + 1 end
+        end
+        return count
+    end
+
+    T.it("tells the other device when a fetch is stopped", function()
+        reset()
+        local sent = {}
+        Core.links = { recordingLink(sent) }
+        Core.book_receiver = { abort = function() end }
+        Core.library = { path = "/books", index = {}, total = 1, done = 0 }
+
+        T.assertTrue(Core:cancelTransfer("stopped by hand"))
+        T.assertEquals(countOf(sent, Protocol.BOOK_ERR), 1,
+            "the other device was left sending a book nobody was taking")
+        Core.links = {}
+    end)
+
+    T.it("says it once, however many things it stopped", function()
+        reset()
+        local sent = {}
+        Core.links = { recordingLink(sent) }
+        Core.book_receiver = { abort = function() end }
+        Core.book_request = { name = "book.epub" }
+        Core.library = { path = "/books", index = {}, total = 1, done = 0 }
+
+        Core:cancelTransfer("stopped by hand")
+        T.assertEquals(countOf(sent, Protocol.BOOK_ERR), 1,
+            "the other device was told more than once")
+        Core.links = {}
+    end)
+
+    T.it("stops sending when the other device gives up", function()
+        -- The other half of the same conversation: this message travels both
+        -- ways, and so does giving up.
+        reset()
+        local closed = false
+        Core.book_sender = {
+            sender = { close = function() closed = true end, size = 10 },
+            link = { send = function() return true end, isClosed = function() return false end },
+            name = "book.epub",
+        }
+        Core:handleBookError({ type = Protocol.BOOK_ERR, reason = "stopped on the other device" })
+        T.assertNil(Core.book_sender, "it went on sending at somebody who had stopped listening")
+        T.assertTrue(closed, "the file was left open")
     end)
 end)
 
