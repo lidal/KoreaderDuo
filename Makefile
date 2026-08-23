@@ -16,7 +16,7 @@ SPECS := spec/protocol_spec.lua spec/link_spec.lua spec/plugin_spec.lua \
          spec/directlink_spec.lua spec/directlink_net_spec.lua spec/log_spec.lua
 SOURCES := $(wildcard duo.koplugin/*.lua duo.koplugin/duo/*.lua spec/*.lua spec/harness/*.lua)
 
-.PHONY: test check install clean
+.PHONY: test check install clean real
 
 test: check
 	@failed=0; \
@@ -35,6 +35,25 @@ check:
 	@echo "syntax OK"
 	@command -v luacheck >/dev/null 2>&1 && luacheck --quiet duo.koplugin spec || \
 		echo "(luacheck not installed, skipping lint)"
+
+#[[
+# The same plugin, against two KOReaders that are really running.
+#
+# Slow, and it needs a KOReader to point at, so it is deliberately not part
+# of `make test`. What it is for is the gap the simulated devices cannot
+# close: how a real crengine moves a page across a relayout, what a real
+# widget does when it is torn down, whether a screen that cannot be made to
+# crash here crashes there.
+#
+#   make real KOREADER=/path/to/koreader
+#]]
+real:
+ifndef KOREADER
+	$(error set KOREADER to a KOReader directory, e.g. make real KOREADER=/opt/koreader)
+endif
+	@command -v xvfb-run >/dev/null 2>&1 || \
+		{ echo "xvfb-run is needed to run KOReader without a display"; exit 1; }
+	KOREADER_DIR="$(KOREADER)" LUA_PATH="$(LUA_PATH_SETTING)" $(LUA) spec/real_spec.lua
 
 install:
 ifndef KOREADER

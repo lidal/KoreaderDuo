@@ -691,6 +691,43 @@ book and folder names, device names and addresses, and every message Duo
 showed you. It does not record your pairing code, and it never records
 anything you have read.
 
+## Testing against two real KOReaders
+
+Most of the suite runs against a KOReader this repository wrote itself: fast,
+deterministic, and able to force states a real reader will not reach on
+demand. It has earned its place — but it is a model, and a model is wrong in
+ways nobody notices until a bug hides in the gap. Several have: a relayout
+that kept the page number steady, a file system where every folder was a
+file, a document torn down through the wrong hook. Each made a real bug
+invisible to a test that looked like it covered it.
+
+So there is a second lane that runs the real thing:
+
+```sh
+make real KOREADER=/path/to/koreader
+```
+
+Two KOReader processes, each with its own `KO_HOME`, each with Duo and a
+small control plugin installed, talking to each other over a real socket and
+to the test over another. `xvfb-run` gives them a display nobody looks at.
+The control plugin speaks the same protocol as the simulated devices and
+registers with `UIManager` the same way Duo does, so the same controller —
+the same `call`, the same `assertEventually` — drives either, and a test can
+move between them without being rewritten.
+
+It is slow and needs a KOReader to point at, so it is deliberately not part
+of `make test`. What it is for is the gap: how a real crengine moves a page
+across a relayout, what a real widget does when it is torn down, and whether
+a screen that cannot be made to crash against the model crashes against the
+reader. The first run of it found a crash that four attempts against the
+model had missed.
+
+One trap it now refuses to walk into: KOReader scans its own `plugins`
+folder before the one `KO_HOME` names, so a Duo left inside the
+installation is loaded instead of the one under test — and the tests then
+quietly measure whatever was there before. The runner stops and says so
+rather than deleting anything.
+
 ## Tests
 
 ```sh
