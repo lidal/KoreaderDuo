@@ -73,19 +73,43 @@ function Stream:flush()
     return false, err or "send failed"
 end
 
---- Reads whatever has arrived.
+--[[--
+How much may be taken off the socket in one turn of the poll loop.
+
+Matched to what the sending side puts on in one turn. It used to read a
+single eight-kilobyte block, which at the rate a reader polls comes to about
+a hundred and fifty kilobytes a second -- while the sender was pushing more
+than twenty times that. The difference did not go anywhere: it piled up in
+the kernel's buffers, so the sending device announced a book finished while
+the receiving one was minutes from having it, and a book of any size looked
+like it had hung.
+--]]--
+local READ_BUDGET = 192 * 1024
+local READ_BLOCK = 8192
+
+--- Reads whatever has arrived, up to a bounded amount.
 -- @treturn string received bytes (possibly empty), or nil plus an error
 function Stream:receive()
     if self.closed then return nil, "closed" end
-    local data, err, partial = self.sock:receive(8192)
-    local received = data or partial
-    if received and #received > 0 then
-        return received
+    local parts, total = {}, 0
+    while total < READ_BUDGET do
+        local data, err, partial = self.sock:receive(READ_BLOCK)
+        local received = data or partial
+        if received and #received > 0 then
+            parts[#parts+1] = received
+            total = total + #received
+            -- A short read means the socket has no more waiting; asking
+            -- again would only spin.
+            if #received < READ_BLOCK then break end
+        elseif err == "timeout" or err == "wantread" or err == nil then
+            break
+        else
+            if total > 0 then break end -- hand over what arrived first
+            return nil, err -- "closed" when the peer went away
+        end
     end
-    if err == "timeout" or err == "wantread" or err == nil then
-        return ""
-    end
-    return nil, err -- "closed" when the peer went away
+    if total == 0 then return "" end
+    return table.concat(parts)
 end
 
 function Stream:close()

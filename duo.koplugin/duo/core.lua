@@ -514,6 +514,8 @@ function Core:detachReader(binding)
     self.assigned_pages = nil
     self.pending_page = nil
     self.layout_differed_at = nil
+    self.last_seen_pages = nil
+    self.relayout_at = nil
     self:changed()
 end
 
@@ -1275,13 +1277,38 @@ function Core:reportJump(page)
     from here, and reporting it would drag the whole pair somewhere nobody
     asked to be.
 
-    The page count is what tells the two apart. It is recorded alongside
-    every page this device is sent, so a page count that has moved since
-    means the numbering moved, not the reader.
+    Watching for the page count to move is not enough on its own, and two
+    real readers showed why: crengine does not relayout in one step. It
+    reports a new length, moves the reader to match, and then goes on
+    settling -- so the page moves again a few seconds later with the count
+    already steady, which looks like a jump by every test available at that
+    instant. Reported, it moved the leader; the leader relaid out in turn
+    and told this device to move; and the pair walked itself from halfway
+    through the book to the far end in three rounds of that.
+
+    So a relayout starts a quiet spell rather than skipping one event. Any
+    page this device lands on while the book is still settling is taken as
+    the settling and not as somebody's tap.
+
+    Hung on the length changing rather than on settings being applied. Two
+    devices swap their settings the moment they meet, and most of the time
+    nothing about the book moves as a result -- gagging every tap for
+    several seconds after a connection would be paying for a relayout that
+    never happened.
     ]]
-    if self.applying_typography then return end
+    if self.applying_typography then
+        self.relayout_at = Util.now()
+        return
+    end
     local pages = self.reader.getPageCount()
-    if self.assigned_pages and pages and pages ~= self.assigned_pages then
+    -- Only a page count that has *moved* says a relayout happened. The
+    -- first one seen says nothing at all, and treating it as a change
+    -- opened a quiet spell over the first tap of every session.
+    if pages and self.last_seen_pages and pages ~= self.last_seen_pages then
+        self.relayout_at = Util.now()
+    end
+    self.last_seen_pages = pages
+    if self.relayout_at and Util.now() - self.relayout_at < PAGINATION_SETTLE then
         self.assigned_page = page
         self.assigned_pages = pages
         return
@@ -2508,6 +2535,22 @@ function Core:handleBookDone()
 end
 
 function Core:handleBookError(msg)
+    --[[
+    This message travels both ways, and so does giving up. A device that
+    stopped a copy told the other end so, and the other end went on sending
+    -- for a thirty megabyte book, minutes of pushing at somebody who had
+    stopped listening, costing both of them battery and the link its room.
+    Stopping means stopping at both ends, which is what the menu entry says
+    it does.
+    ]]
+    if self.book_sender then
+        local transfer = self.book_sender
+        self.book_sender = nil
+        transfer.sender:close()
+        self:clearTemporary(transfer)
+        self.progress_reported = nil
+        self:log("the other device stopped the transfer:", tostring(msg.reason))
+    end
     if self.book_receiver then
         self.book_receiver:abort()
         self.book_receiver = nil
@@ -2578,8 +2621,30 @@ rather than waiting out the silence.
 --]]--
 function Core:cancelTransfer(reason)
     local stopped = false
+    local told_peer = false
+
+    --[[
+    Said once, and said whenever this device stops taking something in.
+
+    Giving up quietly is not giving up. A device fetching a whole library
+    aborted its own half and told the other end nothing, so the other end
+    went on sending -- minutes of pushing a large book at somebody who had
+    stopped listening. Only two of the four ways to stop ever spoke up, and
+    the one a reader actually reaches was not among them.
+    ]]
+    local function tellPeer()
+        if told_peer then return end
+        told_peer = true
+        local link = self:getReadyLinks()[1]
+        if not link then return end
+        pcall(function()
+            link:send(Protocol.BOOK_ERR, { reason = reason or "stopped on the other device" })
+        end)
+    end
+
     if self.library then
         self:stopLibrarySync(reason or "stopped by hand")
+        tellPeer()
         stopped = true
     end
     if self.book_sender then
@@ -2587,6 +2652,7 @@ function Core:cancelTransfer(reason)
         pcall(function()
             transfer.link:send(Protocol.BOOK_ERR, { reason = reason or "stopped on the other device" })
         end)
+        told_peer = true
         transfer.sender:close()
         self:clearTemporary(transfer)
         self.book_sender = nil
@@ -2595,15 +2661,11 @@ function Core:cancelTransfer(reason)
     if self.book_receiver then
         self.book_receiver:abort()
         self.book_receiver = nil
+        tellPeer()
         stopped = true
     end
     if self.book_request then
-        local link = self:getReadyLinks()[1]
-        if link then
-            pcall(function()
-                link:send(Protocol.BOOK_ERR, { reason = reason or "stopped on the other device" })
-            end)
-        end
+        tellPeer()
         self.book_request = nil
         stopped = true
     end
@@ -3352,11 +3414,15 @@ function Core:getStatusText()
     if not self:isActive() then
         return "Off"
     end
-    if self.library and self.library.total then
-        return ("Fetching books · %d of %d"):format(
-            (self.library.done or 0) + 1, self.library.total)
-    end
     local direction, progress = self:getTransferProgress()
+    if self.library and self.library.total then
+        -- How far into this book as well as which book. Without the
+        -- percentage a long copy says the same words for minutes together,
+        -- which reads as a device that has stopped rather than one working.
+        local into = progress and (" · %d%%"):format(math.floor(progress * 100)) or ""
+        return ("Fetching books · %d of %d%s"):format(
+            (self.library.done or 0) + 1, self.library.total, into)
+    end
     if direction then
         return ("%s %s · %d%%"):format(
             direction == "sending" and "Sending" or "Receiving",

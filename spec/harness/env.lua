@@ -311,7 +311,16 @@ function Env.install(options)
         return { mode = mode, size = size }
     end
 
-    --- Real folder listings, in the shape luafilesystem hands them back.
+    --[[
+    Real folder listings, in the shape luafilesystem hands them back --
+    which is an iterator *and* the directory it walks, both of which the
+    loop needs.
+
+    The shape matters as much as the contents. This used to return a bare
+    closure, which works with `for name in iterator do` and hides that real
+    lfs does not: code written against the simpler shape walked no folders
+    at all on a real device, and the tests said it was fine.
+    ]]
     function lfs_stub.dir(path)
         if lfs_stub.attributes(path, "mode") ~= "directory" then
             error(("cannot open %s"):format(tostring(path)))
@@ -322,11 +331,15 @@ function Env.install(options)
             for line in pipe:lines() do names[#names+1] = line end
             pipe:close()
         end
-        local index = 0
-        return function()
-            index = index + 1
-            return names[index]
+        local directory = { index = 0 }
+        local function iterator(dir)
+            if not dir or dir.index == nil then
+                error("directory metatable expected, got nil")
+            end
+            dir.index = dir.index + 1
+            return names[dir.index]
         end
+        return iterator, directory
     end
     local clock = options.clock or require("socket").gettime
 
