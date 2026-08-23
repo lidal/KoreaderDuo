@@ -472,6 +472,15 @@ Two caveats:
   has been tried and the pages still disagree — and stays quiet about a
   mismatch it is about to fix itself.
 
+**The reload question is asked once.** Some style changes — turning a book's
+own stylesheet off, most of all — leave the rendering engine unable to draw
+the book correctly without building it again from scratch, and KOReader
+offers to do that. Left alone it offers on both devices, so you answer the
+same question twice; and the two answers need not agree, which matters,
+because a book built one way here and another way there paginates
+differently. Duo asks on the device you are holding and carries the answer
+across. Saying no does nothing on either.
+
 Reflowable formats only: a PDF has the pages the file says it has.
 
 ## Matching the frontlight
@@ -773,23 +782,24 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-279 tests, no mocking of the interesting parts:
+404 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 26 | Framing, escaping, byte-at-a-time reassembly, a poll's worth of messages read out with a cursor rather than copied again for each one, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
-| `link_spec` | 13 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 42 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
-| `integration_spec` | 66 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
+| `link_spec` | 16 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
+| `plugin_spec` | 92 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
+| `integration_spec` | 81 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 8 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel, including stopping the pair and putting it back together on the same line |
-| `typography_spec` | 12 | Reading, encoding and applying layout settings, including margin pairs and a missing typeface |
-| `library_spec` | 14 | **The whole library brought into step**: the follower in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
-| `browser_spec` | 15 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it, and refusing a folder the device does not have |
+| `typography_spec` | 23 | Reading, encoding and applying layout settings, including margin pairs, a missing typeface, and the reload question being asked on one device and answered for both |
+| `library_spec` | 23 | **The whole library brought into step**: the follower in its own mount namespace with a different folder at the same path, so the books really have to travel — plus a firmware image in that folder that stays where it is |
+| `browser_spec` | 23 | Reading and paging the book list, the listing hash, matching a screenful through all three widgets that draw it, and refusing a folder the device does not have |
 | `booktransfer_spec` | 21 | Both base64 alphabets against the published vectors, every length from nothing to several batches round-tripped through both, a bad character caught wherever in the string it sits, a full chunk of the worst bytes that exist kept inside the line limit, short and oversized transfers refused, and a peer that tries to name its own destination |
-| `frontlight_spec` | 17 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
+| `frontlight_spec` | 23 | The brightness arithmetic: a level read as a share of one device's range and put back on another's, every step of a 24-step light surviving the round trip, and warmth skipped where there is none |
 | `epubstub_spec` | 16 | Reading the cover out of an OPF the three ways EPUBs name one, and building a stand-in that survives being read back |
-| `directlink_spec` | 30 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
+| `directlink_spec` | 35 | Driver capability probing against real `iw` output shapes, the exact commands each method issues, and that the link is verified rather than assumed |
 | `directlink_net_spec` | 5 | **Two network namespaces on a link-local /16**: the router-free network, with search, connection and spread across it |
+| `log_spec` | 12 | Duo's own log: one line at a time and on disk before the next thing happens, rolled over rather than filling the card, and never taking the reader down when it cannot be written |
 
 Two tools double as documentation, and both print live data:
 

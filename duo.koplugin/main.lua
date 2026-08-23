@@ -87,6 +87,8 @@ function Duo:init()
                 Duo:showShelfDialog(count, bytes)
             end,
             getTempDir = function() return Duo:getTempDir() end,
+            -- `self`, not `Duo`: reloading is done to the live reader.
+            reloadDocument = function() return self:reloadForPeer() end,
             setAwake = function(awake) Duo:setAwake(awake) end,
             getFrontlight = function() return Duo:getFrontlight() end,
             -- `self`, not `Duo`: the events go to the live UI, which is
@@ -103,6 +105,7 @@ function Duo:init()
 
     self:ensurePolling()
     self:wrapShowReader()
+    self:wrapStyleReload()
     self:onDispatcherRegisterActions()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
@@ -626,6 +629,88 @@ function Duo:wrapShowReader()
         pcall(function() Core:announceOpening(file) end)
         return original(reader, file, ...)
     end
+end
+
+--[[--
+Asks the styles question once, on the device the reader is holding.
+
+Some style changes -- turning a book's own stylesheet off, most of all --
+leave crengine unable to render it correctly without building the whole
+document again, and KOReader offers to do that. Duo makes the same change on
+both devices, so KOReader offers on both, and the reader answers a question
+they have already answered.
+
+That is worse than tiresome. The two answers need not agree, and a book
+built one way here and another way there paginates differently -- which is
+the one thing a two-page spread cannot survive.
+
+So: the device that took the change from its peer does not ask, and the
+device the reader is holding sends its answer across. Saying no sends
+nothing, because saying no is not doing anything, and the other device --
+which never asked -- does nothing either. Both ways round, the pair ends up
+having done the same thing.
+
+Wrapped on the classes and once only: reloading a book builds a new reader
+and a new plugin with it, and the classes outlive both.
+--]]--
+function Duo:wrapStyleReload()
+    if Duo.wrapped_style_reload then return end
+    local ok_ui, ReaderUI = pcall(require, "apps/reader/readerui")
+    local ok_rolling, ReaderRolling = pcall(require, "apps/reader/modules/readerrolling")
+    if not ok_ui or not ok_rolling then return end
+    if type(ReaderUI.reloadDocument) ~= "function" then return end
+    if type(ReaderRolling.showSuggestReloadConfirmBox) ~= "function" then return end
+    Duo.wrapped_style_reload = true
+
+    local suggest = ReaderRolling.showSuggestReloadConfirmBox
+    ReaderRolling.showSuggestReloadConfirmBox = function(rolling, ...)
+        if Core:isFollowingTypography() then
+            logger.dbg("Duo: the styles question belongs on the other device")
+            return
+        end
+        Core:noteReloadSuggested()
+        return suggest(rolling, ...)
+    end
+
+    local reload = ReaderUI.reloadDocument
+    ReaderUI.reloadDocument = function(reader, after_close, seamless, ...)
+        --[[
+        Seamless reloads are left alone. Those are KOReader rebuilding a
+        book behind the reader's back once a full rendering has been cached,
+        and both devices do their own when they are ready -- being told to
+        do one would only interrupt the one already under way.
+        ]]
+        if not seamless and not Duo.reloading_for_peer then
+            pcall(function() Core:announceReload() end)
+        end
+        return reload(reader, after_close, seamless, ...)
+    end
+end
+
+--[[--
+Rebuilds the book because the other device is doing the same.
+
+On the next tick rather than here: this is reached from inside the poll
+loop, and reloading tears down the reader that the poll is running in.
+--]]--
+function Duo:reloadForPeer()
+    local ui = self.ui
+    if not ui or not ui.document or type(ui.reloadDocument) ~= "function" then
+        return false
+    end
+    if Duo.reloading_for_peer then return false end
+    Duo.reloading_for_peer = true
+    UIManager:nextTick(function()
+        -- Still in a book, and still the same one: a tick is long enough for
+        -- somebody to have closed it.
+        if ui.document then
+            pcall(function() ui:reloadDocument() end)
+        end
+        -- Cleared a tick later again, because the reload is what calls the
+        -- wrapped function this flag exists to quiet.
+        UIManager:nextTick(function() Duo.reloading_for_peer = false end)
+    end)
+    return true
 end
 
 --[[--

@@ -209,4 +209,58 @@ function DuoControl:setFontSize(size)
     return true
 end
 
+--- Turns the book's own stylesheet on or off, the way the settings screen does.
+function DuoControl:setEmbeddedStyles(on)
+    local ui = DuoControl.currentUI()
+    if not ui then return false end
+    local Event = require("ui/event")
+    ui:handleEvent(Event:new("ToggleEmbeddedStyleSheet", on and true or false))
+    return true
+end
+
+--[[--
+What is on screen over the book, by the words in it.
+
+The styles question is a ConfirmBox, and whether it turned up on this device
+at all is the whole point of the test that asks.
+--]]--
+function DuoControl:topWidgetText()
+    local stack = UIManager._window_stack or {}
+    for index = #stack, 1, -1 do
+        local widget = stack[index] and stack[index].widget
+        local text = widget and widget.text
+        if type(text) == "string" and #text > 0 then return text end
+    end
+    return ""
+end
+
+--- True when the "styles have changed" box is waiting for an answer here.
+function DuoControl:isAskingToReload()
+    local stack = UIManager._window_stack or {}
+    for index = #stack, 1, -1 do
+        local widget = stack[index] and stack[index].widget
+        if widget and type(widget.text) == "string"
+                and widget.text:find("reload the document") then
+            return true
+        end
+    end
+    return false
+end
+
+--- Answers it the way a finger would.
+function DuoControl:answerReload(yes)
+    local stack = UIManager._window_stack or {}
+    for index = #stack, 1, -1 do
+        local widget = stack[index] and stack[index].widget
+        if widget and type(widget.text) == "string"
+                and widget.text:find("reload the document") then
+            UIManager:close(widget)
+            local callback = yes and widget.ok_callback or widget.cancel_callback
+            if callback then callback() end
+            return true
+        end
+    end
+    return false
+end
+
 return DuoControl

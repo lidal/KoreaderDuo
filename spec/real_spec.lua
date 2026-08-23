@@ -234,6 +234,66 @@ T.describe("two real KOReaders", function()
             "the follower did not settle next to the leader after the relayout", 20)
     end)
 
+    T.it("asks the styles question on one device and answers it for both", function()
+        --[[
+        Reported from a pair of Kindles: changing embedded styles meant
+        answering a "reload the document?" box on both devices and then
+        waiting for both to settle.
+
+        KOReader asks when a style change has left crengine unable to render
+        the book correctly without building it again. Duo makes the change on
+        both, so KOReader wants to ask on both -- and the two answers need
+        not agree, which is worse than tiresome: a book built one way here
+        and another way there paginates differently, and that is the one
+        thing a spread cannot survive.
+
+        Asked here at the point KOReader hands over, rather than by hoping a
+        fixture provokes it: whether a given change leaves the DOM stale is
+        crengine's business and a plain book often does not. What is under
+        test is Duo's half.
+        ]]
+        connectPair()
+        callLeader("D:jumpToPage(20)")
+        controller:assertEventually(follower, "D:getPage()", 21, nil, 20)
+
+        callLeader("D:setFontSize(26)")
+        controller:assertEventually(follower, "UI.document.configurable.font_size", 26,
+            "the follower never took the new size", 30)
+        controller:assertEventually(follower, "Core:isFollowingTypography()", true,
+            "the follower does not know the change came from the other device", 20)
+        T.assertEquals(callLeader("tostring(Core:isFollowingTypography())"), "false",
+            "the device the reader is holding thinks it is following the other one")
+
+        local leader_was = callLeader("tostring(UI)")
+        local follower_was = callFollower("tostring(UI)")
+
+        -- What KOReader does when it finds the DOM stale -- on both, because
+        -- the change was made on both.
+        callLeader("UI.rolling:showSuggestReloadConfirmBox()")
+        callFollower("UI.rolling:showSuggestReloadConfirmBox()")
+        controller:assertEventually(leader, "D:isAskingToReload()", true,
+            "the device the reader is holding never asked", 10)
+        T.assertEquals(callFollower("tostring(D:isAskingToReload())"), "false",
+            "the reader was asked the same question on both devices")
+
+        -- Answered once, on the device being held.
+        T.assertEquals(callLeader("tostring(D:answerReload(true))"), "true")
+
+        -- Rebuilding a book makes a new reader, so the object is a new one.
+        controller:assertEventually(leader,
+            ("tostring(tostring(UI) ~= %q)"):format(leader_was), "true",
+            "the device that was answered did not rebuild the book", 40)
+        controller:assertEventually(follower,
+            ("tostring(tostring(UI) ~= %q)"):format(follower_was), "true",
+            "the other device was not brought along", 40)
+
+        -- And the two must still agree about the book, which is the reason
+        -- for carrying the answer across in the first place.
+        controller:assertEventually(follower, "D:getPageCount()",
+            controller:number(leader, "D:getPageCount()"),
+            "the two readers disagree about the book after rebuilding it", 40)
+    end)
+
     T.it("shows its status without taking the reader down", function()
         -- Reported from a real device and never reproduced against the
         -- model, which is reason enough to ask the real thing.

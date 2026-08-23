@@ -57,6 +57,7 @@ Protocol.BOOK_DONE = "BOOK_DONE" -- leader -> peer: that was all of it
 Protocol.BOOK_ERR  = "BOOK_ERR"  -- either way: the transfer failed
 Protocol.NAP       = "NAP"       -- leader -> peer: I am dozing off / I am back
 Protocol.SLEEP     = "SLEEP"     -- either way: I am going to sleep, do the same
+Protocol.RELOAD    = "RELOAD"    -- either way: I am reloading the book; do the same
 Protocol.NOTE      = "NOTE"      -- either way: show this text to the user
 Protocol.SYNC      = "SYNC"      -- peer -> leader: (re)send me the current state
 Protocol.BYE       = "BYE"       -- either way: closing on purpose

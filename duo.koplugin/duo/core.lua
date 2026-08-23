@@ -147,6 +147,17 @@ between them is visible to only one of them.
 local PAGINATION_SETTLE = 8
 
 --[[--
+How long after taking the other device's typography this one still counts
+as following it, in seconds.
+
+Long enough to cover a relayout. KOReader offers to reload the book a
+tenth of a second after the new rendering is on screen, and getting the new
+rendering on screen is the slow part -- a big book on a reader's processor
+takes a while about it.
+--]]--
+local FOLLOWING_TYPOGRAPHY = 20
+
+--[[--
 How long a device is given to say what became of a book it was told to
 open, and how many times it is told again before the pair gives up.
 
@@ -1217,6 +1228,84 @@ function Core:announceOpening(file)
         })
     end
     return true
+end
+
+--[[--
+True when the layout this device is showing came from the other one.
+
+Which is to say: the reader is not looking at this device. Whatever
+KOReader is about to ask about the change, it should be asking on the
+device where the change was made.
+--]]--
+function Core:isFollowingTypography()
+    --[[
+    Only when something really changed. Layouts are also compared when the
+    pair connects, and a device that agreed with its peer on connecting has
+    not taken anything from it -- counting that as following would have it
+    keep quiet about a change the reader went on to make itself a moment
+    later.
+    ]]
+    local at = self.typography_changed_at
+    return at ~= nil and (Util.now() - at) < FOLLOWING_TYPOGRAPHY
+end
+
+--[[--
+Says this device is reloading the book, so the other one can do the same.
+
+Some style changes leave crengine unable to render the book correctly
+without building it again from scratch, and KOReader asks whether to do
+that. It asks on both devices, because Duo makes the same change on both --
+so the reader answers the same question twice, having already decided.
+
+Worse than tiresome: the two answers need not agree, and a book built one
+way on one device and another way on the other paginates differently, which
+is the one thing a spread cannot survive.
+
+So it is asked once, on the device the reader is holding, and the answer
+travels. Nothing is sent when the reader says no, because saying no is not
+doing anything.
+--]]--
+function Core:announceReload()
+    --[[
+    Only a reload that came out of the styles question. A reader reloads a
+    book for its own reasons too -- rebuilding a stale render cache,
+    changing where page numbers come from -- and those are this device's
+    business.
+
+    Taken rather than read, so that one question leads to at most one word
+    about it however the answer turns out.
+    ]]
+    local suggested = self.reload_suggested_at
+    self.reload_suggested_at = nil
+    if not suggested or Util.now() - suggested > FOLLOWING_TYPOGRAPHY then
+        return false
+    end
+    if not self:isConnected() then return false end
+    if not self:get("match_typography") then return false end
+    for _, link in ipairs(self:getReadyLinks()) do
+        -- Both devices are about to be busy rebuilding a book.
+        if link.allowSilence then link:allowSilence() end
+        link:send(Protocol.RELOAD, {})
+    end
+    return true
+end
+
+--- Notes that KOReader has just put the styles question in front of the
+--- reader, which is what `announceReload` looks for.
+function Core:noteReloadSuggested()
+    self.reload_suggested_at = Util.now()
+end
+
+--- Does what the other device just did, having been asked there.
+function Core:handleRemoteReload()
+    if not self:get("match_typography") then return end
+    if not self.hooks or not self.hooks.reloadDocument then return end
+    if not self.reader or not self.reader.getDocument then return end
+    self:log("the other device is rebuilding the book; doing the same")
+    -- The question was answered on the other device, so this one has no
+    -- reason to go on holding an offer to ask it again.
+    self.reload_suggested_at = nil
+    pcall(self.hooks.reloadDocument)
 end
 
 function Core:sendDocumentTo(link)
@@ -3049,6 +3138,9 @@ function Core:applyTypography(msg, from_link)
     end
 
     if applied and #applied > 0 then
+        -- Something on this device really moved because the other one said
+        -- so, which is what makes the reader not the person to ask about it.
+        self.typography_changed_at = Util.now()
         self:notify(("Duo: matched %s"):format(Typography.describe(applied)))
         -- Relaying out moves every page number, so the spread has to be
         -- recomputed from wherever the leader ended up.
@@ -3316,6 +3408,9 @@ function Core:handleMessage(link, msg)
         self:handleBookDone()
     elseif msg.type == Protocol.BOOK_ERR then
         self:handleBookError(msg)
+    elseif msg.type == Protocol.RELOAD then
+        if link.allowSilence then link:allowSilence() end
+        self:handleRemoteReload()
     elseif msg.type == Protocol.DOC then
         if self:isLeader() then return end
         -- This device is about to spend a while opening a book, and the

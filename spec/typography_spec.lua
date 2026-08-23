@@ -166,4 +166,121 @@ T.describe("reading and applying on a device", function()
     end)
 end)
 
+T.describe("asking the styles question once", function()
+    --[[
+    Reported from a pair of Kindles: turning a book's embedded styles off
+    meant answering the same "reload the document?" box on both devices, and
+    then waiting for both to settle.
+
+    KOReader asks because some style changes leave crengine unable to render
+    the book correctly without building it again. Duo makes the change on
+    both devices, so KOReader asks on both -- and the two answers need not
+    agree, which is a good deal worse than tiresome: a book built one way
+    here and another way there paginates differently, and a spread is made
+    of the two paginating the same.
+    ]]
+    local Util = require("duo/util")
+    local Protocol = require("duo/protocol")
+
+    local function paired()
+        local device = Instance.new{ name = "Kindle-R", page_count = 300 }
+        local Core = device.Core
+        Core.settings.match_typography = true
+        local sent = {}
+        Core.links = { {
+            state = "ready",
+            slot = 1,
+            isReady = function(self_) return self_.state == "ready" end,
+            isClosed = function() return false end,
+            allowSilence = function() end,
+            send = function(_, msg_type, fields)
+                sent[#sent+1] = { type = msg_type, fields = fields }
+                return true
+            end,
+        } }
+        return device, Core, sent
+    end
+
+    local function reloads(sent)
+        local count = 0
+        for _, message in ipairs(sent) do
+            if message.type == Protocol.RELOAD then count = count + 1 end
+        end
+        return count
+    end
+
+    T.it("counts as following the other device for a while after taking its layout", function()
+        local device, Core = paired()
+        T.assertTrue(not Core:isFollowingTypography(),
+            "a device that has been told nothing is not following anything")
+        Core.typography_changed_at = Util.now()
+        T.assertTrue(Core:isFollowingTypography(),
+            "a device that has just taken the other's layout is following it")
+        -- Long enough to cover a relayout, not so long that a change made
+        -- here an hour later is mistaken for one made there.
+        Core.typography_changed_at = Util.now() - 3600
+        T.assertTrue(not Core:isFollowingTypography(),
+            "it should stop following eventually")
+    end)
+
+    T.it("passes the answer on when the reader says yes", function()
+        local device, Core, sent = paired()
+        Core.reload_suggested_at = Util.now()
+        T.assertTrue(Core:announceReload(), "the other device was not told")
+        T.assertEquals(reloads(sent), 1)
+    end)
+
+    T.it("says nothing when the reader was never asked", function()
+        -- A reader reloads a book for its own reasons -- a stale cache,
+        -- where page numbers come from -- and those are its own business.
+        local device, Core, sent = paired()
+        Core.reload_suggested_at = nil
+        T.assertTrue(not Core:announceReload(),
+            "a reload nobody asked about was passed on")
+        T.assertEquals(reloads(sent), 0)
+    end)
+
+    T.it("says nothing about a question asked a long time ago", function()
+        local device, Core, sent = paired()
+        Core.reload_suggested_at = Util.now() - 3600
+        T.assertTrue(not Core:announceReload())
+        T.assertEquals(reloads(sent), 0)
+    end)
+
+    T.it("only says it once", function()
+        -- Reloading opens the book again, and opening a book can reach the
+        -- same place; the other device should not be asked to rebuild twice.
+        local device, Core, sent = paired()
+        Core.reload_suggested_at = Util.now()
+        T.assertTrue(Core:announceReload())
+        T.assertTrue(not Core:announceReload(), "it was passed on a second time")
+        T.assertEquals(reloads(sent), 1)
+    end)
+
+    T.it("leaves the book alone when the two are not matching layouts", function()
+        local device, Core, sent = paired()
+        Core.settings.match_typography = false
+        Core.reload_suggested_at = Util.now()
+        T.assertTrue(not Core:announceReload())
+
+        local rebuilt = false
+        Core.hooks.reloadDocument = function() rebuilt = true end
+        Core:handleRemoteReload()
+        T.assertTrue(not rebuilt,
+            "a device not matching layouts rebuilt its book anyway")
+    end)
+
+    T.it("rebuilds the book when the other device says it did", function()
+        local device, Core = paired()
+        local rebuilt = false
+        Core.hooks.reloadDocument = function() rebuilt = true end
+        Core.reload_suggested_at = Util.now()
+        Core:handleRemoteReload()
+        T.assertTrue(rebuilt, "the book was not rebuilt to match")
+        -- And the offer this device was holding is answered now.
+        T.assertNil(Core.reload_suggested_at,
+            "it would still pass its own answer back afterwards")
+    end)
+end)
+
 os.exit(T.run())
