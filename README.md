@@ -6,11 +6,7 @@ One device is the **leader**: it owns the page number. The other is the
 **follower**: it shows the page it is given and can hand page turns back. A
 single tap moves both.
 
-![Two KOReaders showing pages 9 and 10 of Alice's Adventures in Wonderland](screenshots/spread.png)
-
-The sentence runs across the gutter — the left screen ends *"very fond of
-pretending to be"*, the right begins *"two people."* One tap takes the pair
-to 11 and 12, so no page is read twice or skipped.
+![Two KOReaders showing consecutive pages of one book](screenshots/spread.png)
 
 **Mirror mode** shows the same page on both. A third device joins as slot 2
 and shows the page after the follower's.
@@ -133,11 +129,11 @@ the leader's value wins on connecting.
 
 ## The book list, spread too
 
-![Twenty books across two screens: page 1 of 3 on the left, page 2 on the right](screenshots/library.png)
+![One shelf of books spread across two screens](screenshots/library.png)
 
-The file browser spreads the same way a book does: the leader shows one
-screenful and the follower shows the next. It works in list and cover-grid
-modes, and on KOReader's History and Collections as well as folders.
+The file browser spreads the same way a book does. It works in list and
+cover-grid modes, and on KOReader's History and Collections as well as
+folders.
 
 **Both devices have to be in the same list.** Page 2 of Favourites and page
 2 of a folder have nothing to do with each other, so every listing carries a
@@ -164,21 +160,18 @@ it down the same link.
 - No size limit; a book past about 100 MB says so first, and any transfer
   can be stopped from the menu.
 
-Speed is mostly a question of how fast the two devices are rather than the
-link. Bytes travel as text on the same line-based link the page numbers use,
-so everything is encoded on the way out and decoded on the way in — and on a
-reader's processor that arithmetic used to cost more than the Wi-Fi it was
-feeding. Both ends of that have been dealt with: the encoding runs off
-lookup tables, and each turn of the poll loop spends a slice of *time* on the
-transfer rather than a fixed number of chunks. Between two KOReaders on one
-machine a 30.7 MB book went from 19.3 s to 7.1 s, with the reader still
-answering in 21 ms while it crossed. Real hardware over real Wi-Fi is
-slower; a Kindle's processor and radio both have a say.
+Speed is bounded by the devices rather than the link: bytes travel as text
+on the same line-based link the page numbers use, so everything is encoded
+on the way out and decoded on the way in. Both ends run off lookup tables,
+and each turn of the poll loop spends a slice of *time* on the transfer
+rather than a fixed number of chunks. Between two KOReaders on one machine a
+30.7 MB book crosses in 7.1 s with the reader still answering in 21 ms; real
+hardware over real Wi-Fi is slower.
 
-Books travel base64-encoded in the **URL-safe** alphabet. The protocol's
-lines carry a restricted character set and escape the rest; `+` and `/` are
-not in it, and a compressed file produces enough of them to push a chunk
-past the line limit. Two characters' difference, and nothing needs escaping.
+The encoding is base64 in the **URL-safe** alphabet, which matters: the
+protocol escapes anything outside a restricted set, `+` and `/` are outside
+it, and a compressed file produces enough of them to push a chunk past the
+line limit.
 
 ## Matching typography
 
@@ -289,17 +282,15 @@ replacing them — every view is a `Menu` underneath, with the same `page`,
 ZenOS is hard-coded; the same support arrives for any skin built on those
 widgets.
 
-**It has been tried with ZenOS installed on both devices and appears to
-work**: both plugins load together, the pair spreads pages through a book,
-and Duo reads ZenOS's patched collection view as the collection it is. But
-Duo is developed and tested against vanilla KOReader, and that is where
-nearly all of the testing has happened. Treat ZenOS support as working but
-lightly exercised.
+**Tried with ZenOS on both devices and it appears to work**: both plugins
+load together, the pair spreads pages through a book, and Duo reads ZenOS's
+patched collection view as the collection it is. Duo is developed against
+vanilla KOReader and that is where nearly all the testing happens, so treat
+this as working but lightly exercised.
 
-The multi-page library spread specifically has been verified on plain
-KOReader over the same widgets ZenOS patches, not under ZenOS itself — its
-first-run guided tour drives its own widgets and does not survive a headless
-session.
+The multi-page library spread is verified on plain KOReader over the same
+widgets ZenOS patches, not under ZenOS itself — its first-run guided tour
+does not survive a headless session.
 
 ## Reporting something that went wrong
 
@@ -323,21 +314,17 @@ processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
 
-`make real` is the second lane, and it exists because the harness is a model
-and a model is wrong in ways nobody notices until a bug hides in the gap.
-Several have: a relayout that kept the page number steady, a file system
-where every folder was a file, a document torn down through the wrong hook.
-It runs two KOReader processes under `xvfb-run`, each with its own `KO_HOME`
-and a small control plugin, driven by the same controller as the simulated
-devices. It refuses to run against a KOReader that already has a Duo inside
-it, because KOReader scans its own `plugins` folder first and the tests
-would quietly measure whatever was there before.
-
-Two tools double as documentation and print live data:
+`make real` runs two KOReader processes under `xvfb-run`, each with its own
+`KO_HOME` and a small control plugin, driven by the same controller as the
+simulated devices. It exists for what the harness cannot model: how crengine
+really moves a page across a relayout, what a real widget does when it is
+torn down. It refuses to run against a KOReader that already has a Duo
+inside it — KOReader scans its own `plugins` folder first, so the tests
+would measure whatever was there before.
 
 ```sh
 luajit tools/duo-demo.lua 3      # three devices, printing what each displayed
-luajit tools/duo-menu-dump.lua   # the menu exactly as the device builds it
+luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 ```
 
 ## What has not been verified
