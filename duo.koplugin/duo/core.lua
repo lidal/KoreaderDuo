@@ -207,6 +207,7 @@ Core.TRANSPORT_SERIAL = "serial"
 
 local DEFAULTS = {
     transport = "tcp",
+    keep_radio_awake = true,
     serial_device = "/dev/rfcomm0",
     serial_baud = 115200,
     port = 9970,
@@ -666,6 +667,47 @@ function Core:getStep()
     return Spread.stepFor(self:get("mode"), self:followerCount())
 end
 
+--[[--
+Keeps the wireless card awake while the pair is connected, when asked to.
+
+A reader associated to a router sleeps its radio between beacons, and the
+router holds anything that arrives meanwhile until the next one. A page turn
+is one small packet each way, so it can wait for that twice -- which is a
+good part of why the same pair feels immediate on a link they made
+themselves and sluggish through a router, where a transfer, whose traffic is
+constant enough that the radio never gets to sleep, does not suffer the same
+way.
+
+On by default, which is not the obvious choice for a knob that costs
+battery, and is the right one here because of what it is scoped to: the
+radio is kept awake only while the two devices are actually connected --
+which is to say while somebody is reading across both of them, in the
+foreground, with the screen on. It sleeps normally the rest of the time.
+
+Measured on the reader's own hardware rather than argued from theory: with
+`iw dev wlan0 set power_save off` on both Kindles, page turns over an
+ordinary Wi-Fi network stopped lagging. That is the whole of the difference
+between a pair that feels immediate and one that does not.
+
+Switchable off for anyone who would rather have the battery.
+--]]--
+function Core:applyRadioSetting()
+    if not self.hooks or not self.hooks.setRadioAwake then return end
+    local wanted = (self:get("keep_radio_awake") and self:isConnected()) and true or false
+    if self.radio_awake == wanted then return end
+    local never_asked = self.radio_awake == nil
+    self.radio_awake = wanted
+    --[[
+    Nothing is handed back that was never taken. Without this, a device with
+    the setting off would still reach for the radio once on the way up, to
+    switch power saving explicitly on -- which is not Duo's to decide, and
+    would override whatever the reader or its firmware had settled on.
+    ]]
+    if never_asked and not wanted then return end
+    self:log("keeping the radio awake:", tostring(wanted))
+    pcall(self.hooks.setRadioAwake, wanted)
+end
+
 function Core:getSpreadOptions()
     return {
         mode = self:get("mode"),
@@ -826,6 +868,7 @@ function Core:stop(reason)
         link:close(reason or "stopped", true)
     end
     self.links = {}
+    self:applyRadioSetting()
     if self.server then
         self.server:close()
         self.server = nil
@@ -1072,7 +1115,10 @@ function Core:checkBookRequest()
         self.book_receiver:abort()
         self.book_receiver = nil
     end
-    self:log("gave up on", request.title or request.file, "after", math.floor(since), "seconds of silence")
+    -- `title` is often the empty string rather than absent, which `or` does
+    -- not step over: the log read "gave up on  after 30 seconds".
+    self:log("gave up on", (request.title ~= "" and request.title) or request.file or "a book",
+        "after", math.floor(since), "seconds of silence")
     self:changed()
     if was_library then
         -- One book going quiet is not a reason to abandon the rest.
@@ -1082,6 +1128,39 @@ function Core:checkBookRequest()
     end
     self:alert(("Duo could not fetch %s: the other device stopped sending."):format(
         request.title ~= "" and request.title or "the book"))
+end
+
+--[[--
+Gives up on a book the moment the link carrying it goes.
+
+A request outlived the link it was made on, and the watchdog then wrote it
+off thirty seconds later with "the other device stopped sending" -- by which
+time the pair had usually reconnected and the sentence was simply untrue. A
+real log shows the whole sequence: asked for a book, link closed six seconds
+later, back together in five, and then an alert about a device that was
+sitting right there. Worse than the wrong words, the stale request blocked
+the next one, because only one book is asked for at a time.
+
+Quiet about it. The link closing has already been announced, and a reader
+does not need to be told the same thing twice in two vocabularies.
+--]]--
+function Core:abandonBookRequest(reason)
+    local request = self.book_request
+    if not request then return end
+    self.book_request = nil
+    if self.book_receiver then
+        self.book_receiver:abort()
+        self.book_receiver = nil
+    end
+    self:log("dropped the request for",
+        (request.title ~= "" and request.title) or request.file or "a book",
+        "-", tostring(reason))
+    if request.library and not request.open_when_done then
+        -- The shelf sync is a queue, and the link going is not one book's
+        -- fault. Noted so the rest can carry on when the pair is back.
+        self:noteLibraryFailure(request, reason or "the link went")
+    end
+    self:changed()
 end
 
 --- Wraps a freshly opened stream in an authenticated link.
@@ -1118,6 +1197,7 @@ end
 function Core:onLinkReady(link)
     self.reconnect_delay = RECONNECT_MIN
     self.last_error = nil
+    self:applyRadioSetting()
     self:notify(("Duo: connected to %s"):format(link.peer_name or "peer"))
     if self:isLeader() then
         -- The leader pushes; the follower does not need to ask. Asking as well
@@ -1163,6 +1243,8 @@ end
 
 function Core:onLinkClosed(link, reason)
     self:log("link closed:", reason)
+    self:applyRadioSetting()
+    self:abandonBookRequest(reason)
     if self:isActive() then
         self:notify(("Duo: %s"):format(reason or "disconnected"))
     end
@@ -1190,6 +1272,11 @@ function Core:sendStateTo(link)
         pages = self.reader.getPageCount() or 0,
         slot = link.slot,
         mode = options.mode,
+        -- What one turn moves the leader by. The follower needs it to work
+        -- out where a turn of its own is about to put it, and it is the one
+        -- part of the sum it cannot see for itself: it depends on how many
+        -- devices are in the spread, which only the leader knows.
+        step = self:getStep(),
         beyond = clamped,
         -- What this device's layout looks like right now, so a page count
         -- that disagrees can be told from settings that disagree.
@@ -1385,7 +1472,86 @@ function Core:handleRelativeTurn(diff)
     local link = self:getReadyLinks()[1]
     if not link then return false end
     link:send(Protocol.TURN, { dir = diff })
+    self:turnAhead(diff)
     return true
+end
+
+--[[--
+Moves this device now, rather than waiting to be told where it went.
+
+Reported from a pair of Kindles, and it is the best description of the
+problem there is: "when doing the follower, it takes a while for the host to
+turn, and after that the follower finally turns, even though this is where I
+started the turn."
+
+That is exactly what happened. A follower's tap was forwarded and swallowed:
+the leader received it, moved, repainted, and only then said where everybody
+stood -- so the device under the reader's thumb was the last thing in the
+room to respond. Half a round trip on a direct link, which is unnoticeable,
+and a good deal more through a router.
+
+Guessing where this device will land costs nothing, because there is nothing
+to guess: the sum the leader is about to do is the same sum this device
+already does in reverse every time it is told a page. So it does it now, and
+the STATE that arrives a moment later either agrees -- and nothing moves --
+or corrects it.
+
+The two screens are briefly out of step either way, and for exactly as long
+either way: before, between the leader turning and this device catching up;
+now, between this device turning and the leader catching up. The window is
+the same half a round trip. What changes is which end of it the reader is
+looking at, and the reader is looking at the one they touched.
+--]]--
+function Core:turnAhead(diff)
+    if not self.reader or not self.reader.gotoPage then return end
+    local page = self.reader.getPage()
+    if not page then return end
+    local count = self.reader.getPageCount()
+    local options = self:getSpreadOptions()
+
+    --[[
+    Worked out from what the leader last said, not from what this device can
+    see. Where the leader is standing, which slot this device holds and what
+    one turn moves the pair by all arrive with every page it is sent -- so
+    the guess uses the leader's own numbers rather than a second-hand
+    reconstruction of them.
+
+    A device that has not been told any of that yet does not guess. That is
+    the first turn of a session, and one round trip is a small price for not
+    being wrong about it.
+    ]]
+    local leader_page, slot, step = self.leader_page, self.my_slot, self.spread_step
+    if not leader_page or not slot or not step then return end
+
+    local wanted = Spread.pageForSlot(leader_page + diff * step, slot, options)
+    if not wanted or wanted == page then return end
+
+    --[[
+    Left alone near the ends of the book. The leader refuses a turn that
+    would push the far end of the spread past the last page, and a guess
+    that has to be taken back is worse than one not made: a device that
+    jumps and is pulled straight back is the one thing a reader would
+    notice more than the wait this is here to remove.
+    ]]
+    if wanted < 1 then return end
+    if count and wanted > count then return end
+
+    --[[
+    Under `applying_remote`, which stops this being reported back to the
+    leader as somewhere the reader jumped to -- a page that arrived from the
+    leader in the first place, described to it as news, is a loop. And the
+    page is recorded as the assigned one for the same reason: it is where
+    this device has been told it will be standing.
+    ]]
+    self.applying_remote = true
+    local ok, err = pcall(self.reader.gotoPage, wanted)
+    self.applying_remote = false
+    if not ok then
+        self:log("could not turn ahead to", wanted, err)
+        return
+    end
+    self.assigned_page = wanted
+    self.assigned_pages = count
 end
 
 --[[--
@@ -2440,6 +2606,15 @@ function Core:pumpLibrary()
         stub = stub,
         started = Util.now(),
     }
+    --[[
+    The other device is about to go and find a book, open it and start
+    reading it off its card, and none of that leaves it time to send a
+    heartbeat. Six seconds of that was enough for this device to decide it
+    had died: the log of a real pair shows "asking for the book" and then
+    "peer stopped responding" exactly six seconds later, over and over,
+    every time a book was asked for.
+    ]]
+    if link.allowSilence then link:allowSilence() end
     link:send(Protocol.BOOK_REQ, {
         file = self.book_request.file,
         digest = "",
@@ -2523,6 +2698,7 @@ function Core:fetchBookFor(path, title)
         open_when_done = true,
         started = Util.now(),
     }
+    if link.allowSilence then link:allowSilence() end
     link:send(Protocol.BOOK_REQ, { file = path, digest = "", lib = 1 })
     self:notify(("Duo: fetching %s"):format(self.book_request.title))
     self:changed()
@@ -2575,6 +2751,7 @@ function Core:requestBook(msg)
         title = msg.title,
         started = Util.now(),
     }
+    if link.allowSilence then link:allowSilence() end
     link:send(Protocol.BOOK_REQ, { file = msg.file, digest = msg.digest or "" })
     self:notify(("Duo: asking for %s"):format(msg.title ~= "" and msg.title or "the book"))
     return true
@@ -3361,6 +3538,8 @@ function Core:handleMessage(link, msg)
     if msg.type == Protocol.STATE then
         if self:isLeader() then return end -- only the leader decides
         self.leader_page = Protocol.num(msg, "leader_page")
+        self.my_slot = Protocol.num(msg, "slot")
+        self.spread_step = Protocol.num(msg, "step")
         self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
         self:applyRemotePage(Protocol.num(msg, "page"),
             Protocol.num(msg, "pages"), msg.typo)
@@ -3921,6 +4100,15 @@ function Core:resume()
     -- look after is the plugin's question, and it can answer it without a
     -- setting having been recorded.
     self.link_check_at = Util.now() + LINK_CHECK_DELAY
+    --[[
+    Asked for again on the way back. A reader's own connection manager puts
+    its wireless settings back the way it likes them when it brings the
+    network up, so whatever Duo asked for before the sleep is not still true
+    afterwards -- and `radio_awake` remembering that it is would stop it
+    asking a second time.
+    ]]
+    self.radio_awake = nil
+    self:applyRadioSetting()
     if not self.paused_role then return end
     self.resume_attempts = 0
     self.resume_at = 0      -- try immediately; the poll loop takes it from there

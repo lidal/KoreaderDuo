@@ -472,6 +472,21 @@ Two caveats:
   has been tried and the pages still disagree — and stays quiet about a
   mismatch it is about to fix itself.
 
+**Page turns on Wi-Fi.** A reader associated to a router sleeps its radio
+between beacons, and the router holds small packets until the next one —
+which a page turn pays for and a book transfer, whose traffic never lets the
+radio doze, does not. Measured on a pair of Kindles, turning that off is the
+whole difference between a spread that feels immediate and one that lags, so
+**Keep the Wi-Fi awake** is on by default and applies only while the two
+devices are connected. Turn it off under **☰ → Network → Duo** if you would
+rather have the battery. It does nothing on a direct link, which has no
+router to wait for.
+
+**A turn on the follower moves the follower first.** The device you tapped
+responds at once and the other catches up, rather than the other way round.
+The two screens are briefly out of step for the same half a round trip
+either way; what changed is which end of it you are looking at.
+
 **The reload question is asked once.** Some style changes — turning a book's
 own stylesheet off, most of all — leave the rendering engine unable to draw
 the book correctly without building it again from scratch, and KOReader
@@ -782,13 +797,13 @@ make test          # everything, on LuaJIT
 make test LUA=lua5.1
 ```
 
-404 tests, no mocking of the interesting parts:
+417 tests, no mocking of the interesting parts:
 
 | Suite | Tests | What it covers |
 | --- | --- | --- |
 | `protocol_spec` | 26 | Framing, escaping, byte-at-a-time reassembly, a poll's worth of messages read out with a cursor rather than copied again for each one, SHA-256 vectors, reading our own address out of `ip`/`ifconfig` |
 | `link_spec` | 16 | Real loopback sockets: connect, refuse, partial writes, handshake, heartbeats, and a check that the pairing code never appears on the wire |
-| `plugin_spec` | 92 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, and coming back from a sleep the network has not finished waking from |
+| `plugin_spec` | 105 | The real `main.lua` under a stub KOReader: menus, page-turn interception, the reader binding, a follower's own tap moving that device first, keeping the radio awake only while the pair is connected, and coming back from a sleep the network has not finished waking from |
 | `integration_spec` | 81 | **Two and three device processes over real TCP**: spreads, turns from either device, absolute jumps, mirror, reverse, end of book, reconnects, document following, typography and settings and the frontlight converging from both directions, a book sent between devices, and one book list spread across two screens |
 | `serial_spec` | 8 | The same two processes over a pseudo-terminal pair, standing in for a bound RFCOMM channel, including stopping the pair and putting it back together on the same line |
 | `typography_spec` | 23 | Reading, encoding and applying layout settings, including margin pairs, a missing typeface, and the reload question being asked on one device and answered for both |

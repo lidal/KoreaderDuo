@@ -847,7 +847,14 @@ T.describe("keeping the reader awake", function()
         local unit = reader("Kindle-Follow")
         unit.Core.role = unit.Core.ROLE_FOLLOWER
         unit.Core.peer_napping = false
-        -- Connected, as far as this half of the pair can tell.
+        --[[
+        Connected, as far as this half of the pair can tell. Put back at the
+        end of the test, which it was not: the engine is a singleton, so a
+        replacement left in place makes every test after this one believe it
+        is connected for the rest of the run. That went unnoticed for as
+        long as nothing later depended on the answer.
+        ]]
+        local was_connected = unit.Core.isConnected
         unit.Core.isConnected = function() return true end
         unit.Core:updateAwake()
         T.assertEquals(unit.UIManager._prevent_standby_count, 1)
@@ -862,6 +869,7 @@ T.describe("keeping the reader awake", function()
             "and wake up with it")
         unit.Core:stop("done")
         T.assertEquals(unit.UIManager._prevent_standby_count, 0)
+        unit.Core.isConnected = was_connected
     end)
 
     T.it("stays awake for a book, whichever end of it this is", function()
@@ -1713,6 +1721,252 @@ T.describe("spread arithmetic", function()
         T.assertEquals(Spread.describeLayout(10, 1, { mode = "spread", page_count = 300 }), "10–11")
         T.assertEquals(Spread.describeLayout(10, 2, { mode = "spread", page_count = 300 }), "10–11–12")
         T.assertEquals(Spread.describeLayout(10, 1, { mode = "spread", reverse = true, page_count = 300 }), "9–10")
+    end)
+end)
+
+T.describe("keeping the radio awake while the pair is connected", function()
+    --[[
+    Confirmed on the reader's own hardware before it was built: with
+    `iw dev wlan0 set power_save off` on both Kindles, page turns over an
+    ordinary Wi-Fi network stopped lagging. A reader associated to a router
+    sleeps its radio between beacons and the router holds small packets
+    until the next one, which a page turn pays for and a book transfer --
+    whose traffic never lets the radio sleep -- does not.
+    ]]
+    --- A link that answers everything asked of it and remembers nothing.
+    local function fakeLink()
+        return {
+            state = "ready",
+            slot = 1,
+            peer_name = "other",
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            allowSilence = function() end,
+            send = function() return true end,
+        }
+    end
+
+    local function device_with(hook)
+        local instance = Instance.new{ name = "Kindle-W", page_count = 300 }
+        instance.Core.hooks.setRadioAwake = hook
+        -- The engine is a singleton and remembers what it last asked for,
+        -- deliberately, so that it asks once rather than on every poll.
+        -- Each test here starts from not having asked.
+        instance.Core.radio_awake = nil
+        return instance, instance.Core
+    end
+
+    T.it("asks for it when the two connect, and hands it back when they part", function()
+        local asked = {}
+        local instance, core = device_with(function(awake) asked[#asked+1] = awake end)
+        core.settings.keep_radio_awake = true
+
+        core.role = core.ROLE_LEADER
+        core.links = { fakeLink() }
+        core:onLinkReady(core.links[1])
+        T.assertEquals(asked[#asked], true, "the radio was left to doze while connected")
+
+        core.links = {}
+        core:onLinkClosed(nil, "peer disconnected")
+        T.assertEquals(asked[#asked], false,
+            "the radio was kept awake after the pair came apart, which is battery for nothing")
+        core.role = core.ROLE_OFF
+    end)
+
+    T.it("does not ask at all when the reader would rather have the battery", function()
+        local asked = 0
+        local instance, core = device_with(function() asked = asked + 1 end)
+        core.settings.keep_radio_awake = false
+        core.role = core.ROLE_LEADER
+        core.links = { fakeLink() }
+        core:onLinkReady(core.links[1])
+        T.assertEquals(asked, 0, "a setting that is off should ask for nothing")
+        core.links = {}
+        core.role = core.ROLE_OFF
+    end)
+
+    T.it("asks again after a sleep, because the reader puts it back", function()
+        -- A reader's own connection manager restores its wireless settings
+        -- when it brings the network up, so what Duo asked for before the
+        -- sleep is not still true afterwards.
+        local asked = {}
+        local instance, core = device_with(function(awake) asked[#asked+1] = awake end)
+        core.settings.keep_radio_awake = true
+        core.role = core.ROLE_LEADER
+        core.links = { fakeLink() }
+        core:onLinkReady(core.links[1])
+        local before = #asked
+
+        core:resume()
+        T.assertTrue(#asked > before,
+            "Duo took its own word for it and never asked again after waking")
+        core.links = {}
+        core.role = core.ROLE_OFF
+    end)
+end)
+
+T.describe("a follower's own page turn", function()
+    --[[
+    Reported from a pair of Kindles, and it is the best description of the
+    problem there is: "when doing the follower, it takes a while for the host
+    to turn, and after that the follower finally turns, even though this is
+    where I started the turn."
+
+    A follower's tap was forwarded and swallowed. The leader received it,
+    moved, repainted, and only then said where everybody stood -- so the
+    device under the reader's thumb was the last thing in the room to
+    respond.
+    ]]
+    local Protocol = require("duo/protocol")
+
+    local function follower(page)
+        local unit = Instance.new{ name = "Kindle-T", page_count = 300 }
+        local core = unit.Core
+        core.settings.mode = "spread"
+        core.settings.follower_can_turn = true
+        core.role = core.ROLE_FOLLOWER
+        local sent = {}
+        core.links = { {
+            state = "ready", slot = 1, peer_name = "leader",
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            allowSilence = function() end,
+            close = function() end,
+            send = function(_, kind, fields) sent[#sent+1] = { kind, fields } return true end,
+        } }
+        unit:openDocument{ page_count = 300 }
+        core.reader.gotoPage(page)
+        -- What the leader last told it: where the leader stands, which half
+        -- of the spread this is, and what one turn moves the pair by.
+        core.leader_page = page - 1
+        core.my_slot = 1
+        core.spread_step = 2
+        core.assigned_page = page
+        return unit, core, sent
+    end
+
+    --- How many of a kind were sent, whatever else went with them.
+    local function count(sent, kind)
+        local total = 0
+        for _, message in ipairs(sent) do
+            if message[1] == kind then total = total + 1 end
+        end
+        return total
+    end
+
+    T.it("moves this device at once rather than waiting to be told", function()
+        local unit, core, sent = follower(11)
+        T.assertTrue(core:handleRelativeTurn(1))
+        T.assertEquals(core.reader.getPage(), 13,
+            "the device the reader tapped did not move")
+        T.assertEquals(count(sent, Protocol.TURN), 1, "the leader was not asked to follow")
+        core.role = core.ROLE_OFF
+    end)
+
+    T.it("does not then report that move back to the leader as a jump", function()
+        -- The page came from the leader's own arithmetic. Describing it to
+        -- the leader as somewhere the reader went is a loop.
+        local unit, core, sent = follower(11)
+        core:handleRelativeTurn(1)
+        core:onPageChanged(core.reader.getPage())
+        for _, message in ipairs(sent) do
+            T.assertTrue(message[1] ~= Protocol.GOTO,
+                "the guess was reported back as a jump, which moves the pair twice")
+        end
+        core.role = core.ROLE_OFF
+    end)
+
+    T.it("keeps still near the end of the book, where the leader would refuse", function()
+        -- A guess that has to be taken back is worse than one not made.
+        local unit, core, sent = follower(300)
+        core.leader_page = 299
+        core:handleRelativeTurn(1)
+        T.assertEquals(core.reader.getPage(), 300,
+            "it guessed past the end of the book and would be pulled back")
+        core.role = core.ROLE_OFF
+    end)
+
+    T.it("keeps still until the leader has told it where it stands", function()
+        local unit, core, sent = follower(11)
+        core.leader_page, core.my_slot, core.spread_step = nil, nil, nil
+        core:handleRelativeTurn(1)
+        T.assertEquals(core.reader.getPage(), 11,
+            "it guessed from numbers it did not have")
+        T.assertEquals(count(sent, Protocol.TURN), 1, "and it should still ask")
+        core.role = core.ROLE_OFF
+    end)
+
+    T.it("does not move at all when a follower is kept as a display", function()
+        local unit, core, sent = follower(11)
+        core.settings.follower_can_turn = false
+        core:handleRelativeTurn(1)
+        T.assertEquals(core.reader.getPage(), 11)
+        T.assertEquals(count(sent, Protocol.TURN), 0,
+            "a follower kept as a display should not move the pair")
+        core.settings.follower_can_turn = true
+        core.role = core.ROLE_OFF
+    end)
+end)
+
+T.describe("a book asked for over a link that goes", function()
+    --[[
+    Straight out of a reader's log. Asked for a book at 18:42:22; "link
+    closed: peer stopped responding" at 18:42:28, six seconds later, which is
+    the heartbeat timeout to the second; back together at 18:42:33; and then
+    at 18:42:52 an alert about the other device having stopped sending -- a
+    device that had been sitting there reconnected for nineteen seconds.
+
+    Two faults in one sequence. The leader goes quiet while it finds a book
+    and opens it, and was being written off for it. And the request outlived
+    the link it was made on, so it blocked the next one and then blamed the
+    wrong thing.
+    ]]
+    T.it("forgives the other device for going quiet while it finds the book", function()
+        reset()
+        local granted = 0
+        local link = {
+            state = "ready", slot = 1, peer_name = "leader",
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            close = function() end,
+            allowSilence = function() granted = granted + 1 end,
+            send = function() return true end,
+        }
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.sync_books = true
+        Core.links = { link }
+        Core.book_request, Core.book_receiver = nil, nil
+        T.assertTrue(Core:requestBook{ file = "/books/big.epub", digest = "", title = "Big" })
+        T.assertTrue(granted > 0,
+            "a device told to go and find a book was given no time to do it")
+        Core.role = Core.ROLE_OFF
+        Core.links = {}
+        Core.book_request = nil
+    end)
+
+    T.it("gives up on the book when the link goes, rather than blaming it later", function()
+        reset()
+        Core.book_request = { file = "/books/big.epub", title = "Big", started = Util.now() }
+        Core:onLinkClosed(nil, "peer stopped responding")
+        T.assertNil(Core.book_request,
+            "the request outlived its link and would block the next one")
+    end)
+
+    T.it("names the book it gave up on", function()
+        -- The log read "gave up on  after 30 seconds": `title` is often the
+        -- empty string rather than absent, and `or` does not step over that.
+        reset()
+        local lines = {}
+        local was_log = Core.hooks.log
+        Core.hooks.log = function(...)
+            local parts = {}
+            for index = 1, select("#", ...) do parts[#parts+1] = tostring((select(index, ...))) end
+            lines[#lines+1] = table.concat(parts, " ")
+        end
+        Core.book_request = { file = "/books/big.epub", title = "", started = 0 }
+        Core:checkBookRequest()
+        Core.hooks.log = was_log
+        T.assertMatch(table.concat(lines, " | "), "gave up on /books/big%.epub")
     end)
 end)
 

@@ -145,4 +145,62 @@ function NetUtil.closeFirewall(port)
     iptables("D", port)
 end
 
+--------------------------------------------------------------------------
+-- Keeping the radio awake
+--------------------------------------------------------------------------
+
+--[[--
+The wireless interface, by the names readers use for it.
+
+Kept to a short list rather than asked of the system, because this runs on a
+device where `iw` may not exist and the answer is one of four names anyway.
+--]]--
+local WIFI_INTERFACES = { "wlan0", "wlan1", "mlan0", "eth0" }
+
+local function wirelessInterface()
+    for _, name in ipairs(WIFI_INTERFACES) do
+        local handle = io.open("/sys/class/net/" .. name .. "/wireless", "r")
+            or io.open("/sys/class/net/" .. name .. "/phy80211/name", "r")
+        if handle then
+            handle:close()
+            return name
+        end
+    end
+    return nil
+end
+
+--[[--
+Turns the wireless card's power saving off, or puts it back.
+
+Why this exists. A reader associated to a router sleeps its radio between
+beacons and lets the router hold anything that arrives meanwhile, handing it
+over at the next DTIM -- a tenth of a second on a good router and several
+times that on an ordinary one. A page turn is one small packet each way, so
+it can wait for that twice, and the reader feels it. A transfer never does,
+because the traffic is constant and the radio never gets to sleep, which is
+why the two symptoms have different causes and only one of them is this.
+
+None of it applies to a link the two devices make between themselves: the
+device hosting it cannot sleep, because it has to send the beacons, and an
+ad-hoc cell has no router holding anything back. That is a large part of why
+a direct link feels immediate and the same pair through a router does not.
+
+Both spellings are tried. `iw` is the modern one and is missing from some
+firmwares; `iwconfig` is the old one and is present on most Kindles. Failure
+is silent on purpose: a device that will not turn power saving off still
+works, just less briskly, and there is nothing useful to say to somebody
+about a knob their firmware does not have.
+
+@bool awake  true to keep the radio awake, false to hand it back
+@treturn ?string  the interface it was applied to, or nil
+--]]--
+function NetUtil.setRadioAlwaysOn(awake)
+    local iface = wirelessInterface()
+    if not iface then return nil end
+    local setting = awake and "off" or "on"
+    os.execute(("iw dev %s set power_save %s >/dev/null 2>&1"):format(iface, setting))
+    os.execute(("iwconfig %s power %s >/dev/null 2>&1"):format(iface, setting))
+    return iface
+end
+
 return NetUtil

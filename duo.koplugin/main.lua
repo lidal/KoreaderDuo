@@ -102,6 +102,9 @@ function Duo:init()
             closeFirewall = function(port)
                 if Device:isKindle() then NetUtil.closeFirewall(port) end
             end,
+            -- No device check: this only ever runs because somebody asked
+            -- for it, and asking is the permission.
+            setRadioAwake = function(awake) return NetUtil.setRadioAlwaysOn(awake) end,
         },
     }
 
@@ -2155,6 +2158,15 @@ On connecting, the leader's settings win. After that a change on either device m
             checked_func = function() return Core:get("autostart") end,
             callback = function() Core:set("autostart", not Core:get("autostart")) end,
             separator = true,
+        },
+        {
+            text = _("Keep the Wi-Fi awake"),
+            help_text = _("Stops the wireless card dozing between beacons while Duo is connected.\n\nA reader on an ordinary Wi-Fi network sleeps its radio, and the router holds small packets until the next beacon — which is why a page turn can lag on Wi-Fi while a book transfer, whose traffic never stops, does not. Removing that wait is the difference between a pair that feels immediate and one that does not.\n\nOn by default, and only while the two devices are connected: the radio sleeps as usual the rest of the time. Turn it off if you would rather have the battery. It does nothing on a direct link, which has no router to wait for."),
+            checked_func = function() return Core:get("keep_radio_awake") end,
+            callback = function()
+                Core:set("keep_radio_awake", not Core:get("keep_radio_awake"))
+                Core:applyRadioSetting()
+            end,
         },
         {
             text = _("Write a log file"),
