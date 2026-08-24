@@ -115,6 +115,23 @@ local LINK_HEAL_AFTER = 2
 local LINK_HEAL_EVERY = 20
 
 --[[--
+And how long between them before the two have ever managed to connect, in
+seconds.
+
+A pair that has never connected is usually waiting for somebody to finish
+setting the other one up -- reading a code off one screen and typing it into
+the other. Rebuilding the cell under them every twenty seconds while they do
+is not patience; it is knocking the other device off at the moment it
+arrives.
+
+Rarely rather than never, which is the distinction that matters. "Once and
+then leave it alone" was the first attempt at this, and it strands a pair
+whose one rebuild happened to land before the other device was ready: there
+is then nothing left that would ever try again.
+--]]--
+local LINK_HEAL_EVERY_WAITING = 300
+
+--[[--
 How long to leave a pair alone that has never managed to connect at all.
 
 A link that has worked and stopped is broken and worth rebuilding at once.
@@ -809,9 +826,6 @@ function Core:stop(reason)
         link:close(reason or "stopped", true)
     end
     self.links = {}
-    -- Starting again is a fresh reason to try the link once more, whatever
-    -- was concluded about it last time.
-    self.healed_before_first = nil
     if self.server then
         self.server:close()
         self.server = nil
@@ -3997,7 +4011,6 @@ function Core:checkLinkHealth()
     if self:isConnected() then
         self.disconnected_since = nil
         self.has_connected = true
-        self.healed_before_first = nil
         return
     end
     local now = Util.now()
@@ -4006,7 +4019,8 @@ function Core:checkLinkHealth()
     -- worked is probably still being set up by somebody.
     local patience = self.has_connected and LINK_HEAL_AFTER or LINK_HEAL_FIRST
     if now - self.disconnected_since < patience then return end
-    if self.link_healed_at and now - self.link_healed_at < LINK_HEAL_EVERY then return end
+    local between = self.has_connected and LINK_HEAL_EVERY or LINK_HEAL_EVERY_WAITING
+    if self.link_healed_at and now - self.link_healed_at < between then return end
     self.link_healed_at = now
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     --[[
@@ -4018,24 +4032,12 @@ function Core:checkLinkHealth()
     of the one thing that works. Rebuilding a link nobody is using costs a
     few seconds; not rebuilding it costs the feature.
     ]]
-    --[[
-    Rebuilt over and over only when the pair has been together and come
-    apart. A device that has never connected is usually waiting for
-    somebody to finish setting up the other one -- and rebuilding the cell
-    every twenty seconds while they do is not patience, it is knocking the
-    other device off the moment it arrives. Once, then, and then left alone
-    until there is a connection to lose.
-    ]]
-    if not self.has_connected then
-        if self.healed_before_first then
-            self:log("still waiting for the other device; leaving the link alone")
-            return
-        end
-        self.healed_before_first = true
-    end
-
     self:log("apart for a while; rebuilding the link rather than asking after it")
-    local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true)
+    -- Silent: this runs again every twenty seconds for as long as the two
+    -- are apart, and a device narrating each pass is what read as the link
+    -- going up over and over. The check after a sleep is the one that
+    -- speaks, because it happens once and something has changed.
+    local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true, true)
     if ok and outcome == "rebuilt" then self:dialNow() end
 end
 

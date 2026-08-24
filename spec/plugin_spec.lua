@@ -505,6 +505,68 @@ T.describe("coming back after a sleep", function()
         Core.settings.direct_link = nil
     end)
 
+    T.it("says the link came back after a sleep, and says nothing while it waits", function()
+        --[[
+        Reported as a regression: "resuming the direct link after sleep was
+        not working anymore -- before it resumed the link in about 6
+        seconds". What had actually stopped was the sentence saying so.
+
+        Two different callers rebuild this link, and they had been given one
+        flag between them. The check a couple of seconds after waking runs
+        once and needs to say when it rebuilt something -- that line is how
+        anyone knows the pair is back. The healer that runs every twenty
+        seconds while the two are apart must say nothing, because narrating
+        every pass is what read as the link going up over and over.
+
+        Silencing both at once made a recovery that still worked look like
+        one that had stopped, which is a worse bug than the noise it was
+        meant to fix: noise is annoying, and a missing signal is a feature
+        nobody can tell is working.
+        ]]
+        reset()
+        Core.settings.direct_link = "host"
+
+        local said = {}
+        local was_notify = Core.hooks.notify
+        Core.hooks.notify = function(text) said[#said+1] = tostring(text) end
+        local passed
+        Core.hooks.reviveDirectLink = function(quiet, force, silent)
+            passed = { quiet = quiet, force = force, silent = silent }
+            return "rebuilt"
+        end
+
+        -- The check on the way back from a sleep.
+        Core.paused_role = nil
+        Core:resume()
+        Core.link_check_at = 0
+        Core:poll()
+        T.assertTrue(passed ~= nil, "the link was never checked after the sleep")
+        T.assertTrue(not passed.silent,
+            "the check after a sleep was told to keep the rebuild to itself")
+        -- The hook is stubbed here, so what the plugin would have said is
+        -- checked against the real one separately; what matters at this
+        -- level is that it was not told to hold its tongue.
+
+        -- And the healer that runs on and on while the two are apart.
+        passed = nil
+        Core.role = Core.ROLE_FOLLOWER          -- active, and not connected
+        Core.has_connected = true               -- so it heals over and over
+        Core.disconnected_since = 0             -- apart for a good while
+        Core.link_healed_at = nil
+        Core:poll()
+        T.assertTrue(passed ~= nil, "the link was never healed")
+        T.assertTrue(passed.silent,
+            "the healer announces itself every twenty seconds all over again")
+
+        Core.hooks.notify = was_notify
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.has_connected = nil
+        Core.disconnected_since = nil
+        Core.link_healed_at = nil
+    end)
+
     T.it("dials again the moment the network is back, not after the backoff", function()
         --[[
         The backoff had grown while the link was broken, and it was about a
@@ -535,8 +597,17 @@ T.describe("coming back after a sleep", function()
     end)
 
     T.it("is patient with a pair that has never managed to connect", function()
-        -- Somebody reading a code off one screen and typing it into the
-        -- other does not need the network pulled out from under them.
+        --[[
+        Somebody reading a code off one screen and typing it into the other
+        does not need the network pulled out from under them every twenty
+        seconds -- which is what rebuilding the cell at the rate a broken
+        link deserves amounts to, when the link is not broken at all and the
+        other device simply has not arrived yet.
+
+        Rarely, though, and not never. "Once and then leave it alone" was
+        the first attempt, and it strands a pair whose one rebuild landed
+        before the other device was ready: nothing would ever try again.
+        ]]
         reset()
         Core.settings.direct_link = "join"
         local rebuilt = 0
@@ -550,6 +621,18 @@ T.describe("coming back after a sleep", function()
         Core.disconnected_since = 0                -- now it really has been a while
         Core:poll()
         T.assertEquals(rebuilt, 1)
+
+        -- The rate a pair that has worked and come apart gets. Not this one.
+        Core.link_healed_at = Util.now() - 25
+        Core:poll()
+        T.assertEquals(rebuilt, 1,
+            "the cell was pulled out from under somebody still typing a code")
+
+        -- But it does come back to it, rather than giving up for good.
+        Core.link_healed_at = Util.now() - 600
+        Core:poll()
+        T.assertEquals(rebuilt, 2,
+            "a pair whose one rebuild came too early would be stranded for ever")
 
         Core.hooks.reviveDirectLink = nil
         Core.settings.direct_link = nil
@@ -616,6 +699,43 @@ T.describe("coming back after a sleep", function()
             "it must not work the link out again from what it just dismantled")
         T.assertEquals(Core:get("peer_host"), "",
             "the other device is not at that address any more")
+    end)
+
+    T.it("says a rebuild out loud, unless it is the one that repeats", function()
+        --[[
+        The other half of the same regression, at the level a reader sees.
+        The check after a sleep must produce the two lines that tell you the
+        pair is coming back; the healer that runs every twenty seconds while
+        they are apart must produce none.
+
+        The script is stood in for: rebuilding a link for real reconfigures
+        the machine's network, which the suite is not entitled to do to
+        whoever is running it.
+        ]]
+        reset()
+        Core.settings.direct_link = "host"
+
+        local DirectLink = require("duo/directlink")
+        local ran_script, hosted = DirectLink.run, DirectLink.host
+        -- A link that is not up, so every call has something to rebuild.
+        DirectLink.run = function() return "mode=managed" end
+        DirectLink.host = function() return "" end
+
+        device:drainMessages()
+        T.assertEquals(device.plugin:reviveDirectLink(true), "rebuilt")
+        local said = table.concat(device:drainMessages(), " | ")
+        T.assertMatch(said, "rebuilding the direct link",
+            "nothing said while the link was being rebuilt after a sleep")
+        T.assertMatch(said, "the direct link is back",
+            "the one line that says the pair is back never appeared")
+
+        device:drainMessages()
+        T.assertEquals(device.plugin:reviveDirectLink(true, true, true), "rebuilt")
+        T.assertEquals(table.concat(device:drainMessages(), " | "), "",
+            "the healer narrated itself, which is what it does every twenty seconds")
+
+        DirectLink.run, DirectLink.host = ran_script, hosted
+        Core.settings.direct_link = nil
     end)
 
     T.it("stays let go when the pair is told to use an ordinary network", function()

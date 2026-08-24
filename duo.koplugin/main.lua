@@ -79,7 +79,9 @@ function Duo:init()
             -- and the module table has none.
             closeDocument = function() self:closeRemoteDocument() end,
             sleepDevice = function() Duo:sleepForPeer() end,
-            reviveDirectLink = function(quiet, force) return Duo:reviveDirectLink(quiet, force) end,
+            reviveDirectLink = function(quiet, force, silent)
+                return Duo:reviveDirectLink(quiet, force, silent)
+            end,
             defaultDeviceName = function() return Duo:getDefaultDeviceName() end,
             getBookDir = function() return Duo:getBookDir() end,
             listFolder = function(path) return Duo:listFolder(path) end,
@@ -1218,7 +1220,7 @@ do is talk you out of the fix.
 @tparam[opt] boolean force  rebuild without asking whether it is needed
 @treturn string  "up", "rebuilt", "failed", or "not-ours"
 --]]--
-function Duo:reviveDirectLink(quiet, force)
+function Duo:reviveDirectLink(quiet, force, silent)
     local role = self:directLinkRole()
     if not role then return "not-ours" end
 
@@ -1233,11 +1235,24 @@ function Duo:reviveDirectLink(quiet, force)
     end
 
     logger.dbg("Duo: rebuilding the direct link, role", role, "forced", tostring(force))
-    -- `quiet` means quiet. It used to cover only the "nothing needed doing"
-    -- line, so a device healing itself in the background announced a
-    -- rebuild and a success every twenty seconds while it waited for the
-    -- other one -- which read as the link going up over and over.
-    if not quiet then Core:notify(_("Duo: rebuilding the direct link…")) end
+    --[[
+    `silent` and `quiet` are not the same thing, and conflating them cost a
+    reader the one message they were waiting for.
+
+    `quiet` means "do not say so when nothing needed doing" -- the check on
+    the way back from a sleep passes it, because a link that survived is not
+    news, and that is all it ever meant. But that check does need to say
+    when it *did* rebuild something: those two lines, over the few seconds
+    after waking, are how anyone knows the pair is coming back. Silencing
+    them too made a recovery that still worked look like one that had
+    stopped, which is the worse bug of the two -- noise is annoying, and a
+    missing signal is a feature nobody can tell is working.
+
+    `silent` is for the healer that runs every twenty seconds while the two
+    are apart. That one announcing a rebuild and a success on every pass is
+    what read as the link going up over and over.
+    ]]
+    if not silent then Core:notify(_("Duo: rebuilding the direct link…")) end
     local output = (role == "host" and DirectLink.host() or DirectLink.join()) or ""
     local failure = output:match("\nerror: ([^\n]*)") or output:match("^error: ([^\n]*)")
     if failure then
@@ -1245,7 +1260,8 @@ function Duo:reviveDirectLink(quiet, force)
         Core:alert(T(_("Duo could not rebuild the direct link.\n\n%1"), failure))
         return "failed"
     end
-    if not quiet then Core:notify(_("Duo: the direct link is back")) end
+    -- Said even when `quiet`: something changed, and that is the point.
+    if not silent then Core:notify(_("Duo: the direct link is back")) end
     return "rebuilt"
 end
 
