@@ -1275,8 +1275,8 @@ may open.
 
 A shelf is a handful of folders deep in practice. The search can afford to
 be generous, because what it saves is sending a whole book over a link that
-may be a serial cable -- but not unbounded, because a card full of files
-should not stall a tap.
+may be a slow one -- but not unbounded, because a card full of files should
+not stall a tap.
 --]]--
 local SEARCH_DEPTH = 4
 local SEARCH_FOLDERS = 400
@@ -1967,12 +1967,6 @@ function Duo:getMenuTable()
             text = _("Link"),
             sub_item_table = {
                 {
-                    text = _("Wi-Fi (or any network link)"),
-                    help_text = _("Talk over TCP/IP. Bluetooth PAN counts: KOReader sees an ordinary network."),
-                    checked_func = function() return not Core:usesSerial() end,
-                    callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
-                },
-                {
                     text = _("Check the direct link now"),
                     help_text = _("Ask whether the link Duo built is still there, and rebuild it if not. The same check that runs by itself when the two have been apart for a while — this one just says what it found straight away."),
                     enabled_func = function() return Duo:directLinkRole() ~= nil end,
@@ -1991,22 +1985,6 @@ function Duo:getMenuTable()
                     help_text = _("A Wi-Fi link between the two devices alone, for reading where there is no network."),
                     keep_menu_open = true,
                     callback = function() self:showDirectRoleDialog() end,
-                },
-                {
-                    text = _("Serial line (RFCOMM or UART)"),
-                    help_text = _("Talk over a character device rather than a network: a bound RFCOMM channel or a serial line. Set it up outside KOReader first — for Bluetooth, 'rfcomm bind /dev/rfcomm0 <address> 1'; for a wire, the port's name, with nothing else using it."),
-                    checked_func = function() return Core:usesSerial() end,
-                    callback = function() self:setTransport(Core.TRANSPORT_SERIAL) end,
-                    separator = true,
-                },
-                {
-                    text_func = function() return T(_("Serial device: %1"), Core:get("serial_device")) end,
-                    enabled_func = function() return Core:usesSerial() end,
-                    keep_menu_open = true,
-                    callback = function(touchmenu_instance)
-                        self.menu_container = touchmenu_instance
-                        self:showSerialDeviceDialog()
-                    end,
                 },
             },
         },
@@ -2296,58 +2274,6 @@ function Duo:showStatus()
 
     if #lines == 0 then lines[1] = _("Duo has nothing to report.") end
     UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
-end
-
---- Switches between the network and the serial link, restarting if running.
-function Duo:setTransport(transport)
-    if Core:get("transport") == transport then return end
-    local role = Core.role
-    local was_active = Core:isActive()
-    if was_active then
-        Core:stop("switching link")
-    end
-    Core:set("transport", transport)
-    if transport == Core.TRANSPORT_SERIAL and not require("duo/transport_serial").isAvailable() then
-        UIManager:show(InfoMessage:new{
-            text = _("This build of KOReader cannot open a serial device, so Duo will stay on the network."),
-        })
-        Core:set("transport", Core.TRANSPORT_TCP)
-        return
-    end
-    if was_active then
-        Core:start(role)
-    end
-    self:refreshMenu()
-end
-
-function Duo:showSerialDeviceDialog()
-    local dialog
-    dialog = InputDialog:new{
-        title = _("Serial device"),
-        description = _("The device file for the Bluetooth channel. Bind the two to each other first."),
-        input = Core:get("serial_device"),
-        input_hint = "/dev/rfcomm0",
-        buttons = {{
-            {
-                text = _("Cancel"),
-                id = "close",
-                callback = function() UIManager:close(dialog) end,
-            },
-            {
-                text = _("Save"),
-                is_enter_default = true,
-                callback = function()
-                    local path = (dialog:getInputText() or ""):gsub("%s", "")
-                    UIManager:close(dialog)
-                    if path == "" then return end
-                    Core:set("serial_device", path)
-                    self:refreshMenu()
-                end,
-            },
-        }},
-    }
-    UIManager:show(dialog)
-    dialog:onShowKeyboard()
 end
 
 function Duo:showTokenDialog()

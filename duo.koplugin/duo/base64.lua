@@ -2,7 +2,7 @@
 Base64, so a book can travel down a link that carries text.
 
 The Duo protocol is one line of printable characters per message, which is
-what makes it easy to debug and equally happy on a socket or a serial line.
+what makes it easy to debug and cheap to parse on a slow device.
 A book is not printable, so it goes across encoded — a third larger, which
 is a much better trade than percent-encoding's threefold.
 

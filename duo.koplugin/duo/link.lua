@@ -126,7 +126,7 @@ Link.READ_WHEN_BELOW = 128 * 1024
 
 --- Seconds allowed for the handshake.
 Link.HANDSHAKE_TIMEOUT = 10
---- Seconds between repeated challenges on a link with no connect step.
+--- Seconds between repeated challenges while nobody has answered.
 Link.CHALLENGE_INTERVAL = 1
 
 --- Computes the proof of knowing `token` for a given nonce.
@@ -277,10 +277,10 @@ function Link:handleHandshake(msg)
                 return
             end
             self.peer_name = msg.name or "leader"
-            -- A serial line has no connect step, so the leader repeats its
-            -- challenge until somebody answers. Answering a repeat with a
-            -- *new* nonce would invalidate the reply already in flight, so
-            -- the nonce is tied to the challenge that prompted it.
+            -- The leader repeats its challenge until somebody answers.
+            -- Answering a repeat with a *new* nonce would invalidate the
+            -- reply already in flight, so the nonce is tied to the challenge
+            -- that prompted it.
             if self.challenge_nonce ~= msg.nonce then
                 self.challenge_nonce = msg.nonce
                 self.nonce = Util.randomHex(8)
@@ -402,8 +402,8 @@ function Link:checkTimers()
             self:close("handshake timed out")
         elseif self.is_leader and not self.heard_from_peer
                 and now - self.last_tx >= Link.CHALLENGE_INTERVAL then
-            -- Nobody has said anything back. On a serial line that just
-            -- means the other device is not listening yet, so keep calling.
+            -- Nobody has said anything back yet, so keep calling: a lost
+            -- challenge should cost a second rather than the connection.
             self:sendChallenge()
         end
         return

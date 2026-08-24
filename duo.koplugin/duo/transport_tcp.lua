@@ -8,8 +8,7 @@ whatever is available, and writes keep a small outgoing buffer for the bytes
 the kernel would not take yet.
 
 The transport does not care what runs on top of it. Anything that can
-produce a `Stream` (send / receive / close) can carry the Duo protocol,
-which is how the same code works over Wi-Fi and over a Bluetooth PAN link.
+produce a `Stream` (send / receive / close) can carry the Duo protocol.
 
 @module duo.transport_tcp
 --]]--

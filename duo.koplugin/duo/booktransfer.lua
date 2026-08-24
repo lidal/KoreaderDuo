@@ -8,8 +8,8 @@ the right page of it a moment later.
 
 Reading and writing happen a chunk at a time, driven from the poll loop, so
 a 4 MB EPUB never blocks the reader. The sender stops pushing when the
-transport's outgoing buffer fills, which is what keeps a slow serial link
-from swallowing memory.
+transport's outgoing buffer fills, which is what keeps a slow link from
+swallowing memory.
 
 @module duo.booktransfer
 --]]--

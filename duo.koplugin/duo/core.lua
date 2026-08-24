@@ -23,7 +23,6 @@ local Discovery = require("duo/discovery")
 local Link = require("duo/link")
 local NetUtil = require("duo/netutil")
 local Protocol = require("duo/protocol")
-local SerialTransport = require("duo/transport_serial")
 local Spread = require("duo/spread")
 local TcpTransport = require("duo/transport_tcp")
 local Util = require("duo/util")
@@ -203,13 +202,10 @@ the book goes down.
 local IDLE_HOLD = 300
 
 Core.TRANSPORT_TCP = "tcp"
-Core.TRANSPORT_SERIAL = "serial"
 
 local DEFAULTS = {
     transport = "tcp",
     keep_radio_awake = true,
-    serial_device = "/dev/rfcomm0",
-    serial_baud = 115200,
     port = 9970,
     discovery_port = Discovery.PORT,
     token = "",
@@ -729,32 +725,6 @@ Starts Duo in the given role.
 @tparam[opt] table options host and port for a follower
 @treturn boolean success
 --]]--
---- True when Duo is talking over a serial device (a Bluetooth RFCOMM link,
--- typically) rather than over the network.
-function Core:usesSerial()
-    return self:get("transport") == Core.TRANSPORT_SERIAL
-end
-
---[[--
-Brings up the serial link.
-
-There is no dialling on a serial line: both devices open the same channel
-and the leader starts talking. Whoever gets there first waits for the other.
---]]--
-function Core:openSerialLink()
-    self.reconnect_at = nil
-    local path = self:get("serial_device")
-    local stream, err = SerialTransport.open(path, { baud = self:get("serial_baud") })
-    if not stream then
-        self.last_error = err
-        self:scheduleReconnect()
-        return false
-    end
-    self:adoptStream(stream, self:isLeader())
-    self:changed()
-    return true
-end
-
 function Core:start(role, options)
     options = options or {}
     role = RENAMED_ROLES[role] or role
@@ -769,27 +739,6 @@ function Core:start(role, options)
     -- next one.
     self.sleeping_for_peer = false
     self.sleep_announced_at = nil
-
-    if self:usesSerial() then
-        if role ~= Core.ROLE_LEADER and role ~= Core.ROLE_FOLLOWER then return false end
-        if not SerialTransport.isAvailable() then
-            self:alert("This build of KOReader cannot use a serial link.")
-            return false
-        end
-        self.role = role
-        self.settings.autostart_role = role
-        self:save()
-        if not self:openSerialLink() then
-            self:alert(("Could not open %s.\n%s\n\nBind the Bluetooth channel first, for example:\n  rfcomm bind %s <address> 1"):format(
-                self:get("serial_device"), tostring(self.last_error), self:get("serial_device")))
-            self:stop("serial device unavailable")
-            return false
-        end
-        self.last_activity = Util.now()
-        self:updateAwake()
-        self:changed()
-        return true
-    end
 
     if role == Core.ROLE_LEADER then
         local port = self:get("port")
@@ -1032,12 +981,7 @@ function Core:poll()
 
     if self.responder then self.responder:poll() end
 
-    if self:usesSerial() then
-        -- One line, one link: reopen it when it has gone away.
-        if #self.links == 0 and self.reconnect_at and Util.now() >= self.reconnect_at then
-            self:openSerialLink()
-        end
-    else
+    do
         if self:isLeader() and self.server then
             while true do
                 local stream = self.server:accept()
@@ -1248,9 +1192,8 @@ function Core:onLinkClosed(link, reason)
     if self:isActive() then
         self:notify(("Duo: %s"):format(reason or "disconnected"))
     end
-    -- Whoever dialled is the one who redials. On a serial line neither side
-    -- dialled, so both keep the channel open and wait for the other.
-    if self:isActive() and (self:isFollower() or self:usesSerial()) then
+    -- Whoever dialled is the one who redials.
+    if self:isActive() and self:isFollower() then
         self:scheduleReconnect()
     end
     self:changed()
@@ -4019,9 +3962,6 @@ function Core:getStatusText()
     if self:isLeader() then
         local ready = self:getReadyLinks()
         if #ready == 0 then
-            if self:usesSerial() then
-                return ("Leader · waiting on %s"):format(self:get("serial_device"))
-            end
             local address = NetUtil.getLocalIP()
             return ("Leader · waiting on %s:%d"):format(address or "this device", self:get("port"))
         end
@@ -4046,9 +3986,6 @@ function Core:getStatusText()
         local seconds = math.max(0, math.ceil(self.reconnect_at - Util.now()))
         return ("Follower · retrying in %ds%s"):format(seconds,
             self.last_error and (" (" .. self.last_error .. ")") or "")
-    end
-    if self:usesSerial() then
-        return ("Follower · listening on %s…"):format(self:get("serial_device"))
     end
     return ("Follower · connecting to %s…"):format(self:get("peer_host"))
 end

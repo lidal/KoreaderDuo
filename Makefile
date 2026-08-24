@@ -10,7 +10,7 @@
 LUA ?= luajit
 LUA_PATH_SETTING := ./?.lua;./duo.koplugin/?.lua;;
 SPECS := spec/protocol_spec.lua spec/link_spec.lua spec/plugin_spec.lua \
-         spec/integration_spec.lua spec/serial_spec.lua \
+         spec/integration_spec.lua \
          spec/typography_spec.lua spec/booktransfer_spec.lua spec/browser_spec.lua \
          spec/library_spec.lua spec/epubstub_spec.lua spec/frontlight_spec.lua \
          spec/directlink_spec.lua spec/directlink_net_spec.lua spec/log_spec.lua

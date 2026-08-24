@@ -263,4 +263,74 @@ function DuoControl:answerReload(yes)
     return false
 end
 
+--- Writes what this device is showing to a PNG, for the README.
+function DuoControl:screenshot(path)
+    local Screen = require("device").screen
+    UIManager:forceRePaint()
+    local ok, err = pcall(function() Screen:shot(path) end)
+    if not ok then return tostring(err) end
+    return "ok"
+end
+
+--[[--
+Closes anything sitting over the page.
+
+An emulator comes up with a notice or two of its own, and a screenshot with
+one of those across it is a screenshot of the notice.
+--]]--
+function DuoControl:dismissPopups()
+    local closed = 0
+    for _ = 1, 8 do
+        local stack = UIManager._window_stack or {}
+        local top = stack[#stack] and stack[#stack].widget
+        if not top then break end
+        local name = top.class_name or (top.text ~= nil and "message") or nil
+        if not name and not top.dismiss_callback then break end
+        UIManager:close(top)
+        closed = closed + 1
+    end
+    UIManager:forceRePaint()
+    return closed
+end
+
+--- Re-reads the folder on screen, after files have been put there behind
+--- the reader's back.
+function DuoControl:refreshBrowser()
+    local FileManager = require("apps/filemanager/filemanager")
+    local ui = FileManager.instance
+    if not ui or not ui.file_chooser then return false end
+    ui.file_chooser:refreshPath()
+    UIManager:forceRePaint()
+    return true
+end
+
+--[[--
+Puts the file browser into the cover grid, and hides the emulator's key
+hints.
+
+The grid is what a shelf looks like on a device somebody reads on, and the
+lettered boxes down the side are the desktop build offering keyboard
+shortcuts for each row -- neither of which belongs in a picture of two
+e-readers.
+--]]--
+function DuoControl:setMosaic()
+    local FileManager = require("apps/filemanager/filemanager")
+    local ui = FileManager.instance
+    if not ui then return "no file manager" end
+    for _, plugin in ipairs(ui and ui.postInitCallback and {} or {}) do end
+    local cover_browser = nil
+    for _, module in pairs(ui) do
+        if type(module) == "table" and module.setupFileManagerDisplayMode
+                and module.setDisplayMode then
+            cover_browser = module
+            break
+        end
+    end
+    if not cover_browser then return "no cover browser" end
+    cover_browser:setDisplayMode("mosaic_image")
+    if ui.file_chooser then ui.file_chooser.is_enable_shortcut = false end
+    UIManager:forceRePaint()
+    return "ok"
+end
+
 return DuoControl
