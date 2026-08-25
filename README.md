@@ -74,13 +74,27 @@ takes `169.254.13.2` and connects on its own.
 
 Anything that is not a second reader — a laptop, a phone, desktop KOReader —
 joins the network first, the ordinary way. It is called **`KOReaderDuo`**,
-passphrase **`koreaderduo`** (override with `DUO_SSID` and
-`DUO_PASSPHRASE`), then pair as a follower against `169.254.13.1`. **This
+and its passphrase is derived from your pairing code, so it differs per pair
+and neither device has to be told it; the host's screen shows it. **This
 does not work if the link fell back to ad-hoc**, and the screen says so: an
 ad-hoc cell carries the spread between two readers perfectly well, but
 modern Wi-Fi daemons dropped ad-hoc support and phones never had it, so
 nothing else will list the network. Another reader still joins, because it
 joins by name rather than from a list.
+
+**The ad-hoc fallback is unencrypted.** IBSS with WPA is unsupported by most
+of the drivers this runs on, so the cell is formed with no key: anything in
+radio range can join it and read what crosses. Duo signs its own messages
+(below), so nobody can drive your pair or ask it for a book — but titles,
+paths, page numbers and the bytes of any book being copied are in the clear.
+Kindles land on this path, since their `wpa_supplicant` has no AP mode. If
+that matters for what you are reading, use a Wi-Fi network instead, where
+WPA2 covers the air.
+
+The access-point path *is* encrypted, with WPA2 and a per-pair key. The
+script refuses to build one with no passphrase rather than quietly bringing
+up an open network — drive it by hand and you supply `DUO_PASSPHRASE`
+yourself.
 
 Whether a given device can host at all comes down to its Wi-Fi stack:
 
@@ -261,9 +275,23 @@ each other.
   instance for every document, so the engine lives in a module singleton
   (`duo/core.lua`) and the instance only attaches a binding.
 - **Pairing without sending the secret.** The leader challenges with a
-  nonce; each side answers `SHA-256(nonce:code)`. This keeps the wrong
-  device out; it is not protection against someone who controls your
-  network.
+  nonce; each side answers `SHA-256(nonce:code)`. The code never goes on the
+  wire.
+- **The rest of the conversation is signed.** Both ends derive a key from
+  the code and *both* nonces, and every message after the handshake carries
+  an HMAC-SHA-256 tag. The proofs alone only show that the far end knows the
+  code, not that it is the end you are talking to — a device in the middle
+  can relay a challenge and its answer and then sit between two peers that
+  each believe they proved something. Mixing in both nonces means a relayed
+  handshake yields two different keys, and the first signed message fails.
+  The body of a book is the one thing not signed: it is megabytes, the
+  hashing is Lua rather than C, and it would cost more than the encoding
+  that already bounds a transfer. An attacker positioned to inject can
+  therefore corrupt a book in flight, which the size check turns into a
+  failed transfer rather than a bad book.
+- **What none of this is.** There is no encryption. Anyone who can see the
+  traffic can see what you are reading and the books being copied; what they
+  cannot do is join the pair, drive it, or ask it for anything.
 - **Wire format** is one line per message — `STATE page=13 pages=300` —
   percent-encoded, legible in a packet dump.
 - **Polling** happens in KOReader's own UI loop, which visits registered
@@ -309,7 +337,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-409 tests, with the interesting parts unmocked: two and three device
+425 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

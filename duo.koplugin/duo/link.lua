@@ -135,6 +135,51 @@ function Link.proof(nonce, token)
 end
 
 --[[--
+The key both devices sign the rest of the conversation with.
+
+The proofs above establish that the other end knows the pairing code. They
+do not establish that the other end is the one you are *talking to*: a
+device in the middle can pass a challenge along, pass the answer back, and
+then sit between two peers that each believe they proved something. Nothing
+in the exchange ties the code to the connection carrying it.
+
+Deriving a key from the code and both nonces ties them together. Each side
+mixes in a nonce the other cannot predict, so the key belongs to this
+conversation and no other, and a relayed handshake yields two different keys
+rather than one shared one — at which point the first signed message fails
+and the link closes.
+
+Both nonces in a fixed order, leader's first, so the two ends agree.
+--]]--
+function Link.sessionKey(leader_nonce, follower_nonce, token)
+    return Sha256.hex(("duo-session:%s:%s:%s"):format(
+        tostring(leader_nonce), tostring(follower_nonce), Util.normalizeToken(token)))
+end
+
+--[[--
+How much of the tag travels. Sixteen hex characters is sixty-four bits.
+
+A forger gets one attempt per message and a wrong guess closes the link, so
+what this has to beat is a blind guess rather than an offline search. Sixty
+four bits is far beyond that, and it keeps a page turn's line short on a
+link where every byte is read a character at a time.
+--]]--
+Link.TAG_LENGTH = 16
+
+--[[--
+Everything except the body of a book carries a tag.
+
+Book data is the exception on purpose. It is the one thing here measured in
+megabytes, the hashing is Lua rather than C, and signing every chunk would
+cost more than the encoding that already bounds a transfer. What that gives
+up is narrow: an attacker who is already positioned to inject can corrupt a
+book in flight, which the receiver's size check turns into a failed transfer
+rather than a bad book. Everything that *decides* anything — what to open,
+where to go, what to send, what the settings are -- is signed.
+--]]--
+local UNSIGNED = { [Protocol.BOOK_DATA] = true }
+
+--[[--
 Creates a link around an already connected stream.
 
 @tparam table options
@@ -194,6 +239,22 @@ end
 -- from inside the handshake itself.
 function Link:sendMessage(msg_type, fields)
     if self.state == "closed" then return false, "closed" end
+    if self.session_key and not UNSIGNED[msg_type] then
+        --[[
+        Signed from a copy. Callers hand over tables they go on using --
+        a settings table, a typography snapshot -- and writing a `mac` into
+        one would leave a stray entry behind for whoever reads it next,
+        where it would look like one more setting to apply.
+        ]]
+        local signed = {}
+        for key, value in pairs(fields or {}) do
+            if key ~= "mac" then signed[key] = value end
+        end
+        local body, body_err = Protocol.encode(msg_type, signed)
+        if not body then return false, body_err end
+        signed.mac = Sha256.hmac(self.session_key, body):sub(1, Link.TAG_LENGTH)
+        fields = signed
+    end
     local line, err = Protocol.encode(msg_type, fields)
     if not line then
         return false, err
@@ -218,8 +279,11 @@ function Link:close(reason, polite)
     if self.state == "closed" then return end
     if polite and self.state == "ready" then
         -- Best effort: if this cannot go out, the peer's timeout catches it.
+        -- Through the signing path like anything else: a goodbye the other
+        -- end cannot check is a goodbye it is right to ignore, and it would
+        -- be a free way to hang up on somebody else's pair.
         pcall(function()
-            self.stream:send(Protocol.encode(Protocol.BYE, { reason = reason or "bye" }))
+            self:sendMessage(Protocol.BYE, { reason = reason or "bye" })
         end)
     end
     self.state = "closed"
@@ -265,6 +329,8 @@ function Link:handleHandshake(msg)
             name = self.name,
             slot = self.slot,
         })
+        -- After the welcome, so that last unsigned message stays unsigned.
+        self.session_key = Link.sessionKey(self.nonce, msg.nonce or "", self.token)
         self:becomeReady()
     else
         if msg.type == Protocol.DENY then
@@ -301,6 +367,7 @@ function Link:handleHandshake(msg)
             end
             self.peer_name = msg.name or self.peer_name or "leader"
             self.slot = Protocol.num(msg, "slot", 1)
+            self.session_key = Link.sessionKey(self.challenge_nonce or "", self.nonce, self.token)
             self:becomeReady()
             return
         end
@@ -370,11 +437,51 @@ function Link:poll()
     self:checkTimers()
 end
 
+--[[--
+Checks the tag on a message, once there is a key to check it with.
+
+Recomputed from the message with the tag taken back out, which is the same
+string the sender signed: the protocol sorts its fields, so both ends build
+it identically without either having to remember the wire form.
+--]]--
+function Link:verify(msg)
+    if not self.session_key then return true end
+    if UNSIGNED[msg.type] then return true end
+    local claimed = msg.mac
+    if not claimed or claimed == "" then return false end
+    local fields = {}
+    for key, value in pairs(msg) do
+        if key ~= "type" and key ~= "mac" then fields[key] = value end
+    end
+    local body = Protocol.encode(msg.type, fields)
+    if not body then return false end
+    return claimed == Sha256.hmac(self.session_key, body):sub(1, Link.TAG_LENGTH)
+end
+
 function Link:dispatch(msg)
     if self.state == "handshake" then
         self:handleHandshake(msg)
         return
     end
+    if not self:verify(msg) then
+        --[[
+        Either somebody is injecting messages into a conversation they
+        cannot sign, or the two ends derived different keys -- which is what
+        a relayed handshake looks like from in here. Both are reasons to
+        stop talking rather than to carry on and find out.
+        ]]
+        self:close("message was not signed by the other device")
+        return
+    end
+    --[[
+    And taken back off once it has done its job, so that nothing downstream
+    ever meets it. More than tidiness: several handlers take a message and
+    copy every field out of it that is not `type` -- the typography one does
+    exactly that -- so a tag left in place arrives as one more setting to
+    apply. It did, and the pair then believed its layouts disagreed for as
+    long as the link was up.
+    ]]
+    msg.mac = nil
     if msg.type == Protocol.PING then
         self:sendMessage(Protocol.PONG, { t = msg.t })
         return

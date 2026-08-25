@@ -1256,7 +1256,10 @@ function Duo:reviveDirectLink(quiet, force, silent)
     what read as the link going up over and over.
     ]]
     if not silent then Core:notify(_("Duo: rebuilding the direct link…")) end
-    local output = (role == "host" and DirectLink.host() or DirectLink.join()) or ""
+    -- The network's key comes from the pairing code, so both devices work
+    -- it out for themselves and the follower still joins with nothing typed.
+    local token = Core:ensureToken()
+    local output = (role == "host" and DirectLink.host(token) or DirectLink.join(token)) or ""
     local failure = output:match("\nerror: ([^\n]*)") or output:match("^error: ([^\n]*)")
     if failure then
         logger.dbg("Duo: rebuilding the direct link failed:", failure)
@@ -1642,9 +1645,21 @@ function Duo:showPairingSheet(options)
     if options.direct then
         local DirectLink = require("duo/directlink")
         local report = options.report or DirectLink.probe() or {}
+        local token = Core:ensureToken()
         local others = _([[Anything else: join this Wi-Fi network, then tap "Connect to a leader".]])
+        --[[
+        The passphrase is worked out here rather than read back from the
+        script, which is handed it and does not report it. Both devices
+        derive the same one from the pairing code, so this is the same
+        string the network was built with.
+        ]]
+        local passphrase = DirectLink.passphraseFor(token) or _("none")
         if options.mode == "ibss" then
-            others = _([[This is an ad-hoc cell, not an access point. Another reader still joins it as above, but most phones and laptops will not list it at all.]])
+            others = _([[This is an ad-hoc cell, not an access point. Another reader still joins it as above, but most phones and laptops will not list it at all.
+
+It carries no encryption: the drivers this runs on cannot do WPA on an ad-hoc cell. Anything in radio range can read what crosses it. Duo signs its own messages, so nobody can drive the pair or ask it for a book, but what you are reading is not private.]])
+            -- There is no key on this path, and saying one would be a lie.
+            passphrase = _("none — this cell is unencrypted")
         end
         text = T(_([[
 Duo leader is running, on a link this device is hosting.
@@ -1657,8 +1672,8 @@ Network:    %2
 Passphrase: %3
 Address:    %4:%5
 Code:       %6]]),
-            others, report.ssid or "KOReaderDuo", report.passphrase or "koreaderduo",
-            address, Core:get("port"), Core:ensureToken())
+            others, report.ssid or "KOReaderDuo", passphrase,
+            address, Core:get("port"), token)
     else
         text = T(_([[
 Duo leader is running.
@@ -1830,7 +1845,8 @@ function Duo:runDirectLink(role)
     UIManager:show(working)
     UIManager:forceRePaint()
 
-    local output = (role == "host") and DirectLink.host() or DirectLink.join()
+    local token = Core:ensureToken()
+    local output = (role == "host") and DirectLink.host(token) or DirectLink.join(token)
     UIManager:close(working)
 
     if not output or output:match("^error:") or output:match("\nerror:") then

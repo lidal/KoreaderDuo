@@ -14,6 +14,9 @@ something worth showing on a screen.
 @module duo.directlink
 --]]--
 
+local Sha256 = require("duo/sha256")
+local Util = require("duo/util")
+
 local DirectLink = {}
 
 --- The address the hosting device always takes, which is what makes this
@@ -60,12 +63,52 @@ function DirectLink.scriptPath()
     return pluginDirectory() .. "/tools/duo-direct-link.sh"
 end
 
---- Runs a script command and returns its output.
--- Deliberately synchronous: these are explicit, rare, user-initiated
--- actions that take a second or two, and there is nothing sensible to do
--- with a half-configured network in the meantime.
-function DirectLink.run(command)
-    local pipe = io.popen(("sh %q %s 2>&1"):format(DirectLink.scriptPath(), command))
+--[[--
+The passphrase this pair's network is built with, from the pairing code.
+
+The script's default used to stand: one passphrase, the same on every
+installation, printed in the README. That is not a secret, and a network
+protected by it is a network anyone who has read the repository can join and
+listen to.
+
+Derived rather than randomly generated, because a random one would have to
+reach the other device somehow — and the whole appeal of the direct link is
+that the follower joins by name with nothing typed in. The pairing code is
+already a secret both devices hold, so the network key can come from it and
+nothing about the flow changes.
+
+Hex rather than the code itself: WPA2 wants eight to sixty-three characters,
+a pairing code is six, and a key that *is* the code hands the code to anyone
+who cracks the network.
+
+@string token  the pairing code
+@treturn ?string  the passphrase, or nil when there is no code to derive from
+--]]--
+function DirectLink.passphraseFor(token)
+    token = Util.normalizeToken(token or "")
+    if token == "" then return nil end
+    return Sha256.hex("duo-wifi:" .. token):sub(1, 32)
+end
+
+--[[--
+Runs a script command and returns its output.
+
+Deliberately synchronous: these are explicit, rare, user-initiated actions
+that take a second or two, and there is nothing sensible to do with a
+half-configured network in the meantime.
+
+The passphrase goes in the environment rather than the argument list, where
+`ps` would show it to anything else running on the device.
+--]]--
+function DirectLink.run(command, options)
+    options = options or {}
+    local prefix = ""
+    local passphrase = options.passphrase
+    if passphrase and passphrase ~= "" then
+        prefix = ("DUO_PASSPHRASE=%q "):format(passphrase)
+    end
+    local pipe = io.popen(("%ssh %q %s 2>&1"):format(
+        prefix, DirectLink.scriptPath(), command))
     if not pipe then return nil, "could not run the setup script" end
     local output = pipe:read("*a") or ""
     pipe:close()
@@ -132,12 +175,12 @@ function DirectLink.modeOf(output)
     return mode
 end
 
-function DirectLink.host()
-    return DirectLink.run("host")
+function DirectLink.host(token)
+    return DirectLink.run("host", { passphrase = DirectLink.passphraseFor(token) })
 end
 
-function DirectLink.join()
-    return DirectLink.run("join")
+function DirectLink.join(token)
+    return DirectLink.run("join", { passphrase = DirectLink.passphraseFor(token) })
 end
 
 function DirectLink.restore()

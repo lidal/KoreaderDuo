@@ -25,7 +25,11 @@
 set -u
 
 SSID="${DUO_SSID:-KOReaderDuo}"
-PASSPHRASE="${DUO_PASSPHRASE:-koreaderduo}"
+# No default worth having. Duo passes one derived from the pairing code, so
+# every pair gets its own; a fixed fallback here would be a published key,
+# which is the thing this is here to stop. Set DUO_PASSPHRASE to drive the
+# script by hand.
+PASSPHRASE="${DUO_PASSPHRASE:-}"
 CHANNEL="${DUO_CHANNEL:-6}"
 FREQUENCY="${DUO_FREQUENCY:-2437}"     # channel 6
 #[[
@@ -318,6 +322,14 @@ write_wpa_conf() {
     mode="$1"   # 2 = access point, 1 = ad-hoc
     conf="$RUN_DIR/wpa_supplicant.conf"
     run mkdir -p "$RUN_DIR"
+    # An access point with no key is an open one, and an open one is worse
+    # than no link: it looks protected on the screen and is not.
+    if [ -z "$PASSPHRASE" ]; then
+        die "no passphrase: set DUO_PASSPHRASE, or start the link from Duo, which derives one from the pairing code"
+    fi
+    if [ "${#PASSPHRASE}" -lt 8 ]; then
+        die "passphrase must be at least 8 characters (WPA2 says so)"
+    fi
     if [ "$DRY_RUN" = "1" ]; then
         echo "would write $conf (mode=$mode, ssid=$SSID)"
         echo "$conf"

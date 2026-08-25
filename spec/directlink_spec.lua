@@ -33,8 +33,15 @@ local function fakeEnvironment(tools)
     -- driver, so there is nothing to settle, and a mode that is never going
     -- to be reached is reached no sooner for being waited on for twelve
     -- seconds. The loops still run -- this is the budget, not the logic.
-    return ("PATH=%s:/usr/bin:/bin DUO_IFACE=wlan0 DUO_RUN_DIR=%s/run DUO_SETTLE=0 DUO_LINK_WAIT=2 "):format(
-        FAKE_BIN, FAKE_BIN)
+    --[[
+    A passphrase, because the script now refuses to build an access point
+    without one. It used to fall back to a fixed string that shipped with
+    the plugin, which is a published key rather than a secret; Duo derives
+    one from the pairing code instead, and anyone driving the script by hand
+    supplies their own.
+    ]]
+    return ("PATH=%s:/usr/bin:/bin DUO_IFACE=wlan0 DUO_RUN_DIR=%s/run DUO_SETTLE=0 DUO_LINK_WAIT=2 " ..
+        "DUO_PASSPHRASE=spec-passphrase "):format(FAKE_BIN, FAKE_BIN)
 end
 
 local function runScript(environment, arguments)
@@ -560,4 +567,84 @@ T.describe("coming back after a sleep", function()
 end)
 
 os.execute("rm -rf " .. FAKE_BIN)
+T.describe("the key the network is built with", function()
+    local DirectLink = require("duo/directlink")
+
+    --[[
+    The script used to fall back to one passphrase, the same on every
+    installation and printed in the README. A network protected by that is a
+    network anyone who has read the repository can join and listen to — and
+    on a Kindle it is the AP path or nothing, since the ad-hoc fallback
+    carries no key at all.
+
+    Derived from the pairing code rather than generated, because a random one
+    would have to reach the other device somehow, and the point of the direct
+    link is that the follower joins with nothing typed in.
+    ]]
+    T.it("gives each pairing code its own passphrase", function()
+        local one = DirectLink.passphraseFor("ABC123")
+        local other = DirectLink.passphraseFor("XYZ789")
+        T.assertTrue(one ~= nil)
+        T.assertNotEquals(one, other,
+            "two pairs would be sharing a network key")
+    end)
+
+    T.it("agrees with itself however the code was typed", function()
+        -- Both devices derive it independently, so they have to agree.
+        T.assertEquals(DirectLink.passphraseFor("abc123"),
+            DirectLink.passphraseFor("ABC 123"))
+    end)
+
+    T.it("is a length WPA2 will take", function()
+        local passphrase = DirectLink.passphraseFor("ABC123")
+        T.assertTrue(#passphrase >= 8 and #passphrase <= 63,
+            ("WPA2 wants 8 to 63 characters, this is %d"):format(#passphrase))
+    end)
+
+    T.it("is not the pairing code itself", function()
+        -- Anyone who cracks the network would otherwise hold the code, and
+        -- the code is what authenticates the pair.
+        T.assertTrue(DirectLink.passphraseFor("ABC123"):find("ABC123") == nil)
+        T.assertTrue(DirectLink.passphraseFor("ABC123"):lower():find("abc123") == nil)
+    end)
+
+    T.it("has nothing to offer when there is no code", function()
+        T.assertNil(DirectLink.passphraseFor(""))
+        T.assertNil(DirectLink.passphraseFor(nil))
+    end)
+
+    T.it("refuses to build an access point with no key at all", function()
+        -- An open network looks protected on the screen and is not, which
+        -- is worse than refusing to bring one up.
+        local environment = fakeEnvironment{ iw = IW_LIST_AP, wpa_supplicant = "exit 0", ip = "exit 0" }
+        -- The later assignment wins, so this is the same environment with
+        -- the passphrase taken back out.
+        local output = runScript(environment .. "DUO_PASSPHRASE= ", "host --dry-run")
+        T.assertMatch(output, "no passphrase",
+            "it built a network with no key: " .. tostring(output))
+    end)
+
+    T.it("refuses one too short for WPA2", function()
+        local environment = fakeEnvironment{ iw = IW_LIST_AP, wpa_supplicant = "exit 0", ip = "exit 0" }
+        local output = runScript(environment .. "DUO_PASSPHRASE=short ", "host --dry-run")
+        T.assertMatch(output, "at least 8 characters")
+    end)
+
+    T.it("keeps the passphrase out of the argument list", function()
+        -- `ps` shows arguments to anything else running on the device.
+        local ran
+        local was_popen = io.popen
+        io.popen = function(command)
+            ran = command
+            return { read = function() return "" end, close = function() end }
+        end
+        DirectLink.run("host", { passphrase = "sekrit-passphrase" })
+        io.popen = was_popen
+        T.assertMatch(ran, "^DUO_PASSPHRASE=",
+            "the passphrase must be handed over in the environment")
+        T.assertTrue(ran:find('sh .* host') ~= nil,
+            "and the command itself still has to be there: " .. ran)
+    end)
+end)
+
 os.exit(T.run())

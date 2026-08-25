@@ -960,13 +960,25 @@ T.describe("pairing dialogs", function()
         Core.settings.port = 19898
         device.plugin:showPairingSheet{
             direct = true,
-            report = { ssid = "KOReaderDuo", passphrase = "koreaderduo" },
+            report = { ssid = "KOReaderDuo" },
         }
         local shown = table.concat(device:drainMessages(), "\n")
         T.assertMatch(shown, "KOReaderDuo", "the network has to be named")
-        T.assertMatch(shown, "koreaderduo", "and so does the passphrase")
         T.assertMatch(shown, "This device follows", "another reader does it from the menu")
         T.assertMatch(shown, "DIRECT1")
+
+        --[[
+        And the passphrase, which is derived from the pairing code rather
+        than fixed. It used to be one string shipped with the plugin and
+        printed in the README, which is not a secret; the sheet has to show
+        whatever this pair's key actually is, because that is what somebody
+        types into a laptop.
+        ]]
+        local DirectLink = require("duo/directlink")
+        T.assertMatch(shown, DirectLink.passphraseFor("DIRECT1"),
+            "the sheet must show the key the network was really built with")
+        T.assertTrue(shown:find("koreaderduo") == nil,
+            "the published passphrase should be nowhere near it")
 
         -- The ordinary sheet says none of that, because it does not apply.
         device.plugin:showPairingSheet()
@@ -974,6 +986,21 @@ T.describe("pairing dialogs", function()
         T.assertTrue(not plain:find("Passphrase"),
             "on a network both devices are already on there is nothing to join")
         Core.settings.port = 9970
+    end)
+
+    T.it("says plainly that an ad-hoc cell carries no encryption", function()
+        -- The drivers this runs on cannot do WPA on an ad-hoc cell, so the
+        -- fallback is an open network. Showing a passphrase for it, or
+        -- saying nothing, would both be lies.
+        reset()
+        Core.settings.token = "DIRECT1"
+        device.plugin:showPairingSheet{
+            direct = true, mode = "ibss", report = { ssid = "KOReaderDuo" },
+        }
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "unencrypted", "an open network has to be called one")
+        T.assertTrue(shown:find(require("duo/directlink").passphraseFor("DIRECT1")) == nil,
+            "it showed a key for a cell that has none")
     end)
 
     T.it("does not send people scanning for an ad-hoc cell they cannot see", function()

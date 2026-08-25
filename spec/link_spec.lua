@@ -284,6 +284,122 @@ T.describe("link traffic", function()
     end)
 end)
 
+T.describe("signing the conversation", function()
+    --[[
+    The proofs establish that the other end knows the pairing code. They do
+    not establish that the other end is the one you are talking to: a device
+    in the middle can pass the challenge along, pass the answer back, and
+    then sit between two peers that each believe they proved something.
+
+    So both sides derive a key from the code and *both* nonces, and sign
+    everything after the handshake with it. A relay ends up with two
+    different keys rather than one shared one, and the first signed message
+    it forwards fails.
+    ]]
+    local Sha256 = require("duo/sha256")
+
+    T.it("puts a tag on every message once the handshake is done", function()
+        local leader, follower, events, server = connectedPair("T4GG3D", "T4GG3D")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        T.assertTrue(leader.session_key ~= nil, "the leader derived no key")
+        T.assertEquals(leader.session_key, follower.session_key,
+            "the two ends must arrive at the same key or nothing will verify")
+        server:close()
+    end)
+
+    T.it("refuses a message nobody signed", function()
+        local leader, follower, events, server = connectedPair("T4GG3D", "T4GG3D")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        -- Straight onto the wire, bypassing the signing the link would do.
+        follower.stream:send(Protocol.encode(Protocol.GOTO, { page = 99 }))
+        T.assertTrue(pumpUntil({ leader }, function() return leader:isClosed() end),
+            "an unsigned message was acted on")
+        T.assertMatch(events.leader.closed, "not signed")
+        server:close()
+    end)
+
+    T.it("refuses a message signed with the wrong key", function()
+        -- Which is what a device relaying somebody else's handshake holds:
+        -- it knows the code but not the pair of nonces this link agreed on.
+        local leader, follower, events, server = connectedPair("T4GG3D", "T4GG3D")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        local body = Protocol.encode(Protocol.GOTO, { page = 99 }):gsub("\n$", "")
+        local forged = Sha256.hmac("some other session", body):sub(1, 16)
+        follower.stream:send(Protocol.encode(Protocol.GOTO, { page = 99, mac = forged }))
+        T.assertTrue(pumpUntil({ leader }, function() return leader:isClosed() end),
+            "a forged tag was accepted")
+        server:close()
+    end)
+
+    T.it("refuses a message whose contents were changed in flight", function()
+        local leader, follower, events, server = connectedPair("T4GG3D", "T4GG3D")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        -- A real tag, over a different page than the one being sent.
+        local body = Protocol.encode(Protocol.GOTO, { page = 7 }):gsub("\n$", "")
+        local tag = Sha256.hmac(follower.session_key, body):sub(1, 16)
+        follower.stream:send(Protocol.encode(Protocol.GOTO, { page = 99, mac = tag }))
+        T.assertTrue(pumpUntil({ leader }, function() return leader:isClosed() end),
+            "the page was changed under a tag that did not cover it")
+        server:close()
+    end)
+
+    T.it("leaves the body of a book unsigned, and says so", function()
+        -- The one exception, and it is deliberate: signing megabytes in Lua
+        -- would cost more than the encoding that already bounds a transfer.
+        local leader, follower, events, server = connectedPair("T4GG3D", "T4GG3D")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        local seen
+        events.follower.messages = {}
+        follower.on_message = function(_, msg) seen = msg end
+        leader:send(Protocol.BOOK_DATA, { b = "AAAA" })
+        pumpUntil({ leader, follower }, function() return seen ~= nil end)
+        T.assertTrue(seen ~= nil, "the chunk never arrived")
+        T.assertNil(seen.mac, "book data should not be carrying a tag")
+        server:close()
+    end)
+
+    T.it("takes the tag back off before anybody else sees the message", function()
+        --[[
+        Several handlers copy every field out of a message that is not
+        `type` -- matching typography does exactly that -- so a tag left in
+        place arrives as one more setting to apply. It did: the pair then
+        believed its layouts disagreed for as long as the link was up, and
+        stopped saying anything about page counts that really did differ.
+        ]]
+        local leader, follower, events, server = connectedPair("T4GG3D", "T4GG3D")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        local seen
+        follower.on_message = function(_, msg) seen = msg end
+        leader:send(Protocol.TYPO, { font_size = "26" })
+        pumpUntil({ leader, follower }, function() return seen ~= nil end)
+        T.assertTrue(seen ~= nil, "the message never arrived")
+        T.assertEquals(seen.font_size, "26")
+        T.assertNil(seen.mac,
+            "the tag was still on the message when the handlers got it")
+        server:close()
+    end)
+
+    T.it("gives two different pairs two different keys", function()
+        -- The nonces are what make the key belong to one conversation.
+        local a = Link.sessionKey("aaaa", "bbbb", "SAM3C0DE")
+        local b = Link.sessionKey("aaaa", "cccc", "SAM3C0DE")
+        T.assertNotEquals(a, b, "the same key would follow the code around")
+        T.assertNotEquals(a, Link.sessionKey("aaaa", "bbbb", "0TH3RC0DE"))
+    end)
+end)
+
 T.describe("discovery", function()
     T.it("finds a leader over UDP", function()
         local udp_port = freePort()

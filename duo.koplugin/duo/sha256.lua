@@ -113,4 +113,42 @@ function Sha256.hex(message)
     return table.concat(out)
 end
 
+--- The digest as raw bytes, which is what HMAC's inner hash feeds outward.
+local function raw(message)
+    return (Sha256.hex(message):gsub("%x%x", function(pair)
+        return string.char(tonumber(pair, 16))
+    end))
+end
+
+--- The two pads RFC 2104 names, applied to a whole block of key at once.
+local function padded(key, pad)
+    local out = {}
+    for index = 1, 64 do
+        out[index] = string.char(bxor(key:byte(index), pad))
+    end
+    return table.concat(out)
+end
+
+--[[--
+HMAC-SHA-256, as RFC 2104 defines it.
+
+Written out rather than reached for as `hash(key .. message)`, which is the
+tempting shortcut and is broken: SHA-256 carries its whole state in the
+digest, so anyone holding one can go on hashing from it and produce a valid
+digest for a longer message they never had the key for. The two-pass
+construction is what stops that.
+
+@string key      the shared secret, of any length
+@string message  what is being signed
+@treturn string  the tag, as lowercase hex
+--]]--
+function Sha256.hmac(key, message)
+    key = tostring(key or "")
+    -- A key longer than a block is replaced by its digest; a shorter one is
+    -- padded out with zeros.
+    if #key > 64 then key = raw(key) end
+    key = key .. string.rep("\0", 64 - #key)
+    return Sha256.hex(padded(key, 0x5c) .. raw(padded(key, 0x36) .. tostring(message or "")))
+end
+
 return Sha256

@@ -18,10 +18,12 @@ wrong.
 local Protocol = {}
 
 --- Bumped when the message grammar changes incompatibly.
+--- 3: every message after the handshake carries a `mac`, so a device that
+--- would not sign one has nothing to say to a device that expects it.
 --- 2: the roles became leader and follower, and `master_page` with them.
 --- A pair mid-upgrade is refused at the handshake, which beats one device
 --- reading a field the other never sends and quietly showing page nil.
-Protocol.VERSION = 2
+Protocol.VERSION = 3
 
 --- A single message may not exceed this (a book path plus a title fits easily).
 Protocol.MAX_LINE = 4096
