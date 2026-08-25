@@ -140,6 +140,13 @@ local function makeUIManager(clock)
         a button dialog is.
         ]]
         local text = widget.text or widget.title or ""
+        -- An input dialog says most of what it has to say in the line under
+        -- the title -- what to type, and where to find it. Recording only
+        -- the title let a test agree that Duo asked for a pairing code
+        -- while saying nothing about whether it explained which one.
+        if widget.description and widget.description ~= "" then
+            text = text .. "\n" .. widget.description
+        end
         for _, row in ipairs(widget.buttons or {}) do
             for _, button in ipairs(row) do
                 if button.text then text = text .. "\n" .. button.text end

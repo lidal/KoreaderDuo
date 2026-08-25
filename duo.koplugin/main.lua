@@ -79,6 +79,7 @@ function Duo:init()
             -- and the module table has none.
             closeDocument = function() self:closeRemoteDocument() end,
             sleepDevice = function() Duo:sleepForPeer() end,
+            askForToken = function() Duo:askForTokenAgain() end,
             reviveDirectLink = function(quiet, force, silent)
                 return Duo:reviveDirectLink(quiet, force, silent)
             end,
@@ -1239,6 +1240,17 @@ function Duo:reviveDirectLink(quiet, force, silent)
 
     logger.dbg("Duo: rebuilding the direct link, role", role, "forced", tostring(force))
     --[[
+    A joining device with no code of the leader's cannot rebuild anything:
+    the key is derived from the code, so it would sit there failing to
+    associate. Only reachable by way of a link set up by hand over SSH,
+    which leaves an address behind but no code -- and a sentence saying so
+    beats a radio that quietly does nothing.
+    ]]
+    if role == "join" and not self:hasDirectLinkCode() then
+        Core:alert(_("Duo cannot rebuild the direct link: it does not have the other device's pairing code.\n\nSet the code in Duo's settings, or join the link from the menu."))
+        return "failed"
+    end
+    --[[
     `silent` and `quiet` are not the same thing, and conflating them cost a
     reader the one message they were waiting for.
 
@@ -1664,7 +1676,7 @@ It carries no encryption: the drivers this runs on cannot do WPA on an ad-hoc ce
         text = T(_([[
 Duo leader is running, on a link this device is hosting.
 
-Another reader: open Duo, tap "Directly, with no router", then "This device follows". Nothing to type.
+Another reader: open Duo, tap "Directly, with no router", then "This device follows". It asks for the code below the first time, and remembers it after that.
 
 %1
 
@@ -1751,24 +1763,48 @@ function Duo:showSearchResults(results)
     UIManager:show(self.search_dialog)
 end
 
---- Connects, asking for the pairing code when the leader wants one.
+--[[--
+Connects, asking for the pairing code when this device does not have one.
+
+"Does not have one" means the leader's, not merely any: a device that has
+only ever led, or that minted a code the first time somebody opened the Duo
+menu, is holding six characters no leader has ever heard of. Asking only
+when the box was empty meant that device connected with its own code, was
+refused, and retried with it forever.
+
+Asked once. What is typed here is kept, so the next connection -- and every
+one after it -- is a single tap.
+--]]--
 function Duo:connectTo(host, port, locked)
     local function go()
         Core:start(Core.ROLE_FOLLOWER, { host = host, port = port })
     end
-    if locked and Util.normalizeToken(Core:get("token")) == "" then
+    if locked and not Core:knowsPeerToken() then
         self:promptForToken(go)
     else
         go()
     end
 end
 
-function Duo:promptForToken(on_done)
+--[[--
+Asks for the code from the other device's screen.
+
+@tparam[opt] function on_done   what to do once there is a code
+@tparam[opt] string description what to say above the box
+--]]--
+function Duo:promptForToken(on_done, description)
     local dialog
     dialog = InputDialog:new{
         title = _("Pairing code"),
-        description = _("Type the code shown on the leader."),
-        input = Core:get("token"),
+        description = description
+            or _("Type the code shown on the leader.\n\nOnly once: it is kept for next time."),
+        --[[
+        Prefilled only with a code that came from the other device. A code
+        this one invented is six plausible-looking characters that are
+        certainly wrong, and offering them in the box is an invitation to
+        press OK and be refused.
+        ]]
+        input = Core:knowsPeerToken() and Core:get("token") or "",
         buttons = {{
             {
                 text = _("Cancel"),
@@ -1779,8 +1815,9 @@ function Duo:promptForToken(on_done)
                 text = _("OK"),
                 is_enter_default = true,
                 callback = function()
-                    Core:set("token", Util.normalizeToken(dialog:getInputText()))
+                    Core:adoptToken(dialog:getInputText())
                     UIManager:close(dialog)
+                    self:refreshMenu()
                     if on_done then on_done() end
                 end,
             },
@@ -1788,6 +1825,24 @@ function Duo:promptForToken(on_done)
     }
     UIManager:show(dialog)
     dialog:onShowKeyboard()
+end
+
+--[[--
+What to do when the leader says the code is wrong.
+
+The one moment worth asking twice. Everything else that stops a link is
+temporary and answers itself on the next attempt; a code the leader will not
+take answers nothing, so Duo stops, throws it away, and offers the keyboard
+with the reason on it. Answering reconnects straight away, which makes the
+whole episode one dialog rather than a device stuck saying "retrying in 32s".
+--]]--
+function Duo:askForTokenAgain()
+    local host, port = Core:get("peer_host"), Core:get("peer_port")
+    self:promptForToken(function()
+        if host and host ~= "" then
+            Core:start(Core.ROLE_FOLLOWER, { host = host, port = port })
+        end
+    end, _("The other device refused that code.\n\nType the one on its screen."))
 end
 
 function Duo:promptForAddress()
@@ -1834,9 +1889,47 @@ themselves. Whether a reader can do this at all depends on its Wi-Fi
 driver, so nothing is attempted until the device has been asked.
 --]]--
 
---- Brings the direct link up and then starts Duo on it, so the whole thing
--- is one tap on each device.
+--[[--
+Brings the direct link up and then starts Duo on it, so the whole thing is
+one tap on each device.
+
+One tap on the *host*, always. On the joining device, one tap once it knows
+the code -- and the first time, it has to be told, because the network's key
+is derived from the code and a device that guessed would not get as far as
+being refused: it would fail to associate, with nothing on screen to say
+why. So the code is asked for before the radio is touched, and then it is
+kept: every join after the first is a tap and nothing else.
+--]]--
 function Duo:runDirectLink(role)
+    if role ~= "host" and not self:hasDirectLinkCode() then
+        self:promptForToken(function()
+            if not self:hasDirectLinkCode() then
+                UIManager:show(InfoMessage:new{
+                    text = _("The direct link needs a pairing code: it is also the network's key, and WPA2 will not build a network without one.\n\nThe code is on the other device's screen."),
+                })
+                return
+            end
+            self:buildDirectLink(role)
+        end, _("Type the code shown on the other device.\n\nOnly once: it is also this link's Wi-Fi key, and it is kept for next time."))
+        return
+    end
+    self:buildDirectLink(role)
+end
+
+--[[--
+Whether this device can build the joining half of a direct link.
+
+Two conditions, not one. The code has to be the other device's, or the key
+will not match; and it has to exist at all, because "no code, let anybody
+connect" is a perfectly good answer on an ordinary network and no answer at
+all to a radio that needs eight characters to encrypt with.
+--]]--
+function Duo:hasDirectLinkCode()
+    return Core:knowsPeerToken()
+        and Util.normalizeToken(Core:get("token")) ~= ""
+end
+
+function Duo:buildDirectLink(role)
     local DirectLink = require("duo/directlink")
     local working = InfoMessage:new{
         text = _("Setting up the direct link…"),
@@ -2308,7 +2401,9 @@ function Duo:showTokenDialog()
                 text = _("New code"),
                 callback = function()
                     UIManager:close(dialog)
-                    Core:set("token", Util.newPairingToken(6))
+                    -- Invented here, so this is the code the *other* device
+                    -- has to be told, not one this device has been told.
+                    Core:setOwnToken(Util.newPairingToken(6))
                     self:refreshMenu()
                 end,
             },
@@ -2316,7 +2411,11 @@ function Duo:showTokenDialog()
                 text = _("Save"),
                 is_enter_default = true,
                 callback = function()
-                    Core:set("token", Util.normalizeToken(dialog:getInputText()))
+                    -- Typed by a person, which means it came off the other
+                    -- device's screen. Recorded as such so that following a
+                    -- leader does not then ask for the very same six
+                    -- characters a second time.
+                    Core:adoptToken(dialog:getInputText())
                     UIManager:close(dialog)
                     self:refreshMenu()
                 end,

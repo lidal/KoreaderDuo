@@ -209,6 +209,20 @@ local DEFAULTS = {
     port = 9970,
     discovery_port = Discovery.PORT,
     token = "",
+    --[[
+    Where the pairing code came from: "own" for one this device made up,
+    "peer" for one that came off another device's screen and has since been
+    accepted by it.
+
+    Worth keeping because the two are not interchangeable to a device about
+    to follow. A code it invented is wrong by definition -- the leader has
+    never heard of it -- and since the direct link now builds its Wi-Fi key
+    out of the code, inventing one means a radio that cannot even associate,
+    let alone be refused politely. Knowing which kind is in hand is what
+    lets Duo ask for the code exactly once, on the device that needs it,
+    and never again.
+    ]]
+    token_source = "",
     peer_host = "",
     peer_port = 9970,
     mode = Spread.SPREAD,
@@ -289,8 +303,28 @@ local function migrate(settings)
     end
     local role = RENAMED_ROLES[settings.autostart_role]
     if role then settings.autostart_role = role end
+    --[[
+    Where the code came from was not recorded before, and a device that has
+    already been paired for months should not be asked for it again just
+    because this version started keeping track.
+
+    A stored leader address is the tell: only a device that has followed one
+    has ever had a reason to save it, and the code it followed with is by
+    definition the leader's. Guessing wrong in this direction costs nothing
+    -- the leader refuses the code, and being refused is itself a reason to
+    ask -- whereas guessing "own" for a working pair would put a keyboard in
+    front of somebody who has nothing new to type.
+    ]]
+    if settings.token_source == nil or settings.token_source == "" then
+        local token = tostring(settings.token or "")
+        local peer = tostring(settings.peer_host or "")
+        if token ~= "" and peer ~= "" then settings.token_source = "peer" end
+    end
     return settings
 end
+
+--- Exposed so the migration can be tested without a settings file behind it.
+Core.migrateSettings = migrate
 
 function Core:configure(options)
     self.hooks = options.hooks or self.hooks or {}
@@ -482,9 +516,59 @@ function Core:ensureToken()
     if token == "" then
         token = Util.newPairingToken(6)
         self.settings.token = token
+        self.settings.token_source = "own"
         self:save()
     end
     return token
+end
+
+--[[--
+Whether this device is holding the *other* device's pairing code.
+
+The question a follower has to answer before it does anything: a code of its
+own invention will be refused, and on a direct link it will not even get as
+far as being refused, because the Wi-Fi key is derived from it. False here
+means ask; true means somebody typed this in from the other device's screen,
+or a leader has since accepted it, so there is nothing to ask about.
+
+An empty code counts, because "no code, let anybody connect" is a real
+answer to the question and a device that has been given it should not be
+asked again. The direct link is the one thing that cannot live with it --
+WPA2 needs a key -- and it checks for itself.
+--]]--
+function Core:knowsPeerToken()
+    return self:get("token_source") == "peer"
+end
+
+--- Takes a code read off the leader's screen. Asked for once, then kept.
+function Core:adoptToken(token)
+    self.settings.token = Util.normalizeToken(token)
+    self.settings.token_source = "peer"
+    self:save()
+    self:changed()
+end
+
+--- Takes a code this device invented, which makes it a leader's code.
+function Core:setOwnToken(token)
+    self.settings.token = Util.normalizeToken(token)
+    self.settings.token_source = "own"
+    self:save()
+    self:changed()
+end
+
+--[[--
+Forgets a code the leader has refused.
+
+Only ever called on a refusal, which is the one moment a stored code is
+known to be wrong. Anything less certain -- a link that dropped, a device
+that was asleep -- leaves it alone, because a code thrown away on a guess is
+a code somebody has to type again.
+--]]--
+function Core:forgetToken()
+    self.settings.token = ""
+    self.settings.token_source = ""
+    self:save()
+    self:changed()
 end
 
 function Core:getDeviceName()
@@ -1141,6 +1225,19 @@ end
 function Core:onLinkReady(link)
     self.reconnect_delay = RECONNECT_MIN
     self.last_error = nil
+    --[[
+    A follower that got this far proved it knows the leader's code, which is
+    the only proof there is. Recorded here rather than where it was typed,
+    so that a code typed with a finger slip is never mistaken for a good one
+    and quietly kept.
+
+    An empty code proves something too: the leader has none set, and this
+    device has been told the right thing about a pair that lets anybody in.
+    ]]
+    if self:isFollower() and self:get("token_source") ~= "peer" then
+        self.settings.token_source = "peer"
+        self:save()
+    end
     self:applyRadioSetting()
     self:notify(("Duo: connected to %s"):format(link.peer_name or "peer"))
     if self:isLeader() then
@@ -1189,6 +1286,27 @@ function Core:onLinkClosed(link, reason)
     self:log("link closed:", reason)
     self:applyRadioSetting()
     self:abandonBookRequest(reason)
+    --[[
+    A refused code is the one failure that redialling cannot fix.
+
+    Every other reason a link ends is worth another try a second later: the
+    other device was asleep, the radio dropped, somebody walked out of range.
+    A code the leader will not accept is not like that. Retrying it is a loop
+    that cannot terminate, and the device sits there saying "retrying in 32s"
+    forever while the one thing that would help -- six characters off the
+    other screen -- is never asked for.
+    ]]
+    if self:isFollower() and reason == Link.BAD_TOKEN then
+        self:stop(reason)
+        self:forgetToken()
+        if self.hooks and self.hooks.askForToken then
+            pcall(self.hooks.askForToken)
+        else
+            self:alert("The leader refused that pairing code.\n\nCheck the code on the other device and connect again.")
+        end
+        self:changed()
+        return
+    end
     if self:isActive() then
         self:notify(("Duo: %s"):format(reason or "disconnected"))
     end

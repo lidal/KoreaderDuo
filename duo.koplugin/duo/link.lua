@@ -167,6 +167,16 @@ link where every byte is read a character at a time.
 Link.TAG_LENGTH = 16
 
 --[[--
+What a link says when the two devices do not agree on the pairing code.
+
+One string rather than three near-identical ones, because a device that has
+just been refused has something useful to do about it -- ask for the code
+again -- and that only works if "refused" can be told apart from the dozen
+ordinary reasons a link ends.
+--]]--
+Link.BAD_TOKEN = "pairing code does not match"
+
+--[[--
 Everything except the body of a book carries a tag.
 
 Book data is the exception on purpose. It is the one thing here measured in
@@ -319,8 +329,8 @@ function Link:handleHandshake(msg)
             return
         end
         if self.token ~= "" and msg.proof ~= Link.proof(self.nonce, self.token) then
-            self:sendMessage(Protocol.DENY, { reason = "pairing code does not match" })
-            self:close("wrong pairing code")
+            self:sendMessage(Protocol.DENY, { reason = Link.BAD_TOKEN })
+            self:close(Link.BAD_TOKEN)
             return
         end
         self.peer_name = msg.name or "follower"
@@ -362,7 +372,7 @@ function Link:handleHandshake(msg)
         if msg.type == Protocol.WELCOME then
             if self.token ~= "" and msg.proof ~= Link.proof(self.nonce, self.token) then
                 -- Someone is listening on that port, but it is not our leader.
-                self:close("pairing code does not match")
+                self:close(Link.BAD_TOKEN)
                 return
             end
             self.peer_name = msg.name or self.peer_name or "leader"

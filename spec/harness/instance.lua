@@ -223,6 +223,60 @@ function Instance:closeLibraryView()
     if self.plugin then self.plugin:bindBrowser() end
 end
 
+--[[--
+Dismisses whatever is still on screen.
+
+Tests that assert "nothing is asking me anything" need a known starting
+point, and a dialog left up by a test that failed halfway through is not
+one. Nothing is cancelled or confirmed here -- the widgets are simply taken
+off the screen, which is all a later test cares about.
+--]]--
+function Instance:clearScreen()
+    for widget in pairs(self.UIManager.shown) do
+        self.UIManager.shown[widget] = nil
+    end
+end
+
+--[[--
+The dialog on screen right now, so a test can answer one the way a finger
+would rather than only assert that it appeared.
+
+`shown` is a set, and set iteration has no order; every test that uses this
+has exactly one dialog up, which is the only situation in which "the dialog"
+means anything.
+
+@tparam[opt] string class_name  "InputDialog" by default
+--]]--
+function Instance:currentDialog(class_name)
+    class_name = class_name or "InputDialog"
+    for widget in pairs(self.UIManager.shown) do
+        if widget.class_name == class_name then return widget end
+    end
+    return nil
+end
+
+--[[--
+Types into the dialog on screen and presses one of its buttons.
+
+@tparam ?string text         what to type, or nil to leave the box alone
+@tparam string button_text   which button to press
+@treturn boolean  whether there was such a dialog with such a button
+--]]--
+function Instance:answerDialog(text, button_text)
+    local dialog = self:currentDialog("InputDialog")
+    if not dialog then return false end
+    if text ~= nil then dialog:setInputText(text) end
+    for _, row in ipairs(dialog.buttons or {}) do
+        for _, button in ipairs(row) do
+            if button.text == button_text and button.callback then
+                button.callback()
+                return true
+            end
+        end
+    end
+    return false
+end
+
 function Instance:drainMessages()
     local messages = {}
     for _, entry in ipairs(self.UIManager:drainShownLog()) do

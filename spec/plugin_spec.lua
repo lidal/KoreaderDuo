@@ -13,6 +13,7 @@ local Core = device.Core
 
 local function reset()
     Core:stop("test reset")
+    device:clearScreen()
     Core.settings.mode = "spread"
     Core.settings.reverse = false
     Core.settings.follower_can_turn = true
@@ -1024,6 +1025,218 @@ T.describe("pairing dialogs", function()
         T.assertMatch(shown, "This device follows", "another reader can still join it")
         T.assertTrue(not shown:find("join this Wi%-Fi network"),
             "nobody should be sent looking for a network their device will not show")
+    end)
+
+    T.it("asks the joining device for the code once, and then never again", function()
+        --[[
+        The direct link's Wi-Fi key is derived from the pairing code, which
+        means a joining device that has not been told the code cannot even
+        associate -- it does not get as far as being refused, it just fails
+        to find a network that is right there. So it has to ask.
+
+        Once. The whole appeal of the direct link is a tap on each device,
+        and a keyboard every time you sit down would be worse than the
+        published passphrase this replaced.
+        ]]
+        reset()
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        -- Counted rather than run: the real one reconfigures the Wi-Fi
+        -- interface, which is the script's job and directlink_spec's.
+        local built = 0
+        device.plugin.buildDirectLink = function() built = built + 1 end
+
+        device.plugin:runDirectLink("join")
+        T.assertEquals(built, 0, "it must not touch the radio with a code it made up")
+        local asked = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(asked, "Pairing code")
+        T.assertMatch(asked, "Only once")
+        T.assertTrue(device:answerDialog("K7F2QX", "OK"), "no code dialog to answer")
+        T.assertEquals(built, 1, "answering has to get on with it")
+        T.assertEquals(Core:get("token"), "K7F2QX")
+
+        -- And the second time, and every time after it.
+        device:drainMessages()
+        device.plugin:runDirectLink("join")
+        T.assertEquals(built, 2)
+        T.assertNil(device:currentDialog("InputDialog"),
+            "it asked for a code it already had")
+
+        device.plugin.buildDirectLink = nil -- back to the module's own
+    end)
+
+    T.it("never asks the hosting device for a code", function()
+        -- The host is where the code comes *from*. Asking there would be
+        -- asking somebody to type in what is about to be shown to them.
+        reset()
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        -- Counted rather than run: the real one reconfigures the Wi-Fi
+        -- interface, which is the script's job and directlink_spec's.
+        local built = 0
+        device.plugin.buildDirectLink = function() built = built + 1 end
+        device.plugin:runDirectLink("host")
+        T.assertEquals(built, 1)
+        T.assertNil(device:currentDialog("InputDialog"))
+        device.plugin.buildDirectLink = nil -- back to the module's own
+    end)
+
+    T.it("will not build a direct link with no code, and says why", function()
+        --[[
+        "No code, let anybody connect" is a real answer on an ordinary
+        network. It is no answer at all to WPA2, which wants eight
+        characters to encrypt with -- and the script rightly refuses to
+        build an open network instead. Refusing here, with a sentence,
+        beats handing that refusal on as a shell error.
+        ]]
+        reset()
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        -- Counted rather than run: the real one reconfigures the Wi-Fi
+        -- interface, which is the script's job and directlink_spec's.
+        local built = 0
+        device.plugin.buildDirectLink = function() built = built + 1 end
+
+        device.plugin:runDirectLink("join")
+        device:drainMessages()
+        T.assertTrue(device:answerDialog("", "OK"), "no code dialog to answer")
+        T.assertEquals(built, 0, "it went ahead with no key at all")
+        local said = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(said, "needs a pairing code")
+
+        device.plugin.buildDirectLink = nil -- back to the module's own
+    end)
+
+    T.it("takes 'no code' as an answer on an ordinary network", function()
+        -- A leader with no code set accepts anybody, which is a setting
+        -- somebody chose. Asking a follower for it again every time it
+        -- connects would be nagging about a decision already made.
+        reset()
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        Core:adoptToken("")
+        T.assertTrue(Core:knowsPeerToken())
+
+        local started = false
+        local real_start = Core.start
+        Core.start = function() started = true return true end
+        device.plugin:connectTo("169.254.13.1", 9970, true)
+        Core.start = real_start
+        T.assertTrue(started, "it should have connected without asking")
+        T.assertNil(device:currentDialog("InputDialog"))
+    end)
+
+    T.it("asks a device that invented its own code, not just an empty one", function()
+        --[[
+        Opening Duo's menu mints a pairing code, because a leader needs one
+        to show. A device that did that and then went to follow was holding
+        six characters no leader had ever heard of -- and because the box
+        was not empty, nothing asked. It connected with them, was refused,
+        and retried with the same wrong code until somebody gave up.
+        ]]
+        reset()
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        local mine = Core:ensureToken()
+        T.assertEquals(#mine, 6)
+        T.assertTrue(not Core:knowsPeerToken(),
+            "a code this device invented is not the other device's code")
+
+        local started = false
+        local real_start = Core.start
+        Core.start = function() started = true return true end
+        device.plugin:connectTo("169.254.13.1", 9970, true)
+        T.assertTrue(not started, "it connected with a code of its own invention")
+        T.assertTrue(device:answerDialog("PEER01", "OK"))
+        T.assertTrue(started)
+        T.assertTrue(Core:knowsPeerToken())
+        Core.start = real_start
+    end)
+
+    T.it("does not offer a code of its own as the answer", function()
+        -- The box used to be prefilled with whatever this device had, which
+        -- on a device that minted its own is six plausible-looking
+        -- characters that are certainly wrong -- an invitation to press OK
+        -- and be turned away.
+        reset()
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        local mine = Core:ensureToken()
+        device.plugin:promptForToken()
+        local dialog = device:currentDialog("InputDialog")
+        T.assertTrue(dialog ~= nil, "nothing asked")
+        T.assertEquals(dialog.input, "", "it offered a code the leader never issued")
+        T.assertTrue(mine ~= "", "sanity: this device had one of its own")
+        device:clearScreen()
+    end)
+
+    T.it("keeps a code that has already worked, across an update", function()
+        --[[
+        Where a code came from was not recorded before this, and a pair that
+        has been working for months should not be handed a keyboard because
+        a new version started keeping notes. A stored leader address is the
+        tell: nothing but following one ever writes it.
+        ]]
+        local migrated = require("duo/core").migrateSettings{
+            token = "OLD123", peer_host = "169.254.13.1",
+        }
+        T.assertEquals(migrated.token_source, "peer")
+
+        -- A device that has only ever led has no address to go on, and
+        -- guessing "peer" there would skip an ask that is needed.
+        local leader = require("duo/core").migrateSettings{ token = "OLD123" }
+        T.assertEquals(leader.token_source, nil)
+    end)
+
+    T.it("asks again when the leader refuses the code, instead of retrying it", function()
+        --[[
+        Every other reason a link ends is worth another go a second later.
+        A code the leader will not take is not: retrying is a loop that
+        cannot terminate, and the device sits saying "retrying in 32s" while
+        the fix -- six characters off the other screen -- is never asked
+        for.
+        ]]
+        reset()
+        Core.settings.token = "WRONG1"
+        Core.settings.token_source = "peer"
+        Core.settings.peer_host = "169.254.13.1"
+        Core.role = Core.ROLE_FOLLOWER
+        Core.reconnect_at = nil
+
+        local asked = false
+        local real_hook = Core.hooks.askForToken
+        Core.hooks.askForToken = function() asked = true end
+        Core:onLinkClosed({}, require("duo/link").BAD_TOKEN)
+        Core.hooks.askForToken = real_hook
+
+        T.assertNil(Core.reconnect_at, "a refused code must not be retried")
+        T.assertTrue(not Core:isActive(), "and it must not be left running either")
+        T.assertEquals(Core:get("token"), "", "a refused code is not worth keeping")
+        T.assertTrue(asked, "nothing asked for the code that would have fixed it")
+        reset()
+    end)
+
+    T.it("reconnects with whatever is typed after a refusal", function()
+        -- One dialog, not a dead end: the point of asking is to get back on
+        -- the link, and making somebody find the menu again afterwards is
+        -- most of the annoyance of being refused in the first place.
+        reset()
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        Core.settings.peer_host = "169.254.13.1"
+
+        device.plugin:askForTokenAgain()
+        local asked = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(asked, "refused that code")
+
+        local started
+        local real_start = Core.start
+        Core.start = function(_, role) started = role return true end
+        T.assertTrue(device:answerDialog("RIGHT1", "OK"))
+        Core.start = real_start
+        T.assertEquals(started, Core.ROLE_FOLLOWER, "answering should reconnect")
+        T.assertEquals(Core:get("token"), "RIGHT1")
+        T.assertTrue(Core:knowsPeerToken(), "and it should not be asked for again")
     end)
 
     T.it("reads back which kind of link came up", function()

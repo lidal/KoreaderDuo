@@ -39,6 +39,11 @@ finds, so there is normally no address to type. Over a direct link there is
 nothing to pick: the leader is at a fixed address and the follower goes
 straight there.
 
+The follower is asked for the code once, and keeps it. Every connection
+after that — including a direct link rebuilt after a sleep — is two taps and
+nothing typed. It asks again only if the leader refuses the code, which is
+the one failure that retrying cannot fix; answering reconnects on the spot.
+
 Open a book on the leader and the follower follows. Closing it takes both
 back to the book list, and a book tapped on the *follower* opens on both —
 the tap goes to the leader, which leads the way in.
@@ -70,7 +75,11 @@ Directly, with no router**, then pick which device this is.
 The leading device makes the network — an access point where its driver
 allows one, an ad-hoc cell otherwise — takes `169.254.13.1` and starts Duo.
 On the other device, the same two taps choosing **This device follows**: it
-takes `169.254.13.2` and connects on its own.
+takes `169.254.13.2` and connects on its own. The first time, it asks for
+the leader's pairing code, because the network's key is derived from it —
+a device that guessed would not fail politely, it would simply never find
+the network. After that the code is remembered and the two taps are all
+there is.
 
 Anything that is not a second reader — a laptop, a phone, desktop KOReader —
 joins the network first, the ordinary way. It is called **`KOReaderDuo`**,
@@ -337,7 +346,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-425 tests, with the interesting parts unmocked: two and three device
+434 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
