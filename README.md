@@ -129,6 +129,12 @@ menu and answers on screen. Duo works out which side it is on from the
 addresses, so it makes no difference whether the link was built from the
 menu or by hand over SSH.
 
+Picking **Over a Wi-Fi network** while a direct link is up hands the radio
+back first and waits for the usual network before pairing, so the two do not
+end up looking for each other over the cell they were leaving. This applies
+to a link built by hand over SSH too — that menu item means what it says,
+and the direct-link path is one screen away.
+
 ## The shared folder
 
 Duo syncs **one folder**, `/books` by default, rather than whatever you
@@ -346,7 +352,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-453 tests, with the interesting parts unmocked: two and three device
+457 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

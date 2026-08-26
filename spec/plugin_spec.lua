@@ -1155,6 +1155,115 @@ T.describe("one device, one link", function()
     end)
 end)
 
+T.describe("leaving a direct link to pair over a network", function()
+    local DirectLink = require("duo/directlink")
+    local NetUtil = require("duo/netutil")
+
+    --- Runs `body` with the device reporting `ip` as its own address, and
+    --- with the setup script stubbed out so no radio is touched.
+    local function withAddress(ip, body)
+        local real_ip, real_restore = NetUtil.getLocalIP, DirectLink.restore
+        local restores = 0
+        NetUtil.getLocalIP = function() return ip end
+        DirectLink.restore = function() restores = restores + 1 return "" end
+        local ok, err = pcall(body, function(now) ip = now end,
+            function() return restores end)
+        NetUtil.getLocalIP, DirectLink.restore = real_ip, real_restore
+        if not ok then error(err, 0) end
+    end
+
+    T.it("hands the Wi-Fi back before going looking over one", function()
+        --[[
+        Choosing "Over a Wi-Fi network" while the radio is still holding up
+        a cell Duo made is a contradiction, and it used to be resolved the
+        wrong way: the setting changed and the radio did not, so the pair
+        went looking for each other over the ad-hoc link they were supposed
+        to be leaving.
+        ]]
+        reset()
+        device.plugin.RESTORE_POLL = 0
+        Core.settings.direct_link = "host"
+        Core.settings.peer_host = DirectLink.HOST_ADDRESS
+
+        withAddress(DirectLink.HOST_ADDRESS, function(setAddress, restores)
+            local went_on = false
+            device.plugin:leaveDirectLink(function() went_on = true end)
+            T.assertEquals(restores(), 1, "it left the radio where it was")
+            T.assertTrue(not went_on, "it went looking before the network was back")
+
+            -- The system takes a moment to rejoin; then it carries on.
+            setAddress("192.168.1.55")
+            device.UIManager:pump()
+            T.assertTrue(went_on, "it never got on with what it was asked to do")
+        end)
+
+        T.assertEquals(Core:get("direct_link"), "off")
+        T.assertEquals(Core:get("peer_host"), "",
+            "the old host address is what lets the link put itself back up")
+        device.plugin.RESTORE_POLL = nil
+        reset()
+    end)
+
+    T.it("is what both network buttons do first", function()
+        -- The wiring, not the mechanism: it is no use knowing how to hand
+        -- the Wi-Fi back if the screen that needs it does not ask.
+        for _, button in ipairs{ "This device leads (left page)",
+                                 "This device follows (right page)" } do
+            reset()
+            local asked = false
+            device.plugin.leaveDirectLink = function() asked = true end
+            device.plugin:showRoleDialog("network")
+            T.assertTrue(device:pressButton(button), "no such button: " .. button)
+            device.plugin.leaveDirectLink = nil
+            T.assertTrue(asked, button .. " went straight on to the network")
+        end
+        reset()
+    end)
+
+    T.it("does not touch a device that is already on an ordinary network", function()
+        -- Nothing to hand back, and handing it back anyway costs five
+        -- seconds of frozen reader for no reason at all.
+        reset()
+        Core.settings.direct_link = "off"
+        withAddress("192.168.1.55", function(_, restores)
+            local went_on = false
+            device.plugin:leaveDirectLink(function() went_on = true end)
+            T.assertTrue(went_on, "it should have gone straight on")
+            T.assertEquals(restores(), 0, "it bounced a network that was fine")
+        end)
+        reset()
+    end)
+
+    T.it("knows a stale role from a link that is really up", function()
+        --[[
+        The two disagree in both directions. A role can be left over from a
+        session that ended days ago -- that device is on the house Wi-Fi and
+        must be left alone -- while a link set up by hand over SSH leaves no
+        role at all and is still plainly a direct link.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        withAddress("192.168.1.55", function()
+            T.assertTrue(not device.plugin:onADirectLink(),
+                "a routed address means this pair is not on a link Duo built")
+        end)
+
+        Core.settings.direct_link = "off"
+        withAddress(DirectLink.JOIN_ADDRESS, function()
+            T.assertTrue(device.plugin:onADirectLink(),
+                "holding the joining address is proof, role or no role")
+        end)
+
+        -- A link whose address a sleep flushed: the radio is still in the
+        -- wrong mode with nothing to show for it, and only the role says so.
+        Core.settings.direct_link = "host"
+        withAddress("", function()
+            T.assertTrue(device.plugin:onADirectLink())
+        end)
+        reset()
+    end)
+end)
+
 T.describe("knowing whether this is a direct link at all", function()
     local DirectLink = require("duo/directlink")
 

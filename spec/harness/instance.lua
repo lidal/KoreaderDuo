@@ -256,6 +256,30 @@ function Instance:currentDialog(class_name)
 end
 
 --[[--
+Presses a button on whatever is on screen, the way a finger would.
+
+Any widget, not only input dialogs: most of Duo's screens are button
+dialogs, and a test that can only read their labels can say what was
+offered but never what happens when you take it.
+
+@tparam string text  the button's label
+@treturn boolean  whether such a button was found and pressed
+--]]--
+function Instance:pressButton(text)
+    for widget in pairs(self.UIManager.shown) do
+        for _, row in ipairs(widget.buttons or {}) do
+            for _, button in ipairs(row) do
+                if button.text == text and button.callback then
+                    button.callback()
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+--[[--
 Types into the dialog on screen and presses one of its buttons.
 
 @tparam ?string text         what to type, or nil to leave the box alone

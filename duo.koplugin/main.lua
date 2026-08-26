@@ -1232,6 +1232,100 @@ router-free link underneath it. The one exception is somebody who built
 such a link by hand and is now pairing across it by address: that is still
 a direct link whatever route they took to it, and the address says so.
 --]]--
+--[[--
+How long to wait for the system's own Wi-Fi to come back, and how often to
+look.
+
+Long enough for a Kindle to reassociate and pick up an address, which takes
+a few seconds from cold; short enough that a device which is never going to
+get one does not sit there. Going on anyway after the wait is deliberate:
+whatever comes next asks for Wi-Fi itself if there is none, and that asking
+is a better thing to meet than a spinner that does not end.
+--]]--
+Duo.RESTORE_WAIT = 15
+Duo.RESTORE_POLL = 0.5
+
+--[[--
+Whether the radio is on a link Duo built, right now.
+
+Read from the address rather than the stored role, because the two disagree
+in both directions: a role can be left over from a session that ended days
+ago, and a link set up by hand over SSH leaves no role at all. The two
+addresses are fixed and used by nothing else, so holding one is proof.
+
+The stored role still gets a say in the one case the address cannot cover --
+a link whose address has been flushed, by a sleep or a driver, where the
+radio is still in the wrong mode with nothing to show for it. A routed
+address overrules it, since that is a device plainly on somebody's network.
+--]]--
+function Duo:onADirectLink()
+    local DirectLink = require("duo/directlink")
+    local ip = NetUtil.getLocalIP()
+    if ip == DirectLink.HOST_ADDRESS or ip == DirectLink.JOIN_ADDRESS then
+        return true
+    end
+    local stored = Core:get("direct_link")
+    if stored ~= "host" and stored ~= "join" then return false end
+    return ip == nil or ip == "" or ip:match("^169%.254%.") ~= nil
+end
+
+--[[--
+Hands the Wi-Fi back before pairing over an ordinary network.
+
+Choosing "Over a Wi-Fi network" while the radio is still holding up a cell
+Duo made is a contradiction, and it used to be resolved the wrong way: the
+setting was changed and the radio was not, so the pair went looking for each
+other over the ad-hoc link they were supposed to be leaving. On the host
+that meant advertising an address nothing else could reach; on the follower,
+a search across a network with one device on it.
+
+Somebody who built a direct link by hand over SSH and pairs across it by
+address loses that link here. That is the right way round: this menu item
+says what it says, and the direct-link path is one screen away.
+
+@tparam function on_done  what to do once the ordinary network is back
+--]]--
+function Duo:leaveDirectLink(on_done)
+    if not self:onADirectLink() then
+        on_done()
+        return
+    end
+    local DirectLink = require("duo/directlink")
+    Core:log("pairing over a network; handing the direct link back first")
+    Core:stop("leaving the direct link")
+    DirectLink.restore()
+    Core:set("direct_link", "off")
+    if Core:get("peer_host") == DirectLink.HOST_ADDRESS then
+        -- Nothing is at that address any more, and leaving it behind is what
+        -- lets the link put itself back up.
+        Core:set("peer_host", "")
+    end
+
+    local waiting = InfoMessage:new{
+        text = _("Handing Wi-Fi back to the system…"),
+        timeout = self.RESTORE_WAIT,
+    }
+    UIManager:show(waiting)
+    UIManager:forceRePaint()
+    if NetworkMgr.restoreWifiAsync then
+        pcall(function() NetworkMgr:restoreWifiAsync() end)
+    end
+
+    local deadline = Util.now() + self.RESTORE_WAIT
+    local function look()
+        local ip = NetUtil.getLocalIP()
+        local back = ip ~= nil and ip ~= "" and not ip:match("^169%.254%.")
+        if not back and Util.now() < deadline then
+            UIManager:scheduleIn(self.RESTORE_POLL, look)
+            return
+        end
+        Core:log("Wi-Fi handed back; address now", tostring(ip))
+        UIManager:close(waiting)
+        on_done()
+    end
+    UIManager:scheduleIn(self.RESTORE_POLL, look)
+end
+
 function Duo:notOnADirectLink()
     local DirectLink = require("duo/directlink")
     if Core:get("peer_host") == DirectLink.HOST_ADDRESS
@@ -1565,8 +1659,10 @@ function Duo:showRoleDialog(over, preamble)
                     if over == "direct" then
                         self:runDirectLink("host")
                     else
-                        self:notOnADirectLink()
-                        self:startLeader()
+                        self:leaveDirectLink(function()
+                            self:notOnADirectLink()
+                            self:startLeader()
+                        end)
                     end
                 end,
             }},
@@ -1577,8 +1673,10 @@ function Duo:showRoleDialog(over, preamble)
                     if over == "direct" then
                         self:runDirectLink("join")
                     else
-                        self:notOnADirectLink()
-                        self:searchForLeader()
+                        self:leaveDirectLink(function()
+                            self:notOnADirectLink()
+                            self:searchForLeader()
+                        end)
                     end
                 end,
             }},
