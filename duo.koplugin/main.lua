@@ -80,6 +80,7 @@ function Duo:init()
             closeDocument = function() self:closeRemoteDocument() end,
             sleepDevice = function() Duo:sleepForPeer() end,
             askForToken = function() Duo:askForTokenAgain() end,
+            wakeNetwork = function() Duo:wakeNetwork() end,
             reviveDirectLink = function(quiet, force, silent)
                 return Duo:reviveDirectLink(quiet, force, silent)
             end,
@@ -877,6 +878,27 @@ function Duo:onResume()
     Duo.suspending = false
     Core:resume()
     self:offerDirectLinkWhenStranded()
+end
+
+--[[--
+Asks the reader to put its Wi-Fi back, because Duo wants it.
+
+A reader turns its radio off to sleep and on again when something needs the
+network. Duo needing it was not something that said so, so a follower could
+dial into a dead interface for as long as anybody left it -- twenty-seven
+minutes, in one log, with "Network is unreachable" every four seconds.
+
+Never on a link Duo built: there the network is the cell itself, and handing
+the radio back to the system is the opposite of what is wanted. That case
+belongs to the healer.
+--]]--
+function Duo:wakeNetwork()
+    if self:onADirectLink() then return end
+    if NetworkMgr.restoreWifiAsync then
+        pcall(function() NetworkMgr:restoreWifiAsync() end)
+    elseif NetworkMgr.turnOnWifi then
+        pcall(function() NetworkMgr:turnOnWifi() end)
+    end
 end
 
 --- Whether this device has an ordinary network under it right now.

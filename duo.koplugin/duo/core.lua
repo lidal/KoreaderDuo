@@ -60,6 +60,18 @@ the pair the time they were most obviously broken.
 local RECONNECT_MIN = 1
 local RECONNECT_MAX = 4
 
+--[[--
+How long to give one dial before calling it a failure, in seconds.
+
+Both devices are on the same network by definition -- a router at home, a
+cell of their own otherwise -- and a peer that is there answers in
+milliseconds. Waiting eight seconds for one that is not bought nothing and
+cost a great deal: while a dial is outstanding the healer stands down, so
+those eight seconds were mostly spent not repairing the link that was the
+reason the dial kept failing.
+--]]--
+local DIAL_TIMEOUT = 3
+
 --- How long a book may go without a byte before it is written off, in
 --- seconds. Generous: a slow link is not the same as a dead one.
 local BOOK_SILENCE = 30
@@ -787,8 +799,7 @@ function Core:isConnected()
 end
 
 --[[--
-Whether anything is going on that a second attempt would only get in the way
-of: a link in any state, or a connection still being made.
+Whether a link exists at all: one in its handshake, or one carrying traffic.
 
 Not the same question as `isConnected`, and the difference cost a pair the
 whole feature. A link in the middle of its handshake is not connected yet,
@@ -797,12 +808,29 @@ healer pulled the radio out from under it, the redial dialled a second time,
 and the leader dropped the first connection for the second. Eleven
 connections in fourteen seconds, in one log.
 --]]--
-function Core:hasLiveLink()
-    if self.connector then return true end
+function Core:hasLink()
     for _, link in ipairs(self.links) do
         if not link:isClosed() then return true end
     end
     return false
+end
+
+--[[--
+That, or a dial still in flight.
+
+The stricter question, and only the right one for deciding whether to dial
+*again*. Using it to decide whether to repair the network was a mistake that
+cost more than the bug it fixed: a follower whose peer has gone spends most
+of its time with a connection attempt outstanding, so the healer -- the one
+thing that puts a link back up -- almost never got a turn. In one log the
+pair took twenty-seven minutes to find each other again, and thirteen
+recoveries out of fifty-four ran past half a minute.
+
+A dial into a network that is not there protects nothing. A link does.
+--]]--
+function Core:hasLiveLink()
+    if self.connector then return true end
+    return self:hasLink()
 end
 
 function Core:followerCount()
@@ -1060,15 +1088,59 @@ function Core:beginConnect()
     local host, port = self:get("peer_host"), self:get("peer_port")
     self:trace("dialling", ("%s:%s"):format(tostring(host), tostring(port)))
     self.dialled_at = Util.now()
-    local connector, err = TcpTransport.connect(host, port, 8)
+    local connector, err = TcpTransport.connect(host, port, DIAL_TIMEOUT)
     if not connector then
-        self.last_error = err
         self:trace("could not dial:", tostring(err))
+        self:noteDialFailure(err)
         self:scheduleReconnect()
         return
     end
     self.connector = connector
     self:changed()
+end
+
+--[[--
+Errors that mean this device has no network, rather than that the other one
+is not answering.
+
+Worth telling apart. A peer that is away is a thing to wait for; an
+interface with no route is a thing to *do* something about, and dialling
+into it changes nothing. One log has a follower saying "Network is
+unreachable" every four seconds for twenty-seven minutes, while the reader's
+own Wi-Fi sat switched off behind it.
+--]]--
+local function meansNoNetwork(err)
+    err = tostring(err or ""):lower()
+    return err:find("unreachable", 1, true) ~= nil
+        or err:find("no route", 1, true) ~= nil
+        or err:find("network is down", 1, true) ~= nil
+end
+
+--- How often Duo may ask the reader to put its network back, in seconds.
+--- Rarely: it is the reader's own connection manager doing the work, and
+--- asking twice a second helps nobody.
+Core.WAKE_NETWORK_EVERY = 30
+
+--[[--
+Notes a dial that got nowhere, and asks for the network back when that is
+what is missing.
+
+A reader switches its Wi-Fi off to sleep and turns it on again when
+something wants it. Duo wanting it was not, until now, something that said
+so: it dialled into a dead interface and waited for somebody else to notice.
+--]]--
+function Core:noteDialFailure(err)
+    self.last_error = err
+    if not meansNoNetwork(err) then return end
+    if not self.hooks or not self.hooks.wakeNetwork then return end
+    local now = Util.now()
+    if self.network_woken_at
+        and now - self.network_woken_at < Core.WAKE_NETWORK_EVERY then
+        return
+    end
+    self.network_woken_at = now
+    self:log("no network to dial over; asking the reader to bring it back")
+    pcall(self.hooks.wakeNetwork)
 end
 
 function Core:scheduleReconnect()
@@ -1259,7 +1331,7 @@ function Core:pollOnce()
                         Util.now() - (self.dialled_at or Util.now())))
                     self:adoptStream(result, false)
                 elseif result == false then
-                    self.last_error = err
+                    self:noteDialFailure(err)
                     self:scheduleReconnect()
                 end
             elseif self.reconnect_at and Util.now() >= self.reconnect_at then
@@ -4404,6 +4476,15 @@ function Core:suspend()
     end
     self:stop("the other device went to sleep")
     self.paused_role = role
+    --[[
+    Here, not in resume: this is where a resume cycle begins, and it begins
+    whether or not the reader ever sends the wake-up event that resume hangs
+    off. Counting from resume made the count a lifetime total on a device
+    where that event does not arrive -- it reached fifty-eight in one log --
+    and a limit meant to stop thirty fruitless attempts instead made the
+    first failure after the thirtieth ever the last one Duo would try.
+    ]]
+    self.resume_attempts = 0
     self.settings.autostart_role = role
     self:save()
 end
@@ -4503,10 +4584,20 @@ anything failed.
 function Core:checkLink()
     if not self.link_check_at then return end
     if Util.now() < self.link_check_at then return end
-    -- A link already coming up needs no help, and rebuilding the network
-    -- under it would be the opposite of help.
-    if self:hasLiveLink() then
+    --[[
+    A link already coming up needs no help, and rebuilding the network under
+    it would be the opposite of help. Put off rather than dropped: this is
+    the one check a sleep gets, and consuming it because a handshake happened
+    to be in flight at the second it came due lost it for good.
+    ]]
+    if self:isConnected() then
+        -- Whatever the sleep did to the network, the two are talking over
+        -- it. There is nothing left for this check to find out.
         self.link_check_at = nil
+        return
+    end
+    if self:hasLink() then
+        self.link_check_at = Util.now() + LINK_CHECK_DELAY
         return
     end
     self.link_check_at = nil
@@ -4542,10 +4633,10 @@ function Core:checkLinkHealth()
     it happens. One log has a handshake that took five seconds because of
     this, and eleven connections in the fourteen seconds that followed.
 
-    Bounded, so nothing can wedge here: a connector gives up after eight
-    seconds and a handshake after ten.
+    Bounded, so nothing can wedge here: a handshake gives up after ten
+    seconds.
     ]]
-    if self:hasLiveLink() then return end
+    if self:hasLink() then return end
     if self:isConnected() then
         self.disconnected_since = nil
         self.has_connected = true
@@ -4578,13 +4669,19 @@ function Core:checkLinkHealth()
     of the one thing that works. Rebuilding a link nobody is using costs a
     few seconds; not rebuilding it costs the feature.
     ]]
-    self:log("apart for a while; rebuilding the link rather than asking after it")
+    -- Traced, not logged: on a pair that is not on a link Duo built this
+    -- runs, finds nothing of its own to rebuild and says so, and a line
+    -- claiming a rebuild every twenty seconds made those logs unreadable.
+    self:trace("apart for a while; rebuilding the link rather than asking after it")
     -- Silent: this runs again every twenty seconds for as long as the two
     -- are apart, and a device narrating each pass is what read as the link
     -- going up over and over. The check after a sleep is the one that
     -- speaks, because it happens once and something has changed.
     local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true, true)
-    if ok and outcome == "rebuilt" then self:dialNow() end
+    if ok and outcome == "rebuilt" then
+        self:log("rebuilt the link the two had been apart on")
+        self:dialNow()
+    end
 end
 
 --[[--
@@ -4599,12 +4696,22 @@ recovery.
 --- changed that makes the next attempt worth making early.
 function Core:dialNow()
     self.reconnect_delay = RECONNECT_MIN
-    -- And not at all if there is already a link, in any state. Dialling over
-    -- one that is merely half-made is how a pair ends up with two
-    -- connections and the leader dropping the older of them.
-    if self:isFollower() and not self:hasLiveLink() then
-        self.reconnect_at = 0
+    if not self:isFollower() then return end
+    -- Not over a link, in any state: dialling over one that is merely
+    -- half-made is how a pair ends up with two connections and the leader
+    -- dropping the older of them.
+    if self:hasLink() then return end
+    --[[
+    A dial in flight is a different matter. The only caller is the repair
+    that has just rebuilt the network underneath it, so whatever that attempt
+    was crossing is gone; leaving it to run means waiting out its timeout and
+    then a backoff before trying the network that now works.
+    ]]
+    if self.connector then
+        pcall(function() self.connector:cancel() end)
+        self.connector = nil
     end
+    self.reconnect_at = 0
 end
 
 --- Object handed to UIManager so the sockets get polled by the UI loop.

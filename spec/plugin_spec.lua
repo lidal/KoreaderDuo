@@ -724,24 +724,141 @@ T.describe("coming back after a sleep", function()
 
         Core.reconnect_at = nil
         Core:dialNow()
-        T.assertNil(Core.reconnect_at, "it dialled over a connection already being made")
+        T.assertNil(Core.reconnect_at, "it dialled over a link already being made")
 
-        -- A connector still in flight counts too, link or no link.
+        --[[
+        A dial in flight is a different matter. dialNow is only called by the
+        repair that has just rebuilt the network underneath that attempt, so
+        it is crossing something that no longer exists; leaving it to run
+        means waiting out its timeout and a backoff before trying the network
+        that now works.
+        ]]
+        Core.links = {}
+        local cancelled = false
+        Core.connector = { poll = function() end,
+                           cancel = function() cancelled = true end }
+        Core.reconnect_at = nil
+        Core:dialNow()
+        T.assertTrue(cancelled, "it left a dial running over a network that had gone")
+        T.assertEquals(Core.reconnect_at, 0)
+        T.assertNil(Core.connector)
+
+        --[[
+        A dial still in flight does not count, and treating it as though it
+        did cost more than the bug it fixed. A follower whose peer has gone
+        spends most of its time with an attempt outstanding, so the healer --
+        the one thing that puts the link back up -- almost never got a turn:
+        one log took twenty-seven minutes to reconnect, and thirteen
+        recoveries out of fifty-four ran past half a minute. A dial into a
+        network that is not there protects nothing.
+        ]]
         Core.links = {}
         Core.connector = { poll = function() end, cancel = function() end }
         Core:checkLinkHealth()
-        T.assertEquals(rebuilt, 0, "it rebuilt the network under a dial in flight")
+        T.assertEquals(rebuilt, 1, "a dial into the void held the healer off")
         Core.connector = nil
-
-        -- And with nothing in flight at all, it does its job.
-        Core:checkLinkHealth()
-        T.assertEquals(rebuilt, 1, "a pair that really is apart still gets healed")
 
         Core.hooks.reviveDirectLink = nil
         Core.settings.direct_link = nil
         Core.role = Core.ROLE_OFF
         Core.disconnected_since, Core.link_healed_at = nil, nil
         Core.has_connected, Core.heal_backoff = nil, nil
+        reset()
+    end)
+
+    T.it("asks the reader for its Wi-Fi back rather than dialling into nothing", function()
+        --[[
+        From a log: "Network is unreachable" every four seconds for
+        twenty-seven minutes. A reader switches its radio off to sleep and
+        on again when something wants the network -- and Duo wanting it was
+        not, until now, something that said so. Dialling into a dead
+        interface changes nothing; asking for it back does.
+        ]]
+        reset()
+        local woken = 0
+        Core.hooks.wakeNetwork = function() woken = woken + 1 end
+        Core.network_woken_at = nil
+
+        Core:noteDialFailure("Network is unreachable")
+        T.assertEquals(woken, 1)
+
+        -- Not on every attempt: it is the reader's connection manager doing
+        -- the work, and asking it twice a second helps nobody.
+        Core:noteDialFailure("Network is unreachable")
+        T.assertEquals(woken, 1, "it nagged the connection manager")
+
+        -- And never for a peer that is simply away, which is a thing to
+        -- wait for rather than a thing to do something about.
+        Core.network_woken_at = nil
+        Core:noteDialFailure("connection refused")
+        T.assertEquals(woken, 1, "it rearranged the Wi-Fi over a sleeping peer")
+        T.assertEquals(Core.last_error, "connection refused")
+
+        Core.hooks.wakeNetwork = nil
+        Core.network_woken_at = nil
+        reset()
+    end)
+
+    T.it("puts the sleep check off rather than losing it", function()
+        --[[
+        One check is all a sleep gets. Dropping it because a handshake
+        happened to be in flight at the second it came due lost it for good,
+        and on a follower -- which starts dialling the moment it wakes --
+        that was most of the time.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        local checked = 0
+        Core.hooks.reviveDirectLink = function() checked = checked + 1 return "up" end
+        Core.role = Core.ROLE_FOLLOWER
+
+        local handshaking = { isReady = function() return false end,
+                              isClosed = function() return false end,
+                              close = function() end }
+        Core.links = { handshaking }
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(checked, 0, "it looked at the network under a live handshake")
+        T.assertTrue(Core.link_check_at ~= nil, "and it threw the check away")
+
+        -- The handshake failed; now the check it was holding gets its turn.
+        Core.links = {}
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(checked, 1, "the check never came back")
+
+        -- A pair that is talking has no sleep left to recover from.
+        Core.links = { { isReady = function() return true end,
+                         isClosed = function() return false end,
+                         close = function() end } }
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(checked, 1)
+        T.assertNil(Core.link_check_at, "it went on asking about a link that is up")
+
+        Core.links = {}
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("counts resume attempts per sleep, not per lifetime", function()
+        --[[
+        The counter only reset in resume, which hangs off a wake-up event
+        that does not arrive on every reader. Where it does not, the count
+        was a lifetime total -- fifty-eight, in one log -- so a limit meant
+        to stop thirty fruitless attempts instead made the first failure
+        after the thirtieth ever the last one Duo would try.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.resume_attempts = 58
+        Core:suspend()
+        T.assertEquals(Core.resume_attempts, 0,
+            "a device that has woken often would give up on the first try")
+        T.assertEquals(Core.paused_role, Core.ROLE_LEADER)
+        Core.paused_role = nil
         reset()
     end)
 
