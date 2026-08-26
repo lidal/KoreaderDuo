@@ -421,6 +421,11 @@ tools/
   duo-menu-dump.lua         prints the menu as the device builds it
 ```
 
+## Written with AI
+
+All of the software here — the plugin, the tools, the tests, this file —
+was written with Claude. The 3D files for the case are not.
+
 ## License
 
 Intended to be used with, and distributed under the same terms as, KOReader
