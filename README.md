@@ -196,6 +196,14 @@ protocol escapes anything outside a restricted set, `+` and `/` are outside
 it, and a compressed file produces enough of them to push a chunk past the
 line limit.
 
+### Putting a book on both at once
+
+[localsend.koplugin](https://github.com/kaikozlov/localsend.koplugin) pairs
+well with this: send from a phone or laptop to both readers in one go and
+the shelves match before Duo is even running, with nothing to copy over the
+link. Both devices have to be on your ordinary Wi-Fi for it — on a direct
+link they are on a cell of their own that the sending device cannot reach.
+
 ## Matching typography
 
 A spread only works if both devices break lines in the same places.
