@@ -261,6 +261,18 @@ local DEFAULTS = {
     -- Off, and deliberately not shared: a log is about this device, and
     -- switching one on should never quietly switch on the other's.
     debug_log = false,
+    --[[
+    The log, but with everything in it.
+
+    Separate from the log itself because the two answer different questions.
+    The ordinary log is a record of what Duo decided -- connected, opened
+    this, sent that -- and stays readable by eye. Verbose adds the running
+    commentary underneath it: every message across the link, how long each
+    turn of the event loop took, what the round trip to the other device
+    measures. That is what you need to tell a slow network from a starved
+    event loop, and it is far too much to leave on.
+    ]]
+    verbose_log = false,
     -- Empty means "wherever this device keeps its books", worked out at the
     -- time. Not shared: it describes this device's disk, and the two rarely
     -- have the same one.
@@ -342,6 +354,18 @@ end
 
 function Core:log(...)
     if self.hooks and self.hooks.log then self.hooks.log(...) end
+end
+
+--- Whether the running commentary is wanted. Checked before anything is
+--- formatted, because most of it costs more to build than to discard.
+function Core:isVerbose()
+    return self:get("debug_log") and self:get("verbose_log") and true or false
+end
+
+--- A line for the verbose log, and nowhere else.
+function Core:trace(...)
+    if not self:isVerbose() then return end
+    self:log(...)
 end
 
 function Core:notify(text)
@@ -784,8 +808,18 @@ function Core:applyRadioSetting()
     would override whatever the reader or its firmware had settled on.
     ]]
     if never_asked and not wanted then return end
-    self:log("keeping the radio awake:", tostring(wanted))
-    pcall(self.hooks.setRadioAwake, wanted)
+    --[[
+    Logged with what came back, and timed. Changing power save touches the
+    driver, and a driver that answers by re-associating drops the link -- so
+    a disconnection moments after this line is not a coincidence, and the
+    log is where anybody would see that.
+    ]]
+    local began = Util.now()
+    local ok, iface, how, worked = pcall(self.hooks.setRadioAwake, wanted)
+    self:log("keeping the radio awake:", tostring(wanted),
+        "-", tostring(iface), tostring(how),
+        ok and tostring(worked) or "call failed",
+        ("%.0fms"):format((Util.now() - began) * 1000))
 end
 
 function Core:getSpreadOptions()
@@ -972,9 +1006,12 @@ function Core:beginConnect()
     self.connector = nil
     self.reconnect_at = nil
     local host, port = self:get("peer_host"), self:get("peer_port")
+    self:trace("dialling", ("%s:%s"):format(tostring(host), tostring(port)))
+    self.dialled_at = Util.now()
     local connector, err = TcpTransport.connect(host, port, 8)
     if not connector then
         self.last_error = err
+        self:trace("could not dial:", tostring(err))
         self:scheduleReconnect()
         return
     end
@@ -984,6 +1021,7 @@ end
 
 function Core:scheduleReconnect()
     self.connector = nil
+    self:trace(("redialling in %.1fs"):format(self.reconnect_delay))
     self.reconnect_at = Util.now() + self.reconnect_delay
     self.reconnect_delay = math.min(self.reconnect_delay * 2, RECONNECT_MAX)
     self:changed()
@@ -1056,8 +1094,77 @@ function Core:pollScanner()
     if callback then callback(results) end
 end
 
+--[[--
+How often the verbose log says how the event loop is doing.
+
+Long enough that the summary is a handful of lines over a reading session
+rather than a wall, short enough that a stall shows up in the ten seconds
+around it rather than being averaged away.
+--]]--
+Core.POLL_SUMMARY_EVERY = 10
+
+--[[--
+Times one turn of the event loop.
+
+The measurement that separates the two ways a pair can feel slow, which
+otherwise look identical from the outside. If the gaps between polls are
+around KOReader's own 50ms ceiling and the round trip to the other device is
+long, the network is the problem. If the gaps are hundreds of milliseconds,
+Duo is not being run often enough to answer quickly no matter how fast the
+link is -- a dozing radio, a busy reader, a transfer in the way.
+
+Both numbers are kept: the average says what it is normally like, the
+maximum says what the worst tap felt like, and it is the maximum somebody
+notices.
+--]]--
+function Core:notePoll(now)
+    local stats = self.poll_stats
+    if not stats then
+        stats = { since = now, polls = 0, gap_max = 0, gap_total = 0,
+                  cost_max = 0, cost_total = 0 }
+        self.poll_stats = stats
+    end
+    if self.polled_at then
+        local gap = now - self.polled_at
+        stats.gap_total = stats.gap_total + gap
+        if gap > stats.gap_max then stats.gap_max = gap end
+    end
+    self.polled_at = now
+    stats.polls = stats.polls + 1
+    return stats
+end
+
+function Core:reportPolling(stats, now)
+    -- polled_at is when this turn started, so this is what the work cost.
+    local cost = now - self.polled_at
+    stats.cost_total = stats.cost_total + cost
+    if cost > stats.cost_max then stats.cost_max = cost end
+    if now - stats.since < Core.POLL_SUMMARY_EVERY then return end
+    local polls = math.max(stats.polls, 1)
+    local link = self:getReadyLinks()[1]
+    self:log(("loop: %d polls in %.0fs, gap avg %.0fms max %.0fms, work avg %.1fms max %.1fms; link %s"):format(
+        stats.polls, now - stats.since,
+        stats.gap_total / polls * 1000, stats.gap_max * 1000,
+        stats.cost_total / polls * 1000, stats.cost_max * 1000,
+        link and link:report() or "none"))
+    self.poll_stats = nil
+end
+
 --- Drives every socket. Called from KOReader's UI loop, ~20 times a second.
 function Core:poll()
+    local stats = self:isVerbose() and self:notePoll(Util.now()) or nil
+    if stats then
+        -- Wrapped rather than returned from, because poll has several exits
+        -- and a measurement that only covers some of them measures nothing.
+        local ok, err = pcall(self.pollOnce, self)
+        self:reportPolling(stats, Util.now())
+        if not ok then error(err, 0) end
+        return
+    end
+    return self:pollOnce()
+end
+
+function Core:pollOnce()
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
     self:checkLink()   -- and this is how the network under it is
@@ -1070,6 +1177,15 @@ function Core:poll()
             while true do
                 local stream = self.server:accept()
                 if not stream then break end
+                --[[
+                Logged plainly rather than only in the commentary: a pair
+                that connects, drops and connects again shows up here as two
+                accepts seconds apart, and that is the first thing worth
+                knowing about a flap. It is one line per connection, and a
+                connection is a rare event.
+                ]]
+                self:log("accepted a connection from",
+                    stream.getPeerName and stream:getPeerName() or "?")
                 self:adoptStream(stream, true)
             end
         end
@@ -1079,6 +1195,8 @@ function Core:poll()
                 local result, err = self.connector:poll()
                 if result then
                     self.connector = nil
+                    self:log(("dialled through in %.2fs"):format(
+                        Util.now() - (self.dialled_at or Util.now())))
                     self:adoptStream(result, false)
                 elseif result == false then
                     self.last_error = err
@@ -1205,17 +1323,68 @@ function Core:adoptStream(stream, is_leader)
         on_message = function(_, msg) self:handleMessage(link, msg) end,
         on_ready = function() self:onLinkReady(link) end,
         on_close = function(_, reason) self:onLinkClosed(link, reason) end,
+        -- Who this device is, so the other end can tell a reconnection from
+        -- a second reader arriving.
+        id = self.instance_id,
+        on_identify = function(_, id) return self:placeLink(link, id) end,
+        --[[
+        Handed over only when the commentary is wanted, so that the link's
+        own hot path is a nil check rather than a call into a function that
+        decides to do nothing. Read once, here: turning verbose on mid-link
+        starts narrating the next link rather than this one, which is a fair
+        trade for not testing a setting on every message.
+        ]]
+        trace = self:isVerbose()
+            and function(...) self:log("link", is_leader and "L" or "F", ...) end
+            or nil,
     }
     self.links[#self.links+1] = link
     return link
 end
 
+--[[--
+Works out where a peer that has just named itself belongs.
+
+A follower reconnects within a second or two; the leader only notices the
+link it left behind six seconds later, when the heartbeat gives up on it. In
+between it holds two links to one reader -- and since slots are handed out
+by counting links, the returning device is welcomed into slot 2 and shown
+the page meant for a third reader that does not exist. Then the stale link
+times out and announces a disconnection for a device sitting there
+connected. From the outside that reads as connect, disconnect, connect.
+
+Told apart by the identifier each device sends rather than by its address,
+because two readers can share an address -- behind one router, or on one
+machine -- and by name, because names are whatever somebody typed into the
+settings.
+
+@tparam table link  the link that has just heard from its peer
+@tparam ?string id  what the peer calls itself
+@treturn number     the slot this peer should be given
+--]]--
+function Core:placeLink(link, id)
+    if id and id ~= "" then
+        for _, other in ipairs(self.links) do
+            if other ~= link and not other:isClosed() and other.peer_id == id then
+                self:log("this device is already connected; dropping the older link")
+                other.superseded = true
+                other:close("replaced by a new connection from the same device")
+            end
+        end
+    end
+    return self:nextFreeSlot(link)
+end
+
 --- Lowest follower index not currently taken, so a reconnecting device lands
 -- back on the page it had rather than being pushed to the end of the spread.
-function Core:nextFreeSlot()
+-- @tparam[opt] table except  a link whose own slot does not count as taken
+function Core:nextFreeSlot(except)
     local taken = {}
     for _, link in ipairs(self.links) do
-        taken[link.slot] = true
+        -- A closed link holds nothing. They are taken out of the list on the
+        -- next poll rather than the moment they die, and counting one that
+        -- is already gone hands the next device a slot too far along.
+        if link ~= except and not link:isClosed() then taken[link.slot] = true end
     end
     local slot = 1
     while taken[slot] do slot = slot + 1 end
@@ -1283,7 +1452,10 @@ function Core:onLinkReady(link)
 end
 
 function Core:onLinkClosed(link, reason)
-    self:log("link closed:", reason)
+    -- The report rather than the reason alone: a link that lasted two
+    -- seconds and one that lasted an hour both end with the same sentence.
+    self:log("link closed:", reason, "-",
+        link and link.report and link:report() or "")
     self:applyRadioSetting()
     self:abandonBookRequest(reason)
     --[[
@@ -1307,11 +1479,23 @@ function Core:onLinkClosed(link, reason)
         self:changed()
         return
     end
-    if self:isActive() then
+    -- A link this device replaced itself is not news: the device it led to
+    -- is connected right now, on the link that replaced it.
+    if self:isActive() and not (link and link.superseded) then
         self:notify(("Duo: %s"):format(reason or "disconnected"))
     end
-    -- Whoever dialled is the one who redials.
-    if self:isActive() and self:isFollower() then
+    --[[
+    Whoever dialled is the one who redials -- but only if there is nothing
+    left to talk over.
+
+    A follower can hold more than one link for a moment: it dials again,
+    the leader keeps the new connection and drops the old, and the old one
+    closing arrives here. Redialling on that would hang up on the link that
+    just replaced it, and the leader would drop *that* one for the next --
+    two devices taking turns disconnecting each other for as long as anyone
+    watched.
+    ]]
+    if self:isActive() and self:isFollower() and not self:isConnected() then
         self:scheduleReconnect()
     end
     self:changed()
@@ -1533,8 +1717,33 @@ function Core:handleRelativeTurn(diff)
     local link = self:getReadyLinks()[1]
     if not link then return false end
     link:send(Protocol.TURN, { dir = diff })
+    self:noteTurnSent("turn")
     self:turnAhead(diff)
     return true
+end
+
+--[[--
+Stamps a turn this device asked the leader for.
+
+Not the same number as the round trip the heartbeat measures, and the
+difference is the point. A ping is answered by the link the instant it
+arrives; a turn has to reach the leader, move a real reader, and come back
+as a new page for this screen. Somebody complaining that turning on the
+follower is slow is complaining about this number, so this is the one to
+have in the log.
+--]]--
+function Core:noteTurnSent(what)
+    if not self:isVerbose() then return end
+    self.turn_sent_at = Util.now()
+    self.turn_sent_what = what
+end
+
+function Core:noteTurnAnswered()
+    if not self.turn_sent_at then return end
+    self:log(("%s answered in %.0fms"):format(
+        self.turn_sent_what or "turn",
+        (Util.now() - self.turn_sent_at) * 1000))
+    self.turn_sent_at = nil
 end
 
 --[[--
@@ -1754,6 +1963,7 @@ function Core:reportJump(page)
     self.assigned_pages = pages
     self:log("jumped to", page, "- asking the leader to follow")
     link:send(Protocol.GOTO, { page = page })
+    self:noteTurnSent("jump")
 end
 
 --[[--
@@ -3598,6 +3808,7 @@ end
 function Core:handleMessage(link, msg)
     if msg.type == Protocol.STATE then
         if self:isLeader() then return end -- only the leader decides
+        self:noteTurnAnswered()
         self.leader_page = Protocol.num(msg, "leader_page")
         self.my_slot = Protocol.num(msg, "slot")
         self.spread_step = Protocol.num(msg, "step")
@@ -3608,7 +3819,13 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.TURN then
         if not self:isLeader() then return end
         if not self:get("follower_can_turn") then return end
+        -- Timed on this side too: a slow turn is either the network or this
+        -- device moving a real reader, and only the leader can tell which.
+        local began = self:isVerbose() and Util.now() or nil
         self:applyRelativeTurn(Protocol.num(msg, "dir", 1))
+        if began then
+            self:log(("served a follower's turn in %.0fms"):format((Util.now() - began) * 1000))
+        end
     elseif msg.type == Protocol.GOTO then
         if not self:isLeader() then return end
         if not self:get("follower_can_turn") then return end

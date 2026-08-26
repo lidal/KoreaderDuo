@@ -2280,6 +2280,20 @@ On connecting, the leader's settings win. After that a change on either device m
             end,
         },
         {
+            text = _("Log everything"),
+            help_text = _("Adds the running commentary underneath the log: every message across the link, how long each turn of the event loop took, and how long a page turn took to come back.\n\nThat is what tells a slow network from a starved event loop. Gaps near 50ms with a long round trip mean the network; gaps of hundreds of milliseconds mean Duo is not being run often enough to answer quickly whatever the network does.\n\nNoisy, and it fills the log quickly. On to reproduce something, off again afterwards."),
+            checked_func = function() return Core:get("verbose_log") end,
+            enabled_func = function() return Core:get("debug_log") end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.menu_container = touchmenu_instance
+                local wanted = not Core:get("verbose_log")
+                Core:set("verbose_log", wanted)
+                Core:log(wanted and "verbose log switched on" or "verbose log switched off")
+                self:refreshMenu()
+            end,
+        },
+        {
             text_func = function()
                 if not Core:get("debug_log") then return _("The log is off") end
                 return T(_("Log: %1"), Duo:getLogPath())

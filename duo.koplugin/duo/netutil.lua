@@ -194,13 +194,36 @@ about a knob their firmware does not have.
 @bool awake  true to keep the radio awake, false to hand it back
 @treturn ?string  the interface it was applied to, or nil
 --]]--
+--- os.execute reports a status number on 5.1 and a boolean on 5.2 and up.
+local function worked(status)
+    if status == true then return true end
+    if status == 0 then return true end
+    return false
+end
+
+--[[--
+Stops the wireless card dozing between beacons, or lets it doze again.
+
+One command, not two. `iwconfig` is here as a fallback for drivers whose
+`iw` does not understand `power_save`, and running both for one decision
+meant poking the radio twice -- on hardware that may answer a power-save
+change by re-associating, which drops the link Duo was holding open.
+
+@bool awake  true to keep the radio responsive, false to hand it back
+@treturn ?string  the interface, or nil when there is no wireless one
+@treturn string   which tool was used
+@treturn boolean  whether it reported success
+--]]--
 function NetUtil.setRadioAlwaysOn(awake)
     local iface = wirelessInterface()
     if not iface then return nil end
     local setting = awake and "off" or "on"
-    os.execute(("iw dev %s set power_save %s >/dev/null 2>&1"):format(iface, setting))
-    os.execute(("iwconfig %s power %s >/dev/null 2>&1"):format(iface, setting))
-    return iface
+    local status = os.execute(
+        ("iw dev %s set power_save %s >/dev/null 2>&1"):format(iface, setting))
+    if worked(status) then return iface, "iw", true end
+    status = os.execute(
+        ("iwconfig %s power %s >/dev/null 2>&1"):format(iface, setting))
+    return iface, "iwconfig", worked(status)
 end
 
 return NetUtil

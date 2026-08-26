@@ -190,6 +190,20 @@ where to go, what to send, what the settings are -- is signed.
 local UNSIGNED = { [Protocol.BOOK_DATA] = true }
 
 --[[--
+Message types a running commentary leaves out.
+
+The heartbeat is two messages every couple of seconds in each direction and
+says nothing that the periodic summary does not say better; book chunks
+arrive thousands at a time. Both would bury the messages somebody turned the
+log on to see. What they contribute is counted, not narrated.
+--]]--
+local QUIET_IN_TRACE = {
+    [Protocol.PING] = true,
+    [Protocol.PONG] = true,
+    [Protocol.BOOK_DATA] = true,
+}
+
+--[[--
 Creates a link around an already connected stream.
 
 @tparam table options
@@ -201,6 +215,11 @@ Creates a link around an already connected stream.
     on_message  function(link, msg) for application messages
     on_ready    function(link) once the handshake succeeded
     on_close    function(link, reason) exactly once, when the link dies
+    on_identify function(link, id) leader side, once the peer names itself:
+                returns the slot this peer should be given, or nil to keep
+    id          this device's identifier, sent so the other end can tell a
+                reconnection from a second reader
+    trace       function(...) for a running commentary, or nil for none
 --]]--
 function Link.new(options)
     local link = setmetatable({
@@ -212,6 +231,9 @@ function Link.new(options)
         on_message = options.on_message,
         on_ready = options.on_ready,
         on_close = options.on_close,
+        on_identify = options.on_identify,
+        id = options.id or "",
+        trace = options.trace,
         reader = Protocol.newReader(),
         state = "handshake",
         created_at = Util.now(),
@@ -219,6 +241,17 @@ function Link.new(options)
         last_tx = 0,
         peer_name = nil,
         latency = nil,
+        --[[
+        What has crossed this link, so that one that dies can be asked what
+        it had been doing rather than only when it stopped. A link that goes
+        after two messages and a link that goes after ten thousand fail for
+        different reasons, and the close reason alone -- "peer stopped
+        responding" -- reads the same either way.
+        ]]
+        msgs_in = 0,
+        msgs_out = 0,
+        bytes_in = 0,
+        bytes_out = 0,
     }, Link)
 
     if link.is_leader then
@@ -275,6 +308,12 @@ function Link:sendMessage(msg_type, fields)
         return false, send_err
     end
     self.last_tx = Util.now()
+    self.msgs_out = self.msgs_out + 1
+    self.bytes_out = self.bytes_out + #line
+    self.last_out = msg_type
+    if self.trace and not QUIET_IN_TRACE[msg_type] then
+        self.trace("out", msg_type, #line)
+    end
     return true
 end
 
@@ -296,11 +335,33 @@ function Link:close(reason, polite)
             self:sendMessage(Protocol.BYE, { reason = reason or "bye" })
         end)
     end
+    if self.trace then self.trace("closing", reason or "closed", self:report()) end
     self.state = "closed"
     self.stream:close()
     if self.on_close then
         self.on_close(self, reason or "closed")
     end
+end
+
+--[[--
+What this link had been doing, in one line.
+
+For the moment it ends. "peer stopped responding" is the same sentence
+whether the other device wandered out of range mid-book or never really
+arrived at all, and which of those it was is the whole question: how long it
+lived, how much crossed it, what the last thing either end said was, and how
+long the silence had run before anyone gave up.
+--]]--
+function Link:report()
+    local now = Util.now()
+    return ("age=%.1fs in=%d/%dB out=%d/%dB last_in=%s last_out=%s silent=%.1fs rtt=%s state=%s"):format(
+        now - self.created_at,
+        self.msgs_in, self.bytes_in,
+        self.msgs_out, self.bytes_out,
+        tostring(self.last_in), tostring(self.last_out),
+        now - self.last_rx,
+        self.latency and ("%.0fms"):format(self.latency * 1000) or "?",
+        self.state)
 end
 
 --- Bytes still queued on the transport, for flow control when sending a book.
@@ -334,6 +395,17 @@ function Link:handleHandshake(msg)
             return
         end
         self.peer_name = msg.name or "follower"
+        self.peer_id = msg.id
+        --[[
+        Asked before the welcome goes out, because the welcome carries the
+        slot. A follower that reconnects while the link it left behind is
+        still timing out would otherwise be counted as a second reader and
+        welcomed into the spread beside itself.
+        ]]
+        if self.on_identify then
+            local slot = self.on_identify(self, self.peer_id)
+            if slot then self.slot = slot end
+        end
         self:sendMessage(Protocol.WELCOME, {
             proof = Link.proof(msg.nonce or "", self.token),
             name = self.name,
@@ -365,6 +437,7 @@ function Link:handleHandshake(msg)
                 nonce = self.nonce,
                 proof = Link.proof(msg.nonce or "", self.token),
                 name = self.name,
+                id = self.id,
                 proto = Protocol.VERSION,
             })
             return
@@ -386,6 +459,9 @@ function Link:handleHandshake(msg)
 end
 
 function Link:becomeReady()
+    if self.trace then
+        self.trace("ready", ("handshake took %.2fs"):format(Util.now() - self.created_at))
+    end
     self.state = "ready"
     self.last_rx = Util.now()
     if self.on_ready then
@@ -411,6 +487,7 @@ function Link:poll()
         if #data > 0 then
             self.last_rx = Util.now()
             self.heard_from_peer = true
+            self.bytes_in = self.bytes_in + #data
             self.reader:feed(data)
         end
     end
@@ -432,6 +509,11 @@ function Link:poll()
         -- in fact talking to it constantly, and drop the link mid-transfer.
         local now = Util.now()
         self.last_rx = now
+        self.msgs_in = self.msgs_in + 1
+        self.last_in = msg.type
+        if self.trace and not QUIET_IN_TRACE[msg.type] then
+            self.trace("in", msg.type)
+        end
         self:dispatch(msg)
         if now >= deadline then break end
     end

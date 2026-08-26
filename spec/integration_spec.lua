@@ -95,6 +95,33 @@ T.describe("two devices, connecting", function()
             "the leader accepted a device with the wrong code")
     end)
 
+    T.it("takes a returning follower back into its old place", function()
+        --[[
+        A follower reconnects in a second or two; the leader only notices
+        the link it left behind six seconds later, when the heartbeat gives
+        up on it. Dialling again while the first connection is still open is
+        exactly what that looks like from the leader's side.
+
+        What went wrong: slots are handed out by counting links, so the
+        returning device was welcomed into slot 2 and shown the page meant
+        for a third reader. Then the stale link timed out and announced a
+        disconnection for a device sitting there connected -- connect,
+        disconnect, connect, for one reconnection.
+        ]]
+        connectPair()
+        callFollower("Core:beginConnect()")
+
+        controller:assertEventually(leader, "#Core:getReadyLinks()", 1,
+            "the leader is holding two links to one device")
+        T.assertEquals(callLeader("Core:getReadyLinks()[1].slot"), "1",
+            "the returning device was pushed to the end of the spread")
+
+        -- And the pair still works, which is the point of all of it.
+        setLeaderPage(20)
+        controller:assertEventually(follower, "D:getPage()", 21,
+            "the follower stopped following after the reconnection")
+    end)
+
     T.it("finds the leader over UDP without being told its address", function()
         connectPair()
         callFollower("Core:startScan(function(r) Core.scan_results = r end)")

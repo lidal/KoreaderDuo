@@ -905,6 +905,256 @@ T.describe("keeping the reader awake", function()
     end)
 end)
 
+T.describe("one device, one link", function()
+    --[[
+    Enough of a stream for a link to be built on: the handshake writes a
+    challenge into it and reads nothing back. What these tests are about is
+    decided the moment the peer names itself, before a page is ever sent.
+    ]]
+    local function fakeStream(peer)
+        return {
+            getPeerName = function() return peer end,
+            send = function() return true end,
+            receive = function() return "" end,
+            flush = function() return true end,
+            close = function() end,
+            pending = function() return 0 end,
+        }
+    end
+
+    --- A link the way the leader makes one, and the peer naming itself.
+    local function arrive(peer, id)
+        local link = Core:adoptStream(fakeStream(peer), true)
+        link.peer_id = id
+        link.slot = Core:placeLink(link, id)
+        return link
+    end
+
+    T.it("gives a returning follower its old slot back, not a new one", function()
+        --[[
+        A follower reconnects in a second or two; the leader only notices the
+        link it left behind six seconds later, when the heartbeat gives up.
+        In between it holds two links to one reader, and since slots are
+        handed out by counting links, the returning device is welcomed into
+        slot 2 -- shown the page meant for a third reader that does not
+        exist. Then the stale link times out and announces a disconnection
+        for a device sitting there connected.
+
+        Which is exactly what connect, disconnect, connect looks like.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.links = {}
+
+        local first = arrive("192.168.1.9:41000", "aa11bb")
+        T.assertEquals(first.slot, 1)
+
+        local second = arrive("192.168.1.9:41001", "aa11bb")
+        T.assertEquals(second.slot, 1,
+            "the returning device was pushed to the end of the spread")
+        T.assertTrue(first:isClosed(), "the leader kept two links to one device")
+
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("leaves a second, different reader alone", function()
+        --[[
+        The rule is one link per device, not one link. Two readers can share
+        an address -- behind a router, or on one machine, which is how the
+        three-device tests run -- so what tells them apart is the identifier
+        each one sends, not where it connected from.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.links = {}
+
+        local one = arrive("127.0.0.1:41000", "aa11bb")
+        local two = arrive("127.0.0.1:41001", "cc22dd")
+        T.assertEquals(two.slot, 2)
+        T.assertTrue(not one:isClosed(), "it hung up on a device that was fine")
+
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("does not announce a disconnection it caused itself", function()
+        -- The device is connected right now, on the link that replaced the
+        -- one being closed. Saying "disconnected" here is the middle of the
+        -- three notifications somebody reported seeing.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.links = {}
+        arrive("192.168.1.9:41000", "aa11bb")
+        device:drainMessages()
+
+        arrive("192.168.1.9:41001", "aa11bb")
+        local said = table.concat(device:drainMessages(), "\n")
+        T.assertTrue(not said:find("replaced by a new connection"),
+            "it told the reader about its own housekeeping")
+
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("does not redial while it still has somewhere to talk", function()
+        --[[
+        The other half of the same story, on the follower. It can hold two
+        links for a moment -- it dialled again, the leader kept the new one
+        and dropped the old -- and the old one closing must not send it
+        dialling a third time. That is a pair taking turns hanging up on
+        each other for as long as anybody watches.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.links = {}
+        Core.reconnect_at = nil
+
+        local good = { isReady = function() return true end,
+                       isClosed = function() return false end }
+        Core.links = { good }
+        Core:onLinkClosed({}, "replaced by a new connection from the same device")
+        T.assertNil(Core.reconnect_at, "it redialled over a link that was working")
+
+        -- And when there really is nothing left, it does redial.
+        Core.links = {}
+        Core:onLinkClosed({}, "peer disconnected")
+        T.assertTrue(Core.reconnect_at ~= nil, "it gave up instead of redialling")
+
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("cannot be talked into dropping a link by an anonymous peer", function()
+        -- A peer that sends no identifier is not "the same device" as
+        -- another that sent none; it is simply unknown, and unknown is no
+        -- reason to hang up on somebody who is connected.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.links = {}
+
+        local one = arrive("192.168.1.9:41000", "")
+        local two = arrive("192.168.1.10:41000", "")
+        T.assertTrue(not one:isClosed(), "an unnamed peer evicted a connected one")
+        T.assertEquals(two.slot, 2)
+
+        Core.links = {}
+        reset()
+    end)
+end)
+
+T.describe("the verbose log", function()
+    --[[
+    Everything Duo said while `run` ran. The hook rather than the file: what
+    matters is what was handed to the log, and going through a real file
+    would make these tests about the writer instead.
+    ]]
+    local function capture(run)
+        local lines = {}
+        local real = Core.hooks.log
+        Core.hooks.log = function(...)
+            local parts = {}
+            for index = 1, select("#", ...) do
+                parts[#parts+1] = tostring((select(index, ...)))
+            end
+            lines[#lines+1] = table.concat(parts, " ")
+        end
+        local ok, err = pcall(run)
+        Core.hooks.log = real
+        if not ok then error(err, 0) end
+        return table.concat(lines, "\n")
+    end
+
+    local function verbose(on)
+        Core.settings.debug_log = on and true or false
+        Core.settings.verbose_log = on and true or false
+    end
+
+    T.it("stays quiet until it is asked for", function()
+        -- Two switches, because the commentary is far too much to leave on
+        -- and the ordinary log is not. Either one off means silence.
+        reset()
+        Core.settings.debug_log = true
+        Core.settings.verbose_log = false
+        T.assertEquals(capture(function() Core:trace("running commentary") end), "")
+
+        Core.settings.verbose_log = true
+        T.assertMatch(capture(function() Core:trace("running commentary") end),
+            "running commentary")
+
+        Core.settings.debug_log = false
+        T.assertEquals(capture(function() Core:trace("running commentary") end), "",
+            "the commentary escaped a log that is switched off")
+        verbose(false)
+    end)
+
+    T.it("reports how often the event loop really ran", function()
+        --[[
+        The measurement that separates the two ways a pair feels slow. A long
+        round trip with 50ms gaps is a slow network; hundred-millisecond gaps
+        are a Duo that is not being run often enough to answer quickly
+        however fast the network is. From the outside the two are identical.
+        ]]
+        reset()
+        verbose(true)
+        local every = Core.POLL_SUMMARY_EVERY
+        Core.POLL_SUMMARY_EVERY = 0
+        Core.poll_stats, Core.polled_at = nil, nil
+
+        local said = capture(function() Core:poll() Core:poll() end)
+
+        Core.POLL_SUMMARY_EVERY = every
+        verbose(false)
+        T.assertMatch(said, "loop:")
+        T.assertMatch(said, "gap avg %d+ms max %d+ms")
+        T.assertMatch(said, "work avg")
+    end)
+
+    T.it("does not time the loop when nobody is reading about it", function()
+        reset()
+        verbose(false)
+        Core.poll_stats, Core.polled_at = nil, nil
+        Core:poll()
+        T.assertNil(Core.poll_stats, "it kept books nobody asked for")
+    end)
+
+    T.it("times a turn from the tap to the page coming back", function()
+        --[[
+        Not the same number the heartbeat measures. A ping is answered by the
+        link the instant it lands; a turn has to reach the leader, move a
+        real reader and come back as a page for this screen. Somebody saying
+        the follower is slow means this number.
+        ]]
+        reset()
+        verbose(true)
+        Core:noteTurnSent("turn")
+        local said = capture(function() Core:noteTurnAnswered() end)
+        T.assertMatch(said, "turn answered in %d+ms")
+
+        -- And it is one measurement, not one per page that arrives after it.
+        T.assertEquals(capture(function() Core:noteTurnAnswered() end), "")
+        verbose(false)
+    end)
+
+    T.it("says what a link had been doing when it closes, log or no log", function()
+        -- In the ordinary log, not the commentary: a pair that connects,
+        -- drops and connects again is the first thing worth knowing, and
+        -- nobody has verbose switched on when it happens the first time.
+        reset()
+        verbose(false)
+        Core.settings.debug_log = true
+        Core.role = Core.ROLE_FOLLOWER
+        local said = capture(function()
+            Core:onLinkClosed({ report = function() return "age=2.0s in=7/900B" end },
+                "peer stopped responding")
+        end)
+        Core.settings.debug_log = false
+        T.assertMatch(said, "peer stopped responding")
+        T.assertMatch(said, "age=2.0s")
+        reset()
+    end)
+end)
+
 T.describe("pairing dialogs", function()
     T.it("asks how the two should reach each other, before who is who", function()
         --[[

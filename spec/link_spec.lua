@@ -49,7 +49,21 @@ local function connectedPair(leader_token, follower_token)
     end
     assert(follower_stream and leader_stream, "sockets did not connect")
 
-    local events = { leader = {}, follower = {} }
+    -- Both links narrate into `events.<side>.trace`, which is what the
+    -- verbose log gets on a real device. Attached to every pair rather than
+    -- to the one test that reads it, so the commentary is exercised
+    -- wherever links are.
+    local events = { leader = { trace = {} }, follower = { trace = {} } }
+    local function narrator(side)
+        return function(...)
+            local parts = {}
+            for index = 1, select("#", ...) do
+                parts[#parts+1] = tostring((select(index, ...)))
+            end
+            local log = events[side].trace
+            log[#log+1] = table.concat(parts, " ")
+        end
+    end
     local leader = Link.new{
         stream = leader_stream,
         is_leader = true,
@@ -59,6 +73,13 @@ local function connectedPair(leader_token, follower_token)
         on_message = function(_, msg) events.leader[#events.leader+1] = msg end,
         on_close = function(_, reason) events.leader.closed = reason end,
         on_ready = function() events.leader.ready = true end,
+        trace = narrator("leader"),
+        -- Read at call time, so a test can decide where to put the peer
+        -- after the pair is built but before the handshake is pumped.
+        on_identify = function(_, id)
+            events.leader.identified = id
+            return events.leader.give_slot
+        end,
     }
     local follower = Link.new{
         stream = follower_stream,
@@ -68,6 +89,8 @@ local function connectedPair(leader_token, follower_token)
         on_message = function(_, msg) events.follower[#events.follower+1] = msg end,
         on_close = function(_, reason) events.follower.closed = reason end,
         on_ready = function() events.follower.ready = true end,
+        trace = narrator("follower"),
+        id = "f0110w",
     }
     return leader, follower, events, server
 end
@@ -238,6 +261,78 @@ T.describe("link traffic", function()
         T.assertEquals(Protocol.num(events.follower[1], "page"), 42)
         T.assertEquals(events.leader[1].type, "TURN")
         T.assertEquals(Protocol.num(events.leader[1], "dir"), -1)
+        leader:close(); follower:close(); server:close()
+    end)
+
+    T.it("names itself, so the leader can tell a return from a newcomer", function()
+        --[[
+        The leader hands out slots by counting the links it holds. A
+        follower that reconnects while the old link is still timing out
+        would be counted twice and welcomed into the spread beside itself,
+        so it says who it is and the leader decides where it goes -- before
+        the welcome, which is what carries the slot.
+        ]]
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        events.leader.give_slot = 3
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+
+        T.assertEquals(events.leader.identified, "f0110w")
+        T.assertEquals(leader.peer_id, "f0110w")
+        T.assertEquals(leader.slot, 3, "the leader ignored where it put the peer")
+        T.assertEquals(follower.slot, 3, "the welcome carried the old slot")
+        leader:close(); follower:close(); server:close()
+    end)
+
+    T.it("says what it had been doing when it dies", function()
+        --[[
+        "peer stopped responding" is the same sentence whether the other
+        device wandered off mid-book or never really arrived, and which of
+        those it was is the whole question. So a link that ends says how
+        long it lived and how much had crossed it.
+        ]]
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        leader:send(Protocol.STATE, { page = 42, pages = 300 })
+        pumpUntil({ leader, follower }, function() return #events.follower > 0 end)
+
+        local report = follower:report()
+        T.assertMatch(report, "age=%d")
+        T.assertMatch(report, "in=%d+/%d+B")
+        T.assertMatch(report, "out=%d+/%d+B")
+        T.assertMatch(report, "last_in=STATE")
+        T.assertTrue(follower.bytes_in > 0, "nothing was counted coming in")
+        T.assertTrue(leader.bytes_out > 0, "nothing was counted going out")
+
+        follower:close("test over")
+        local said = table.concat(events.follower.trace, "\n")
+        T.assertMatch(said, "closing test over")
+        T.assertMatch(said, "age=")
+        leader:close(); server:close()
+    end)
+
+    T.it("keeps the heartbeat out of the commentary it writes", function()
+        -- Two messages every couple of seconds each way, saying nothing the
+        -- summary does not say better. Counted, not narrated -- otherwise
+        -- they bury whatever the log was switched on to see.
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+        leader:send(Protocol.STATE, { page = 42, pages = 300 })
+        local started = socket.gettime()
+        pumpUntil({ leader, follower }, function()
+            return socket.gettime() - started > 2.5
+        end, 4)
+
+        local said = table.concat(events.follower.trace, "\n")
+        T.assertMatch(said, "in STATE")
+        T.assertTrue(not said:find("PING"), "the heartbeat is in the commentary")
+        T.assertTrue(not said:find("PONG"), "the heartbeat is in the commentary")
+        T.assertTrue(follower.msgs_in > 1, "but it should still be counted")
         leader:close(); follower:close(); server:close()
     end)
 

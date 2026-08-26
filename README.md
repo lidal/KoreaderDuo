@@ -37,12 +37,9 @@ the pair should reach each other, and which device this one is.
 The leader shows a pairing code. The follower searches and lists what it
 finds, so there is normally no address to type. Over a direct link there is
 nothing to pick: the leader is at a fixed address and the follower goes
-straight there.
-
-The follower is asked for the code once, and keeps it. Every connection
-after that — including a direct link rebuilt after a sleep — is two taps and
-nothing typed. It asks again only if the leader refuses the code, which is
-the one failure that retrying cannot fix; answering reconnects on the spot.
+straight there. The code is asked for once and kept, so connecting after
+that is two taps and nothing typed; it is asked for again only if the leader
+refuses it, and answering reconnects at once.
 
 Open a book on the leader and the follower follows. Closing it takes both
 back to the book list, and a book tapped on the *follower* opens on both —
@@ -75,11 +72,8 @@ Directly, with no router**, then pick which device this is.
 The leading device makes the network — an access point where its driver
 allows one, an ad-hoc cell otherwise — takes `169.254.13.1` and starts Duo.
 On the other device, the same two taps choosing **This device follows**: it
-takes `169.254.13.2` and connects on its own. The first time, it asks for
-the leader's pairing code, because the network's key is derived from it —
-a device that guessed would not fail politely, it would simply never find
-the network. After that the code is remembered and the two taps are all
-there is.
+takes `169.254.13.2` and connects on its own. It asks for the leader's
+pairing code the first time, since the network's key comes from it.
 
 Anything that is not a second reader — a laptop, a phone, desktop KOReader —
 joins the network first, the ordinary way. It is called **`KOReaderDuo`**,
@@ -247,7 +241,7 @@ is the live connection: role, peer, and the pages on show.
 | **Follow the leader's book** | Open here when the leader opens there. |
 | **Send the book if the other device lacks it** | Hand the file over the link. On. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role. |
-| **Write a log file** | See *Reporting something that went wrong*. Off. |
+| **Write a log file**, **Log everything** | See *Reporting something that went wrong*. Both off. |
 | **Pairing code** | Shared secret. Empty means any device may connect. |
 | **Device name**, **Port** | 9970 by default; UDP 9971 for the search. |
 
@@ -337,6 +331,12 @@ off again afterwards. It holds book and folder names, device names and
 addresses; not your pairing code and nothing you have read. It is capped and
 rolled over once, so it cannot fill a card.
 
+**Log everything** adds the running commentary underneath: every message
+across the link, how long each turn of the event loop took, and how long a
+page turn took to come back. Gaps near 50ms with a long round trip mean the
+network; gaps of hundreds of milliseconds mean Duo is not being run often
+enough to answer quickly whatever the network does.
+
 The menu says where the file is and offers to show the last few lines.
 
 ## Tests
@@ -346,7 +346,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-434 tests, with the interesting parts unmocked: two and three device
+448 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
