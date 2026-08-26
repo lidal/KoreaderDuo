@@ -424,7 +424,7 @@ tools/
 ## Written with AI
 
 All of the software here — the plugin, the tools, the tests, this file —
-was written with Claude. The 3D files for the case are not.
+was written with Claude. The 3D files for the shell are not.
 
 ## License
 
