@@ -97,8 +97,14 @@ Long enough for the radio to finish coming back — checking the instant the
 screen lights up reports whatever the driver happens to be doing mid-resume
 — and short enough that nobody is left staring at two devices that have
 stopped talking.
+
+A second, not two. The case this delay was protecting against is a link that
+survived the sleep being mistaken for a broken one, and that case now takes
+care of itself: the follower's own dial goes out the moment it wakes, and a
+link already coming up makes this check stand down. What is left is the case
+where the link really has gone, and there the wait buys nothing at all.
 --]]--
-local LINK_CHECK_DELAY = 2
+local LINK_CHECK_DELAY = 1
 
 --[[--
 Healing a link Duo built, without waiting to be told to, in seconds.

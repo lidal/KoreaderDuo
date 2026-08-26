@@ -393,6 +393,36 @@ if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "Not connected."; exit 0; fi
         T.assertTrue(not output:find("\nerror:"), "a link that came up must not report an error")
     end)
 
+    T.it("waits for the driver rather than for the clock", function()
+        --[[
+        Every command used to be followed by a flat one-second pause, three
+        or four of them on the path a Kindle takes, and that was most of the
+        six seconds a pair spent finding each other again after waking. The
+        pauses are now waits for the thing that was actually asked for, so a
+        driver that is ready already costs nothing.
+
+        Driven with the settle turned back on, since that is the whole point
+        -- the rest of this file runs with it at zero.
+        ]]
+        local iw = [[
+if [ "$1" = "dev" ] && [ "$3" = "info" ]; then
+    printf '\ttype IBSS\n\tssid KOReaderDuo\n'; exit 0
+fi
+if [ "$1" = "dev" ] && [ "$3" = "link" ]; then echo "SSID: KOReaderDuo"; exit 0; fi
+]] .. IW_LIST_IBSS_ONLY
+        local environment = fakeEnvironment{ iw = iw, ip = "exit 0" }
+        environment = environment:gsub("DUO_SETTLE=0", "DUO_SETTLE=1")
+
+        local began = require("socket").gettime()
+        local output = runScript(environment, "join")
+        local took = require("socket").gettime() - began
+
+        T.assertMatch(output, "verified: wlan0 is IBSS")
+        T.assertTrue(not output:find("\nerror:"), output)
+        T.assertTrue(took < 2,
+            ("a link that was ready took %.1fs to be believed"):format(took))
+    end)
+
     T.it("warns that an ad-hoc cell will not show up in most Wi-Fi lists", function()
         -- The complaint this exists for: the reader says it is hosting, the
         -- laptop scans, and the network is nowhere. An ad-hoc cell is not

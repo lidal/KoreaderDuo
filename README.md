@@ -135,6 +135,20 @@ end up looking for each other over the cell they were leaving. This applies
 to a link built by hand over SSH too — that menu item means what it says,
 and the direct-link path is one screen away.
 
+### Going out, and coming home
+
+**Duo → Link → Switch to a direct link** and **Switch to Wi-Fi** do the whole
+move in one tap each, keeping the sides the two already have — no walking
+back through the pairing screens. Do it on both devices. Switching to Wi-Fi
+hands the radio back, waits for your usual network, and starts Duo again
+over it.
+
+Waking somewhere with no Wi-Fi at all, Duo offers the direct link itself
+rather than sitting there retrying a leader that is not on any network. It
+asks rather than acts: building the link takes the Wi-Fi away from the rest
+of the reader, and somebody about to walk back into range would not thank
+you for it.
+
 ## The shared folder
 
 Duo syncs **one folder**, `/books` by default, rather than whatever you
@@ -247,6 +261,7 @@ is the live connection: role, peer, and the pages on show.
 | **Match typography** | Both devices lay the book out alike. On. |
 | **Match the frontlight** | Same brightness and warmth. On. |
 | **Keep the Wi-Fi awake** | Stop the radio dozing while connected. On. |
+| **Link → Switch to a direct link / Switch to Wi-Fi** | Move the pair between the two, keeping their sides. |
 | **Share the book list too** | Spread the file browser as well. On. |
 | **Lock one, lock both** | Sleeping either sleeps the other. On. |
 | **Keep the whole library in step** | Fetch whatever the shared folder is missing. On. |
@@ -360,7 +375,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-457 tests, with the interesting parts unmocked: two and three device
+464 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

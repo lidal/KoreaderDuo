@@ -152,6 +152,14 @@ local function makeUIManager(clock)
                 if button.text then text = text .. "\n" .. button.text end
             end
         end
+        -- A confirm box names its two answers rather than carrying a button
+        -- table, and the answers are most of what it is: "Direct link" and
+        -- "Not now" is a different offer from "Yes" and "No".
+        for _, key in ipairs({ "ok_text", "cancel_text", "other_buttons_first" }) do
+            if type(widget[key]) == "string" then
+                text = text .. "\n" .. widget[key]
+            end
+        end
         table.insert(self.shown_log, {
             class = widget.class_name or "Widget",
             text = text,

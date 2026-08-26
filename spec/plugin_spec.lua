@@ -1264,6 +1264,135 @@ T.describe("leaving a direct link to pair over a network", function()
     end)
 end)
 
+T.describe("switching how the two reach each other", function()
+    local DirectLink = require("duo/directlink")
+    local NetUtil = require("duo/netutil")
+
+    T.it("keeps the sides the pair already has", function()
+        -- Switching how the two are connected is not a change of roles, and
+        -- being walked through both screens to say so again is what makes a
+        -- shortcut not worth taking.
+        reset()
+        Core.settings.autostart_role = Core.ROLE_LEADER
+        local role
+        device.plugin.runDirectLink = function(_, which) role = which end
+        device.plugin:switchToDirectLink()
+        T.assertEquals(role, "host")
+
+        Core.settings.autostart_role = Core.ROLE_FOLLOWER
+        device.plugin:switchToDirectLink()
+        T.assertEquals(role, "join")
+
+        device.plugin.runDirectLink = nil
+        reset()
+    end)
+
+    T.it("asks which device this is when it has never paired", function()
+        -- Nothing to keep, so there is a question to ask after all.
+        reset()
+        Core.settings.autostart_role = "off"
+        Core.settings.token_source = ""
+        local asked = false
+        device.plugin.showDirectRoleDialog = function() asked = true end
+        device.plugin:switchToDirectLink()
+        T.assertTrue(asked)
+        device.plugin.showDirectRoleDialog = nil
+        reset()
+    end)
+
+    T.it("does the whole job when switching back to Wi-Fi", function()
+        --[[
+        Handing the radio back and stopping there would leave two readers on
+        a network with nothing running, which is not what anybody means by
+        switching to Wi-Fi. It hands it back, waits for the usual network,
+        and starts again over it.
+        ]]
+        reset()
+        Core.settings.autostart_role = Core.ROLE_LEADER
+        local handed_back, started = false, false
+        device.plugin.leaveDirectLink = function(_, on_done)
+            handed_back = true
+            on_done()
+        end
+        device.plugin.startLeader = function() started = true end
+        device.plugin:switchToWifi()
+        device.plugin.leaveDirectLink, device.plugin.startLeader = nil, nil
+
+        T.assertTrue(handed_back, "it left the radio on the link it was leaving")
+        T.assertTrue(started, "it handed the Wi-Fi back and then did nothing with it")
+        reset()
+    end)
+
+    T.it("offers the two a link of their own when it wakes with no network", function()
+        --[[
+        The moment this is for: the pair leaves the house, a reader wakes on
+        a train, and Duo sits retrying a leader that will never answer.
+        Everything needed is already on both devices; the only thing missing
+        is somebody to say so.
+        ]]
+        reset()
+        Core.settings.autostart_role = Core.ROLE_FOLLOWER
+        Core.settings.direct_link = "off"
+        local was = device.plugin.STRANDED_AFTER
+        device.plugin.STRANDED_AFTER = 0
+
+        local real_ip = NetUtil.getLocalIP
+        NetUtil.getLocalIP = function() return "" end
+        device.plugin:offerDirectLinkWhenStranded()
+        device.UIManager:pump()
+        NetUtil.getLocalIP = real_ip
+
+        local said = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(said, "no Wi%-Fi here")
+        T.assertMatch(said, "Direct link")
+        T.assertMatch(said, "Not now", "it has to be refusable")
+
+        device.plugin.STRANDED_AFTER = was
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("says nothing when the network came back while it was looking", function()
+        -- Six seconds is long enough for all of it to have changed, so the
+        -- question is asked again on the way out rather than only on the way
+        -- in. A device back on its own Wi-Fi must not be offered a link.
+        reset()
+        Core.settings.autostart_role = Core.ROLE_FOLLOWER
+        Core.settings.direct_link = "off"
+        local was = device.plugin.STRANDED_AFTER
+        device.plugin.STRANDED_AFTER = 0
+
+        local real_ip = NetUtil.getLocalIP
+        NetUtil.getLocalIP = function() return "192.168.1.55" end
+        device.plugin:offerDirectLinkWhenStranded()
+        device.UIManager:pump()
+        NetUtil.getLocalIP = real_ip
+
+        T.assertEquals(table.concat(device:drainMessages(), "\n"), "")
+        device.plugin.STRANDED_AFTER = was
+        reset()
+    end)
+
+    T.it("leaves a pair that was stopped on purpose alone", function()
+        -- No standing role means somebody switched Duo off. Offering to
+        -- rearrange their Wi-Fi at that point is not helpfulness.
+        reset()
+        Core.settings.autostart_role = "off"
+        local was = device.plugin.STRANDED_AFTER
+        device.plugin.STRANDED_AFTER = 0
+
+        local real_ip = NetUtil.getLocalIP
+        NetUtil.getLocalIP = function() return "" end
+        device.plugin:offerDirectLinkWhenStranded()
+        device.UIManager:pump()
+        NetUtil.getLocalIP = real_ip
+
+        T.assertEquals(table.concat(device:drainMessages(), "\n"), "")
+        device.plugin.STRANDED_AFTER = was
+        reset()
+    end)
+end)
+
 T.describe("knowing whether this is a direct link at all", function()
     local DirectLink = require("duo/directlink")
 

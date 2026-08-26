@@ -862,9 +862,67 @@ function Duo:onSuspend()
     Core:suspend()
 end
 
+--[[--
+How long after waking to look at the network before offering the two a link
+of their own, in seconds.
+
+Long enough for a reader to rejoin a network it knows, since a device that
+is simply slow to reassociate must not be told it has no Wi-Fi. Short enough
+that somebody who has just sat down on a train is asked while they are still
+wondering why nothing is happening.
+--]]--
+Duo.STRANDED_AFTER = 6
+
 function Duo:onResume()
     Duo.suspending = false
     Core:resume()
+    self:offerDirectLinkWhenStranded()
+end
+
+--- Whether this device has an ordinary network under it right now.
+function Duo:hasNetwork()
+    local ip = NetUtil.getLocalIP()
+    return ip ~= nil and ip ~= "" and not ip:match("^169%.254%.")
+end
+
+--[[--
+Offers the pair a link of their own when waking somewhere with no Wi-Fi.
+
+The moment this is for: the two go out of the house, the reader wakes on a
+train, its network is not there, and Duo sits retrying a leader that will
+never answer. Everything needed is already on both devices -- they know each
+other's code, and the link needs no router -- so the only thing missing is
+somebody to say so.
+
+Asked, not done. Building a direct link takes the Wi-Fi away from the rest
+of the reader, and doing that unbidden to somebody who was about to walk
+back into range is worse than asking.
+
+Once per wake, and never on a device with nothing to switch: a pair that was
+stopped on purpose has no standing role, and one already on a link of its
+own is being looked after by the healer.
+--]]--
+function Duo:offerDirectLinkWhenStranded()
+    if Duo.stranded_check then return end
+    if not self:standingRole() then return end
+    if self:onADirectLink() then return end
+
+    Duo.stranded_check = true
+    UIManager:scheduleIn(self.STRANDED_AFTER, function()
+        Duo.stranded_check = false
+        -- Asked again on the way out, because six seconds is long enough for
+        -- all of this to have changed: the network came back, the pair found
+        -- each other, somebody set the link up by hand.
+        if Core:isConnected() or self:hasNetwork() then return end
+        if self:onADirectLink() or not self:standingRole() then return end
+        Core:log("awake with no network; offering a direct link")
+        UIManager:show(ConfirmBox:new{
+            text = _("There is no Wi-Fi here.\n\nConnect the two devices directly instead? Do the same on the other one."),
+            ok_text = _("Direct link"),
+            ok_callback = function() self:switchToDirectLink() end,
+            cancel_text = _("Not now"),
+        })
+    end)
 end
 
 function Duo:onNetworkConnected()
@@ -1267,6 +1325,57 @@ function Duo:onADirectLink()
     local stored = Core:get("direct_link")
     if stored ~= "host" and stored ~= "join" then return false end
     return ip == nil or ip == "" or ip:match("^169%.254%.") ~= nil
+end
+
+--[[--
+Which side of the spread this device is, for a switch that should not ask.
+
+Switching how the two reach each other is not a change of roles, and being
+walked through both screens to say so again is the sort of thing that makes
+a feature not worth using. The live role first, then the one it would start
+in by itself; nil only on a device that has never paired, which has nothing
+to switch and should be sent through the ordinary screens.
+--]]--
+function Duo:standingRole()
+    if Core:isLeader() then return Core.ROLE_LEADER end
+    if Core:isFollower() then return Core.ROLE_FOLLOWER end
+    local stored = Core:get("autostart_role")
+    if stored == Core.ROLE_LEADER or stored == Core.ROLE_FOLLOWER then
+        return stored
+    end
+    return nil
+end
+
+--- Moves the pair onto a link of their own, in the role they already have.
+function Duo:switchToDirectLink()
+    local role = self:standingRole()
+    if not role then
+        self:showDirectRoleDialog()
+        return
+    end
+    self:runDirectLink(role == Core.ROLE_LEADER and "host" or "join")
+end
+
+--[[--
+Moves the pair onto an ordinary Wi-Fi network, in the role they already have.
+
+The whole job, not half of it: the radio goes back to the system, the device
+waits for its usual network, and then Duo starts again over it. Handing the
+Wi-Fi back and stopping there would leave two readers on a network with
+nothing running, which is not what anybody means by switching to Wi-Fi.
+--]]--
+function Duo:switchToWifi()
+    local role = self:standingRole()
+    self:leaveDirectLink(function()
+        self:notOnADirectLink()
+        if role == Core.ROLE_LEADER then
+            self:startLeader()
+        elseif role == Core.ROLE_FOLLOWER then
+            self:searchForLeader()
+        else
+            self:showRoleDialog("network")
+        end
+    end)
 end
 
 --[[--
@@ -2225,8 +2334,22 @@ function Duo:getMenuTable()
                     end,
                 },
                 {
+                    text = _("Switch to a direct link"),
+                    help_text = _("Move the pair onto a Wi-Fi link of their own, keeping the sides they already have. For reading away from any network — on a train, in a garden — where there is nothing to connect to.\n\nDo it on both devices: the leader first, then the follower."),
+                    enabled_func = function() return not Duo:onADirectLink() end,
+                    keep_menu_open = true,
+                    callback = function() self:switchToDirectLink() end,
+                },
+                {
+                    text = _("Switch to Wi-Fi"),
+                    help_text = _("Hand the radio back to the system, wait for your usual network, and pair over that instead — keeping the sides the two already have.\n\nDo it on both devices."),
+                    enabled_func = function() return Duo:onADirectLink() end,
+                    keep_menu_open = true,
+                    callback = function() self:switchToWifi() end,
+                },
+                {
                     text = _("Set up a direct link (no router)…"),
-                    help_text = _("A Wi-Fi link between the two devices alone, for reading where there is no network."),
+                    help_text = _("The same thing from the top, choosing which device is which. Worth it the first time, or after changing sides."),
                     keep_menu_open = true,
                     callback = function() self:showDirectRoleDialog() end,
                 },

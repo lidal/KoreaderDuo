@@ -281,7 +281,7 @@ stop_system_wifi() {
     done
     run_sh "killall wpa_supplicant >/dev/null 2>&1 || true"
     run_sh "killall dhclient udhcpc >/dev/null 2>&1 || true"
-    sleep_a_moment
+    wait_for 2 wifi_daemons_stopped
     [ "$DRY_RUN" = "1" ] && return 0
     if has pidof && pidof wifid >/dev/null 2>&1; then
         warn "the system's Wi-Fi daemon is still running and will take the interface back"
@@ -292,6 +292,63 @@ sleep_a_moment() {
     [ "$DRY_RUN" = "1" ] && return 0
     [ "$SETTLE" = "0" ] && return 0
     sleep "$SETTLE"
+}
+
+#[[
+# How long one step of a wait is. Tenths where the sleep can do them, whole
+# seconds where it cannot.
+#
+# Worth asking rather than assuming: POSIX sleep takes an integer, GNU
+# coreutils takes fractions, and busybox takes them only if it was built
+# with them. A script that assumed wrong would either sleep for a second
+# every tenth of one, or error out on every step.
+#]]
+SLEEP_STEP=""
+step_size() {
+    [ -n "$SLEEP_STEP" ] && { echo "$SLEEP_STEP"; return; }
+    if sleep 0.1 2>/dev/null; then SLEEP_STEP="0.1"; else SLEEP_STEP="1"; fi
+    echo "$SLEEP_STEP"
+}
+
+#[[
+# Waits up to N seconds for something to become true, and stops the moment
+# it does.
+#
+# Replaces a flat pause after every command. A driver usually needs a
+# fraction of a second to do what it was told; the pause spent a whole one
+# whatever happened, three or four times over on the path a Kindle takes,
+# and that was most of the six seconds a pair took to find each other again
+# after waking. Checking first also means a driver that was ready already
+# costs nothing at all.
+#
+# Still bounded, and still followed by the same verification as before: this
+# makes the waiting shorter, not the checking weaker.
+#]]
+wait_for() {
+    limit="$1"
+    shift
+    [ "$DRY_RUN" = "1" ] && return 0
+    [ "$SETTLE" = "0" ] && return 0
+    step=$(step_size)
+    case "$step" in
+        0.1) steps=$(( limit * 10 )) ;;
+        *)   steps="$limit" ;;
+    esac
+    waited=0
+    while : ; do
+        if "$@" >/dev/null 2>&1; then return 0; fi
+        waited=$((waited + 1))
+        [ "$waited" -ge "$steps" ] && return 1
+        sleep "$step"
+    done
+}
+
+# True once the system's Wi-Fi daemons have really gone.
+wifi_daemons_stopped() {
+    has pidof || return 0
+    pidof wpa_supplicant >/dev/null 2>&1 && return 1
+    pidof wifid >/dev/null 2>&1 && return 1
+    return 0
 }
 
 # DUO_ADDR_TOOL forces ip or ifconfig. Worth having: some busybox builds
@@ -360,7 +417,9 @@ start_wpa_supplicant() {
         driver_arg="-Dwext"
     fi
     run_sh "wpa_supplicant -B $driver_arg -i $iface -c $conf >$RUN_DIR/wpa.log 2>&1"
-    sleep_a_moment
+    # It forks before it has done anything; the mode checks below are what
+    # decide whether it worked, so this only waits for it to exist.
+    wait_for 2 pidof wpa_supplicant
 }
 
 bring_up_ibss_wext() {
@@ -370,7 +429,7 @@ bring_up_ibss_wext() {
     run iwconfig "$iface" essid "$SSID"
     run iwconfig "$iface" channel "$CHANNEL"
     run_sh "ifconfig $iface up 2>/dev/null || true"
-    sleep_a_moment
+    wait_for 2 cell_joined "$iface"
 }
 
 #[[
@@ -401,12 +460,21 @@ cell_joined() {
     return 1
 }
 
+# True once the interface reports the mode asked of it, whatever it has or
+# has not joined in that mode.
+in_mode() {
+    case "$(mode_key "$1")" in
+        "$2") return 0 ;;
+    esac
+    return 1
+}
+
 bring_up_ibss_iw() {
     iface="$1"
     run_sh "ip link set $iface down 2>/dev/null || true"
     run iw dev "$iface" set type ibss
     run_sh "ip link set $iface up 2>/dev/null || true"
-    sleep_a_moment
+    wait_for 2 in_mode "$iface" ibss
     #[[
     # Naming the cell keeps two readers rebuilding at the same moment out
     # of two cells with the same name. Not every `iw` accepts a fixed
@@ -416,11 +484,10 @@ bring_up_ibss_iw() {
     #]]
     run_sh "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID 2>/dev/null || true"
     [ "$DRY_RUN" = "1" ] && return 0
-    sleep_a_moment
-    if ! cell_joined "$iface"; then
+    if ! wait_for 3 cell_joined "$iface"; then
         log "no cell with a fixed address; joining the ordinary way"
         run_sh "iw dev $iface ibss join $SSID $FREQUENCY 2>/dev/null || true"
-        sleep_a_moment
+        wait_for 3 cell_joined "$iface"
     fi
 }
 
