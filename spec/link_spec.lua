@@ -322,6 +322,29 @@ T.describe("link traffic", function()
         follower:close(); server:close()
     end)
 
+    T.it("can say one thing here and another to the peer", function()
+        --[[
+        Going to sleep is the case: each device is the "other" one from
+        where the other is standing. Sending both ends the same sentence
+        meant the device that had just locked its own screen recorded the
+        peer as having dozed off -- fifty-nine times in one log, against
+        thirteen occasions when that was what happened.
+        ]]
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+
+        leader:close("this device went to sleep", true,
+                     "the other device went to sleep")
+        T.assertEquals(events.leader.closed, "this device went to sleep")
+        T.assertTrue(pumpUntil({ follower }, function()
+            return events.follower.closed ~= nil
+        end), "the goodbye never arrived")
+        T.assertEquals(events.follower.closed, "the other device went to sleep")
+        follower:close(); server:close()
+    end)
+
     T.it("says what it had been doing when it dies", function()
         --[[
         "peer stopped responding" is the same sentence whether the other

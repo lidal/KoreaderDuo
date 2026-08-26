@@ -1003,9 +1003,18 @@ function Core:start(role, options)
 end
 
 --- Stops everything and lets the peer know when possible.
-function Core:stop(reason)
+--[[--
+Stops Duo and closes everything it was holding.
+
+@tparam[opt] string reason   what to record on this device
+@tparam[opt] string goodbye  what to tell the other device, when that is a
+                             different sentence -- going to sleep is the one
+                             that is, since each device is the "other" one
+                             from where the other is standing
+--]]--
+function Core:stop(reason, goodbye)
     for _, link in ipairs(self.links) do
-        link:close(reason or "stopped", true)
+        link:close(reason or "stopped", true, goodbye)
     end
     self.links = {}
     self:applyRadioSetting()
@@ -4474,7 +4483,14 @@ function Core:suspend()
     if self:get("sleep_together") and not self.sleeping_for_peer then
         self:announceSleep()
     end
-    self:stop("the other device went to sleep")
+    --[[
+    Two sentences, because there are two audiences. The peer is told that the
+    other device went to sleep, which from where it stands is true. This
+    device is not: it is the one going to sleep, and logging it as though the
+    other one had made fifty-nine closes in one log read as the peer dozing
+    off over and over when it was doing nothing of the kind.
+    ]]
+    self:stop("this device went to sleep", "the other device went to sleep")
     self.paused_role = role
     --[[
     Here, not in resume: this is where a resume cycle begins, and it begins

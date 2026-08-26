@@ -345,8 +345,15 @@ function Link:send(msg_type, fields)
     return self:sendMessage(msg_type, fields)
 end
 
---- Closes the link, telling the peer why when we still can.
-function Link:close(reason, polite)
+--[[--
+Closes the link, telling the peer why when we still can.
+
+@tparam[opt] string reason   what to record and report on this device
+@tparam[opt] boolean polite  send a goodbye first
+@tparam[opt] string goodbye  what to tell the peer, when that is a different
+                             sentence from what to tell this device
+--]]--
+function Link:close(reason, polite, goodbye)
     if self.state == "closed" then return end
     if polite and self.state == "ready" then
         -- Best effort: if this cannot go out, the peer's timeout catches it.
@@ -354,7 +361,7 @@ function Link:close(reason, polite)
         -- end cannot check is a goodbye it is right to ignore, and it would
         -- be a free way to hang up on somebody else's pair.
         pcall(function()
-            self:sendMessage(Protocol.BYE, { reason = reason or "bye" })
+            self:sendMessage(Protocol.BYE, { reason = goodbye or reason or "bye" })
         end)
     end
     if self.trace then self.trace("closing", reason or "closed", self:report()) end
