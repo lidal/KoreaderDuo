@@ -691,6 +691,60 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("leaves a connection that is still being made alone", function()
+        --[[
+        From a direct-link log, and it is the whole reason that session
+        cycled. The follower dialled and got through in 0.03s; the handshake
+        had not finished, so nothing thought it was connected; the healer
+        fired, ran the setup script -- four and a half seconds of blocked
+        event loop -- and reconfigured the radio underneath the handshake it
+        was busy not polling. Then, told the link had been "rebuilt", it
+        dialled a second time. The leader kept the newer connection and
+        dropped the older, the follower saw that as a disconnection, and
+        round it went: eleven connections in fourteen seconds.
+
+        Half-made is not disconnected. Nothing here touches the radio, or
+        dials, while anything is in flight.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "rebuilt" end
+        Core.role = Core.ROLE_FOLLOWER
+        Core.has_connected = true
+        Core.disconnected_since = 0
+        Core.link_healed_at, Core.heal_backoff = nil, nil
+
+        -- A link in the middle of its handshake: not ready, not closed.
+        local handshaking = { isReady = function() return false end,
+                              isClosed = function() return false end }
+        Core.links = { handshaking }
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 0, "it rebuilt the network under a live handshake")
+
+        Core.reconnect_at = nil
+        Core:dialNow()
+        T.assertNil(Core.reconnect_at, "it dialled over a connection already being made")
+
+        -- A connector still in flight counts too, link or no link.
+        Core.links = {}
+        Core.connector = { poll = function() end, cancel = function() end }
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 0, "it rebuilt the network under a dial in flight")
+        Core.connector = nil
+
+        -- And with nothing in flight at all, it does its job.
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 1, "a pair that really is apart still gets healed")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.disconnected_since, Core.link_healed_at = nil, nil
+        Core.has_connected, Core.heal_backoff = nil, nil
+        reset()
+    end)
+
     T.it("checks the link again simply because the pair has been apart", function()
         --[[
         The check that does not wait to be told. A wake-up notification
@@ -1065,6 +1119,14 @@ T.describe("one device, one link", function()
         Core.links = { good }
         Core:onLinkClosed({}, "replaced by a new connection from the same device")
         T.assertNil(Core.reconnect_at, "it redialled over a link that was working")
+
+        -- And over one that is merely half-made, which is the case that
+        -- actually happened: the replacement had not finished its handshake
+        -- when the link it replaced was closed.
+        Core.links = { { isReady = function() return false end,
+                         isClosed = function() return false end } }
+        Core:onLinkClosed({}, "replaced by a new connection from the same device")
+        T.assertNil(Core.reconnect_at, "it redialled over a handshake in progress")
 
         -- And when there really is nothing left, it does redial.
         Core.links = {}

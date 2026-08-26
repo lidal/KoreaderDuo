@@ -780,6 +780,25 @@ function Core:isConnected()
     return #self:getReadyLinks() > 0
 end
 
+--[[--
+Whether anything is going on that a second attempt would only get in the way
+of: a link in any state, or a connection still being made.
+
+Not the same question as `isConnected`, and the difference cost a pair the
+whole feature. A link in the middle of its handshake is not connected yet,
+so everything that asks "are we connected?" answered no and acted -- the
+healer pulled the radio out from under it, the redial dialled a second time,
+and the leader dropped the first connection for the second. Eleven
+connections in fourteen seconds, in one log.
+--]]--
+function Core:hasLiveLink()
+    if self.connector then return true end
+    for _, link in ipairs(self.links) do
+        if not link:isClosed() then return true end
+    end
+    return false
+end
+
 function Core:followerCount()
     if self:isLeader() then return #self:getReadyLinks() end
     return self:isConnected() and 1 or 0
@@ -1023,6 +1042,13 @@ function Core:dropTransfers()
 end
 
 function Core:beginConnect()
+    -- Belt and braces: every route in should have checked, and a second
+    -- connection to a device already connected is the one thing this must
+    -- never do.
+    if self:hasLiveLink() then
+        self.reconnect_at = nil
+        return
+    end
     self.connector = nil
     self.reconnect_at = nil
     local host, port = self:get("peer_host"), self:get("peer_port")
@@ -1523,7 +1549,7 @@ function Core:onLinkClosed(link, reason)
     two devices taking turns disconnecting each other for as long as anyone
     watched.
     ]]
-    if self:isActive() and self:isFollower() and not self:isConnected() then
+    if self:isActive() and self:isFollower() and not self:hasLiveLink() then
         self:scheduleReconnect()
     end
     self:changed()
@@ -4471,6 +4497,12 @@ anything failed.
 function Core:checkLink()
     if not self.link_check_at then return end
     if Util.now() < self.link_check_at then return end
+    -- A link already coming up needs no help, and rebuilding the network
+    -- under it would be the opposite of help.
+    if self:hasLiveLink() then
+        self.link_check_at = nil
+        return
+    end
     self.link_check_at = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
@@ -4496,6 +4528,18 @@ keeps checking that the stream still has somewhere to be.
 --]]--
 function Core:checkLinkHealth()
     if not self:isActive() then return end
+    --[[
+    Nothing is healed while a connection is being made. Rebuilding the link
+    means reconfiguring the radio, and doing that to a handshake in progress
+    kills it -- and worse, the rebuild runs a shell script the event loop
+    waits for, so the handshake it is destroying cannot even be polled while
+    it happens. One log has a handshake that took five seconds because of
+    this, and eleven connections in the fourteen seconds that followed.
+
+    Bounded, so nothing can wedge here: a connector gives up after eight
+    seconds and a handshake after ten.
+    ]]
+    if self:hasLiveLink() then return end
     if self:isConnected() then
         self.disconnected_since = nil
         self.has_connected = true
@@ -4545,9 +4589,14 @@ about a link that no longer exists. Waiting it out after fixing the very
 thing it was backing off from is how several seconds got added to every
 recovery.
 --]]--
+--- Dials at once rather than waiting out the backoff, when something has
+--- changed that makes the next attempt worth making early.
 function Core:dialNow()
     self.reconnect_delay = RECONNECT_MIN
-    if self:isFollower() and not self.connector then
+    -- And not at all if there is already a link, in any state. Dialling over
+    -- one that is merely half-made is how a pair ends up with two
+    -- connections and the leader dropping the older of them.
+    if self:isFollower() and not self:hasLiveLink() then
         self.reconnect_at = 0
     end
 end
