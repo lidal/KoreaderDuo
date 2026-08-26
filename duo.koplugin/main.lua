@@ -1168,11 +1168,48 @@ addresses, which are fixed and used by nothing else. That is for a link set
 up by hand over SSH, which leaves nothing else behind saying so.
 --]]--
 function Duo:directLinkRole()
+    local DirectLink = require("duo/directlink")
     local stored = Core:get("direct_link")
-    if stored == "host" or stored == "join" then return stored end
     if stored == "off" then return nil end
 
-    local DirectLink = require("duo/directlink")
+    --[[
+    A stored role says what this device did last time, not what it is doing
+    now, and taken on trust it does real damage. A pair that once used a
+    direct link and has since gone back to the house Wi-Fi kept the role --
+    nothing clears it but the menu, and neither autostart nor waking from
+    sleep goes through the menu -- so the healer went on tearing down a
+    working network and rebuilding a link nobody was on. In one log that ran
+    every twenty seconds for a day and a half: 1,720 times, all night.
+
+    So the addresses get a say, and only when they actually contradict the
+    stored role. A follower dialling 192.168.1.227 is not on a link whose
+    host is always 169.254.13.1; a leader whose followers arrive from a
+    routed address is not hosting one either. Silence is not evidence: a
+    device with no address at all has merely lost its network, which is
+    exactly when a real direct link needs rebuilding.
+    ]]
+    local contradiction
+    if stored == "join" then
+        local peer = Core:get("peer_host")
+        if peer ~= "" and peer ~= DirectLink.HOST_ADDRESS then
+            contradiction = ("the leader is at %s, not %s"):format(
+                peer, DirectLink.HOST_ADDRESS)
+        end
+    elseif stored == "host" then
+        local last = Core:get("last_peer_host")
+        if last ~= "" and last ~= DirectLink.JOIN_ADDRESS then
+            contradiction = ("the follower came from %s, not %s"):format(
+                last, DirectLink.JOIN_ADDRESS)
+        end
+    end
+    if contradiction then
+        Core:log("this pairing is not on a direct link -", contradiction,
+            "- forgetting the one this device used to build")
+        Core:set("direct_link", "off")
+        return nil
+    end
+    if stored == "host" or stored == "join" then return stored end
+
     local role
     if Core:get("peer_host") == DirectLink.HOST_ADDRESS then
         role = "join"

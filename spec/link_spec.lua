@@ -285,6 +285,43 @@ T.describe("link traffic", function()
         leader:close(); follower:close(); server:close()
     end)
 
+    T.it("shrugs off a second hello answering a repeated challenge", function()
+        --[[
+        Taken from two Kindles on a house network. The leader repeats its
+        challenge when the first goes unanswered for a second, which with a
+        half-second round trip it regularly does. The follower answers both,
+        as it must -- a lost challenge is what the repeat is for -- and the
+        second answer arrives at a leader that is already talking.
+
+        Signing starts at the welcome, so that hello carries no tag, and
+        treating it as a forgery hung up on the pair every single time the
+        first challenge was slow. Which over Wi-Fi was every time: connect,
+        disconnect, connect, on every pairing.
+        ]]
+        local leader, follower, events, server = connectedPair("T0KEN2", "T0KEN2")
+        pumpUntil({ leader, follower }, function()
+            return leader:isReady() and follower:isReady()
+        end)
+
+        -- The hello the follower had already sent, arriving late.
+        leader:dispatch{ type = "HELLO", nonce = "beef", name = "Kindle-F",
+                         proof = "whatever", proto = 3 }
+        T.assertTrue(leader:isReady(), "a late hello hung up on a working link")
+        T.assertNil(events.leader.closed)
+
+        -- And the same courtesy the other way, for a repeated challenge or
+        -- a welcome that arrives twice.
+        follower:dispatch{ type = "CHALLENGE", nonce = "cafe", proto = 3 }
+        follower:dispatch{ type = "WELCOME", proof = "whatever", slot = 9 }
+        T.assertTrue(follower:isReady(), "a late welcome hung up on a working link")
+        T.assertEquals(follower.slot, 1, "and it must not be moved by one either")
+
+        -- Anything that is not part of the handshake is still refused.
+        leader:dispatch{ type = "TURN", dir = "1" }
+        T.assertTrue(leader:isClosed(), "an unsigned message got through")
+        follower:close(); server:close()
+    end)
+
     T.it("says what it had been doing when it dies", function()
         --[[
         "peer stopped responding" is the same sentence whether the other

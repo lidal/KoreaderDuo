@@ -114,6 +114,23 @@ local LINK_HEAL_AFTER = 2
 local LINK_HEAL_EVERY = 20
 
 --[[--
+How far apart the attempts drift once they keep failing, and the ceiling.
+
+Twenty seconds is right for the case this is for: the pair went out of range
+or one of them woke first, and a rebuild in the next few seconds puts them
+back together. It is wrong for the case that actually happens most -- the
+other reader is switched off for the night -- where it means running a shell
+script that reconfigures the radio every twenty seconds until morning. One
+log had 1,720 of them.
+
+So the interval doubles for as long as it keeps not working, and is put back
+the moment the pair reconnects. The first few attempts are as prompt as they
+ever were, which is when they are worth anything.
+--]]--
+local LINK_HEAL_BACKOFF = 2
+local LINK_HEAL_CEILING = 600
+
+--[[--
 And how long between them before the two have ever managed to connect, in
 seconds.
 
@@ -225,6 +242,9 @@ local DEFAULTS = {
     token_source = "",
     peer_host = "",
     peer_port = 9970,
+    --- Where the last device to connect to this one came from, which is how
+    --- a leader knows whether its pair is on a link it built itself.
+    last_peer_host = "",
     mode = Spread.SPREAD,
     reverse = false,
     follower_can_turn = true,
@@ -1184,8 +1204,16 @@ function Core:pollOnce()
                 knowing about a flap. It is one line per connection, and a
                 connection is a rare event.
                 ]]
-                self:log("accepted a connection from",
-                    stream.getPeerName and stream:getPeerName() or "?")
+                local from = stream.getPeerName and stream:getPeerName() or "?"
+                self:log("accepted a connection from", from)
+                --[[
+                Remembered, because it is the only evidence a leader has
+                about what kind of network its pair is on. A follower knows
+                from the address it dials; a leader is told only when
+                somebody arrives.
+                ]]
+                self.settings.last_peer_host = (from:match("^(.*):%d+$")) or from
+                self:save()
                 self:adoptStream(stream, true)
             end
         end
@@ -4471,6 +4499,9 @@ function Core:checkLinkHealth()
     if self:isConnected() then
         self.disconnected_since = nil
         self.has_connected = true
+        -- Back to prompt: the next time they are parted, the first few
+        -- attempts should be as quick as they ever were.
+        self.heal_backoff = nil
         return
     end
     local now = Util.now()
@@ -4479,9 +4510,14 @@ function Core:checkLinkHealth()
     -- worked is probably still being set up by somebody.
     local patience = self.has_connected and LINK_HEAL_AFTER or LINK_HEAL_FIRST
     if now - self.disconnected_since < patience then return end
-    local between = self.has_connected and LINK_HEAL_EVERY or LINK_HEAL_EVERY_WAITING
+    local base = self.has_connected and LINK_HEAL_EVERY or LINK_HEAL_EVERY_WAITING
+    local between = math.min(base * (self.heal_backoff or 1), LINK_HEAL_CEILING)
     if self.link_healed_at and now - self.link_healed_at < between then return end
     self.link_healed_at = now
+    -- Clamped so the multiplier stops where the interval does, rather than
+    -- doubling all night behind a ceiling that has already taken effect.
+    self.heal_backoff = math.min((self.heal_backoff or 1) * LINK_HEAL_BACKOFF,
+        LINK_HEAL_CEILING / base)
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     --[[
     Forced, not checked. Running the setup script by hand fixes this every

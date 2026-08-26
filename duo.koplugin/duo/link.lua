@@ -204,6 +204,28 @@ local QUIET_IN_TRACE = {
 }
 
 --[[--
+The messages that belong to the handshake, and to nothing after it.
+
+One arriving on a link that is already up is a duplicate of something
+already answered, and the commonest one is ordinary: the leader repeats its
+challenge when the first goes unanswered for a second, which on a network
+with a half-second round trip it regularly does. The follower answers both
+-- it has to, since a lost challenge is exactly what the repeat is for --
+and the second answer lands on a leader that is already talking.
+
+It has to be ignored rather than refused. Signing starts at the welcome, so
+that second hello carries no tag, and treating an untagged message as a
+forgery hung up on a perfectly good pairing every single time the first
+challenge was slow. Which, over Wi-Fi, was every time.
+--]]--
+local AFTER_THE_HANDSHAKE_IS_STALE = {
+    [Protocol.CHALLENGE] = true,
+    [Protocol.HELLO] = true,
+    [Protocol.WELCOME] = true,
+    [Protocol.DENY] = true,
+}
+
+--[[--
 Creates a link around an already connected stream.
 
 @tparam table options
@@ -553,6 +575,10 @@ end
 function Link:dispatch(msg)
     if self.state == "handshake" then
         self:handleHandshake(msg)
+        return
+    end
+    if AFTER_THE_HANDSHAKE_IS_STALE[msg.type] then
+        if self.trace then self.trace("ignoring a late", msg.type) end
         return
     end
     if not self:verify(msg) then

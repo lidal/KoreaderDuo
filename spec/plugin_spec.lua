@@ -641,6 +641,56 @@ T.describe("coming back after a sleep", function()
         Core.disconnected_since, Core.link_healed_at = nil, nil
     end)
 
+    T.it("stops hammering a link the other device is not on", function()
+        --[[
+        Twenty seconds is right for the case the healer is for: the two went
+        out of range, or one woke first, and a rebuild in the next few
+        seconds puts them back together. It is wrong for the case that
+        actually happens most -- the other reader is off for the night --
+        where it means reconfiguring the radio every twenty seconds until
+        morning. One log had 1,720 of them, and the shell script that does
+        it blocks the event loop while it runs.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "rebuilt" end
+        Core.role = Core.ROLE_FOLLOWER
+        Core.has_connected = true
+        Core.heal_backoff = nil
+        Core.disconnected_since = 0
+        Core.link_healed_at = nil
+
+        -- The first one is as prompt as it ever was.
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 1)
+
+        -- The second waits twice as long, and the third twice as long again.
+        Core.link_healed_at = Util.now() - 25
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 1, "it went again at the old twenty seconds")
+        Core.link_healed_at = Util.now() - 45
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 2)
+        Core.link_healed_at = Util.now() - 45
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 2, "the interval stopped growing")
+
+        -- And when they find each other again, it is prompt once more.
+        local real_connected = Core.isConnected
+        Core.isConnected = function() return true end
+        Core:checkLinkHealth()
+        Core.isConnected = real_connected
+        T.assertNil(Core.heal_backoff, "it stayed slow after the pair came back")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.disconnected_since, Core.link_healed_at = nil, nil
+        Core.has_connected, Core.heal_backoff = nil, nil
+        reset()
+    end)
+
     T.it("checks the link again simply because the pair has been apart", function()
         --[[
         The check that does not wait to be told. A wake-up notification
@@ -1039,6 +1089,62 @@ T.describe("one device, one link", function()
         T.assertEquals(two.slot, 2)
 
         Core.links = {}
+        reset()
+    end)
+end)
+
+T.describe("knowing whether this is a direct link at all", function()
+    local DirectLink = require("duo/directlink")
+
+    T.it("forgets a stored role the addresses contradict", function()
+        --[[
+        Taken from a log: a pair that had once used a direct link and had
+        since gone back to the house Wi-Fi. Nothing clears the stored role
+        but the menu, and neither autostart nor waking from sleep goes
+        through the menu -- so the healer went on tearing down a working
+        network to rebuild a link nobody was on, every twenty seconds, for
+        a day and a half.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        Core.settings.peer_host = "192.168.1.227"
+        T.assertNil(device.plugin:directLinkRole(),
+            "it would have rebuilt a direct link on a routed network")
+        T.assertEquals(Core:get("direct_link"), "off",
+            "and it should stop asking the same question every twenty seconds")
+
+        -- The leader sees it from the other side: where its follower came
+        -- from, which is the only evidence it has.
+        reset()
+        Core.settings.direct_link = "host"
+        Core.settings.last_peer_host = "192.168.1.67"
+        T.assertNil(device.plugin:directLinkRole())
+        T.assertEquals(Core:get("direct_link"), "off")
+        reset()
+    end)
+
+    T.it("keeps a real one, including when the network has gone", function()
+        --[[
+        Silence is not evidence. A device with no address has merely lost
+        its network, which is exactly the moment a direct link needs
+        rebuilding -- and a Kindle that wakes and rejoins the house Wi-Fi on
+        its own must not talk Duo out of putting the link back.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        Core.settings.peer_host = DirectLink.HOST_ADDRESS
+        T.assertEquals(device.plugin:directLinkRole(), "join")
+
+        reset()
+        Core.settings.direct_link = "host"
+        Core.settings.last_peer_host = DirectLink.JOIN_ADDRESS
+        T.assertEquals(device.plugin:directLinkRole(), "host")
+
+        -- Nothing known either way: the stored role stands.
+        reset()
+        Core.settings.direct_link = "host"
+        Core.settings.last_peer_host = ""
+        T.assertEquals(device.plugin:directLinkRole(), "host")
         reset()
     end)
 end)
