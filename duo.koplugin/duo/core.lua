@@ -1182,6 +1182,13 @@ function Core:stop(reason, goodbye)
     end
     self.stopping = nil
     self.announce_drop_at = nil
+    --[[
+    A rebuild belongs to an episode of Duo running, and this is the end of
+    one -- including the end that a sleep makes, since stop is what a
+    suspend calls. A rebuild from before the sleep must not be allowed to
+    answer for the check after it. See checkLink.
+    ]]
+    self.link_rebuilt_at = nil
     -- After the role is cleared, not before: what the radio is wanted for is
     -- Duo running, so asking while the role still says it is running gets
     -- the answer it was already giving and hands nothing back.
@@ -1388,6 +1395,85 @@ around it rather than being averaged away.
 Core.POLL_SUMMARY_EVERY = 10
 
 --[[--
+A gap between two polls long enough to mean the loop was stopped, in
+seconds.
+
+Not a slow pass. The loop turns about twenty times a second, and the
+longest honest gap in a log of a day's reading is six seconds -- the
+direct-link script, which the loop waits for. Anything past this is the
+process not running at all.
+
+Forgiving that time is right whatever stopped the loop, which is why the
+threshold is low: a handshake in flight when the radio was reconfigured
+should no more be charged for those five seconds than one that slept
+through a night.
+--]]--
+Core.FROZEN_LOOP = 5
+
+--[[--
+A gap long enough to have been a sleep, in seconds.
+
+Because a reader does not always say. Duo is told about a suspend most of
+the time, and acts on it -- says goodbye, stops, arranges to look at the
+link on the way back. But on a Kindle the system can suspend underneath
+KOReader without KOReader's own suspend path running at all, and then the
+first Duo knows of it is that its next poll is a minute after its last.
+
+In one log every wake was like that: gaps of 23s, 55s, 232s, 877s and 57
+minutes, on both devices within a second of each other, and not one of them
+announced. Everything that should follow a sleep -- checking the link
+survived it, asking for the radio again, forgetting a backoff earned before
+it -- was therefore never done, on the sleeps that needed it most.
+
+Well clear of the six-second worst case above, so that a slow pass is never
+mistaken for a night.
+--]]--
+Core.SLEPT_THROUGH = 12
+
+--[[--
+Notices the loop having stopped, and puts the clocks right.
+
+Runs before anything else in a poll and whatever Duo is doing, including
+nothing: a device that slept while switched off still wants its deadlines
+straight when somebody starts it.
+--]]--
+function Core:noticeFrozenLoop(now)
+    local last = self.last_poll_at
+    self.last_poll_at = now
+    if not last then return end
+    local gap = now - last
+    if gap < Core.FROZEN_LOOP then return end
+    self:log(("the loop stopped for %.0fs"):format(gap),
+        gap >= Core.SLEPT_THROUGH and "- taking that as a sleep nobody announced"
+            or "- forgiving the time it was not running")
+    --[[
+    Every clock that was running while nothing was, moved forward by exactly
+    as much. None of this time was anybody's fault and none of it is
+    charged: not to a peer that looks silent, not to a handshake that looks
+    slow, not to a dial that looks lost, and not to the backoff that decides
+    how soon to try again.
+    ]]
+    for _, link in ipairs(self.links) do
+        if link.forgive then link:forgive(gap) end
+    end
+    for _, field in ipairs({
+        "dialled_at", "reconnect_at", "disconnected_since", "link_healed_at",
+        "announce_drop_at", "link_check_at", "radio_checked_at",
+        "sleep_announced_at", "network_woken_at",
+    }) do
+        if self[field] then self[field] = self[field] + gap end
+    end
+    if gap < Core.SLEPT_THROUGH then return end
+    --[[
+    And only then is it a sleep. Not if the reader already said so: a
+    suspend Duo was told about has been dealt with properly, and the gap it
+    leaves behind is the same gap.
+    ]]
+    if self.resumed_at and self.resumed_at >= last then return end
+    self:resume()
+end
+
+--[[--
 Times one turn of the event loop.
 
 The measurement that separates the two ways a pair can feel slow, which
@@ -1449,6 +1535,8 @@ function Core:poll()
 end
 
 function Core:pollOnce()
+    -- First, because everything below it reads a clock this may have moved.
+    self:noticeFrozenLoop(Util.now())
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
     self:checkLink()   -- and this is how the network under it is
@@ -4749,6 +4837,13 @@ with.
 function Core:resume()
     self.sleeping_for_peer = false
     self.sleep_announced_at = nil
+    --[[
+    Noted, so that a sleep worked out from a stopped loop is not acted on
+    twice when the reader gets round to mentioning it as well. See
+    noticeFrozenLoop.
+    ]]
+    self.resumed_at = Util.now()
+
     -- Checked whatever happens next, and that is the point: see checkLink.
     -- Not conditional on the setting: whether this is a link Duo has to
     -- look after is the plugin's question, and it can answer it without a
@@ -4861,6 +4956,27 @@ function Core:checkLink()
     for it to join. Once, on the first pass: the point is to go second, not
     to keep going second.
     ]]
+    --[[
+    And nothing to check if the link has already been rebuilt since the
+    wake. The two ran back to back in one log, four seconds each:
+
+        22:33:07 apart for a while; rebuilding the link rather than asking
+        22:33:11 rebuilt the link the two had been apart on
+        22:33:11 checking the direct link survived the sleep
+        22:33:15 the direct link is back
+
+    Eight seconds to say the link was up, and the second rebuild tore down
+    the cell the first had just made -- while the other device was dialling
+    into it. This check exists to ask whether the sleep broke the link. A
+    rebuild since the wake has answered that.
+    ]]
+    if self.link_rebuilt_at and self.resumed_at
+        and self.link_rebuilt_at >= self.resumed_at then
+        self.link_check_at = nil
+        self.joiner_waited = nil
+        self:trace("the link was rebuilt since waking; nothing left to check")
+        return
+    end
     if self:get("direct_link") == "join" and not self.joiner_waited then
         self.joiner_waited = true
         self.link_check_at = Util.now() + JOINER_LEAD
@@ -4967,6 +5083,9 @@ function Core:checkLinkHealth()
     local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true, true)
     if ok and outcome == "rebuilt" then
         self:log("rebuilt the link the two had been apart on")
+        -- Noted, because it settles the question the check after a sleep
+        -- exists to ask. See checkLink.
+        self.link_rebuilt_at = Util.now()
         self:dialNow()
     end
 end

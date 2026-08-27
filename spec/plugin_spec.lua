@@ -687,7 +687,173 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
-    T.it("lets the host make the cell before the joiner looks for it", function()
+    T.it("works out that it slept when nothing told it so", function()
+        --[[
+        Because a reader does not always say. On a Kindle the system can
+        suspend underneath KOReader without KOReader's own suspend path
+        running, and then the first Duo knows of it is that its next poll is
+        a minute after its last. In one log every single wake was like that
+        -- gaps of 23s, 55s, 232s, 877s and 57 minutes, on both devices
+        within a second of each other, and not one of them announced.
+        Everything that should follow a sleep was therefore skipped on
+        exactly the sleeps that needed it most.
+
+        The gap is the evidence, and Duo is the one holding it.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local woke = 0
+        local real_resume = Core.resume
+        Core.resume = function(_self) woke = woke + 1 end
+
+        local now = 1000
+        Core.last_poll_at = nil
+        Core.resumed_at = nil
+        Core:noticeFrozenLoop(now)
+        T.assertEquals(woke, 0, "the first poll of all was taken for a wake")
+
+        Core:noticeFrozenLoop(now + 0.05)
+        T.assertEquals(woke, 0, "an ordinary pass was taken for a night")
+
+        Core:noticeFrozenLoop(now + 0.05 + Core.SLEPT_THROUGH + 1)
+        T.assertEquals(woke, 1, "a minute of not running went unnoticed")
+
+        Core.resume = real_resume
+        Core.last_poll_at = nil
+        Core.resumed_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("does not take a slow pass for a sleep, but still forgives it", function()
+        --[[
+        Two different judgements. Forgiving the time is right whatever
+        stopped the loop -- the direct-link script blocks it for four or
+        five seconds, and a handshake in flight should no more be charged
+        for those than for a night. Calling it a sleep is the bigger claim
+        and wants the bigger gap.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local woke = 0
+        local real_resume = Core.resume
+        Core.resume = function(_self) woke = woke + 1 end
+
+        local forgiven = 0
+        Core.links = { {
+            isClosed = function() return false end,
+            forgive = function(_self, seconds) forgiven = forgiven + seconds end,
+        } }
+
+        local now = 2000
+        Core.last_poll_at = now
+        Core.resumed_at = nil
+        local gap = (Core.FROZEN_LOOP + Core.SLEPT_THROUGH) / 2
+        Core:noticeFrozenLoop(now + gap)
+
+        T.assertEquals(woke, 0, "five seconds of a shell script is not a night")
+        T.assertEquals(forgiven, gap,
+            "the link was charged for time the loop spent not running")
+
+        Core.resume = real_resume
+        Core.links = {}
+        Core.last_poll_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("puts the other clocks forward by exactly what it lost", function()
+        -- A dial, a backoff and a deferred notice are all measured against
+        -- a clock that went on running while nothing else did.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local real_resume = Core.resume
+        Core.resume = function() end
+
+        local now = 3000
+        Core.last_poll_at = now
+        Core.resumed_at = nil
+        Core.dialled_at = now - 1
+        Core.disconnected_since = now - 2
+        Core.link_healed_at = now - 3
+        local gap = Core.SLEPT_THROUGH + 8
+
+        Core:noticeFrozenLoop(now + gap)
+        T.assertEquals(Core.dialled_at, now - 1 + gap)
+        T.assertEquals(Core.disconnected_since, now - 2 + gap)
+        T.assertEquals(Core.link_healed_at, now - 3 + gap)
+
+        Core.resume = real_resume
+        Core.dialled_at, Core.disconnected_since, Core.link_healed_at = nil, nil, nil
+        Core.last_poll_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("does not call it a sleep twice when the reader mentions it too", function()
+        -- A suspend Duo was told about has already been dealt with, and it
+        -- leaves behind the very same gap.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local woke = 0
+        local real_resume = Core.resume
+        Core.resume = function(_self) woke = woke + 1 end
+
+        local now = 4000
+        Core.last_poll_at = now
+        Core.resumed_at = now + Core.SLEPT_THROUGH + 5   -- the reader got there first
+        Core:noticeFrozenLoop(now + Core.SLEPT_THROUGH + 5)
+        T.assertEquals(woke, 0, "the same sleep was acted on twice")
+
+        Core.resume = real_resume
+        Core.resumed_at = nil
+        Core.last_poll_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("does not rebuild the link twice over, four seconds each", function()
+        --[[
+        The repair and the check after a sleep both rebuild, and in one log
+        they ran back to back:
+
+            22:33:07 apart for a while; rebuilding the link rather than asking
+            22:33:11 rebuilt the link the two had been apart on
+            22:33:11 checking the direct link survived the sleep
+            22:33:15 the direct link is back
+
+        Eight seconds before it would say the link was up, and the second
+        rebuild tore down the cell the first had just made -- while the
+        other device was dialling into it.
+        ]]
+        reset()
+        Core.settings.direct_link = "host"
+        Core.role = Core.ROLE_FOLLOWER
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "rebuilt" end
+
+        -- The repair got there first, as it did in the log.
+        Core.resumed_at = 100
+        Core.link_rebuilt_at = 101
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(rebuilt, 0, "it rebuilt a link that had just been rebuilt")
+        T.assertNil(Core.link_check_at, "and left the check hanging about after")
+
+        -- A rebuild from before the sleep answers for nothing.
+        Core.link_rebuilt_at = 99
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(rebuilt, 1, "a rebuild from before the sleep was counted")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.resumed_at, Core.link_rebuilt_at = nil, nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("makes the joiner wait for the cell the host is making", function()
         --[[
         The two roles are not symmetrical: the host makes the cell and the
         joiner joins it, so a joiner that starts first has nothing to join

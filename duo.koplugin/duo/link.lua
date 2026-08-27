@@ -65,6 +65,41 @@ function Link:allowSilence(seconds)
 end
 
 --[[--
+Puts this link's clocks forward, because the device was not running.
+
+Every deadline here is wall-clock: how long since the handshake started,
+how long since the peer last said anything, when the next ping is due. That
+is right while the event loop is turning and wrong the moment it stops,
+because a reader that suspends takes its whole process with it -- and comes
+back to find that by its own reckoning the peer has been silent for a
+minute and the handshake overran by forty-five seconds.
+
+From a log, and it cost the pair more than a minute. The event loop froze
+for 55.5 seconds with a connection half-made. The other device woke a second
+earlier, accepted it and sent its challenge ten times. This device woke, saw
+a handshake 55.6 seconds old with nothing received, declared it timed out,
+threw away the one connection that was working and rebuilt the radio
+underneath the challenges still arriving on it.
+
+None of that time was the peer's fault, so none of it is counted against
+them. The link gets its full allowance from the moment the device is really
+awake, which in that log would have been a connection at once rather than
+nineteen seconds and four rebuilds later.
+
+@number seconds  how long the loop was stopped
+--]]--
+function Link:forgive(seconds)
+    if not seconds or seconds <= 0 then return end
+    self.created_at = self.created_at + seconds
+    self.last_rx = self.last_rx + seconds
+    -- Zero means nothing has been sent yet, and is not a time to move.
+    if self.last_tx and self.last_tx > 0 then
+        self.last_tx = self.last_tx + seconds
+    end
+    if self.grace_until then self.grace_until = self.grace_until + seconds end
+end
+
+--[[--
 Stops forgiving it, because the peer has spoken.
 
 Granted for a book being opened and given up the moment that is over,

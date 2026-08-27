@@ -398,6 +398,13 @@ enough to answer quickly whatever the network does.
 
 The menu says where the file is and offers to show the last few lines.
 
+A gap between two polls of more than a few seconds means the loop was not
+running at all, and Duo says so: `the loop stopped for 55s`. On a Kindle the
+system can suspend underneath KOReader without KOReader's own suspend path
+running, so this is often the only record that the device slept. Duo treats
+it as a sleep whether or not it was told about one, and does not charge the
+lost time to the other device.
+
 ## Tests
 
 ```sh
@@ -405,7 +412,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-485 tests, with the interesting parts unmocked: two and three device
+494 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

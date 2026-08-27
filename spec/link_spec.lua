@@ -659,4 +659,74 @@ T.describe("forgiving a device that is opening a book", function()
     end)
 end)
 
+T.describe("forgiving a device that was not running", function()
+    --[[
+    A suspended reader takes its whole process with it, and every deadline
+    here is wall-clock. From a log, and it cost the pair more than a minute:
+
+        22:32:02 [follower] dialled through in 0.08s
+        ... the loop stops for 55.5 seconds ...
+        22:32:57 [leader]   accepted a connection from 169.254.13.2:43313
+        22:32:57 [leader]   link L out CHALLENGE 60      (and nine more)
+        22:32:58 [follower] link F closing handshake timed out age=55.6s in=0/0B
+
+    The connection was fine. The other device woke a second earlier,
+    accepted it and called ten times. This one woke, measured a handshake
+    against a clock that had run while it was not, threw the connection
+    away and rebuilt the radio underneath the challenges arriving on it.
+
+    None of that time was the peer's, so none of it is charged to them.
+    ]]
+    local Link = require("duo/link")
+    local Util = require("duo/util")
+
+    local function sleptThrough(seconds)
+        local now = Util.now()
+        return setmetatable({
+            state = "handshake",
+            -- Made a moment before the freeze, and nothing has crossed it.
+            created_at = now - seconds - 0.5,
+            last_rx = now - seconds - 0.5,
+            last_tx = 0,
+            is_leader = false,
+            closed_with = nil,
+            close = function(self, reason) self.closed_with = reason end,
+        }, { __index = Link })
+    end
+
+    T.it("would otherwise time out a handshake that never had its chance", function()
+        local link = sleptThrough(55)
+        link:checkTimers()
+        T.assertEquals(link.closed_with, "handshake timed out",
+            "the fixture is not actually past the deadline")
+    end)
+
+    T.it("gives the handshake its full allowance from when the device woke", function()
+        local link = sleptThrough(55)
+        link:forgive(55)
+        link:checkTimers()
+        T.assertNil(link.closed_with,
+            "a connection was thrown away for time the device spent asleep")
+    end)
+
+    T.it("does not forgive a peer that went quiet while the loop was turning", function()
+        -- The whole point is which of the two was not running. A peer that
+        -- stopped answering a device that was awake throughout is still a
+        -- peer that has gone.
+        local link = sleptThrough(55)
+        link:forgive(0)
+        link:checkTimers()
+        T.assertEquals(link.closed_with, "handshake timed out")
+    end)
+
+    T.it("leaves nothing-sent-yet alone rather than moving it", function()
+        -- Zero is not a time. A leader repeats its challenge once a second
+        -- from last_tx, and a last_tx pushed into the future is a challenge
+        -- that never goes out again.
+        local link = sleptThrough(55)
+        link:forgive(55)
+        T.assertEquals(link.last_tx, 0)
+    end)
+end)
+
 os.exit(T.run())
