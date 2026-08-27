@@ -1519,8 +1519,33 @@ function Core:noticeFrozenLoop(now)
     slow, not to a dial that looks lost, and not to the backoff that decides
     how soon to try again.
     ]]
-    for _, link in ipairs(self.links) do
-        if link.forgive then link:forgive(gap, last) end
+    --[[
+    A freeze is forgiven a link. A sleep is not.
+
+    The difference is the radio. When the loop stops because Duo is waiting
+    on its own setup script, the peer is fine and was talking all along, so
+    counting that silence against it drops a link that never went anywhere.
+    When the loop stops because the device suspended, the radio went with
+    it: the peer heard nothing, said nothing, and the connection is over.
+    Forgiving that only delays finding out.
+
+    Which it did, and it was reported the day it shipped: Wi-Fi reconnects
+    went from instant to about eight seconds. A ready link whose silence
+    has been forgiven looks perfectly healthy, so Duo waited out
+    PEER_TIMEOUT all over again -- six seconds of holding a dead
+    connection, then a second to redial, then the connection it could have
+    made at once.
+
+    A handshake caught by a sleep is closed too, on the same reasoning, and
+    redials within a second or two. That is the cheaper of the two ways to
+    survive it: the leader repeats its challenge every second, so a fresh
+    dial is answered as fast as a forgiven one, and it does not depend on
+    the connection having lived through the suspend.
+    ]]
+    if gap < Core.SLEPT_THROUGH then
+        for _, link in ipairs(self.links) do
+            if link.forgive then link:forgive(gap, last) end
+        end
     end
     --[[
     And only what was already there, which is what `last` is for. The poll
@@ -4941,6 +4966,18 @@ function Core:resume()
     local now = Util.now()
     if self.resumed_at and now - self.resumed_at < Core.RESUME_AGAIN_AFTER then
         self:trace("already came back a moment ago; not doing it twice")
+        --[[
+        Except for the one thing a second report of the same wake is still
+        good for. Coming back is not one event but two -- the reader wakes,
+        and some seconds later its network does -- so a start that failed
+        because there was no address yet deserves another go at every sign
+        of life, rather than sitting out its four-second retry because the
+        wake it would have acted on was a duplicate.
+        ]]
+        if self.paused_role then
+            self.resume_at = 0
+            self:checkResume()
+        end
         return
     end
     self.resumed_at = now

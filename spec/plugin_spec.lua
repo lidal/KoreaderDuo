@@ -776,6 +776,52 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("hands a sleeping device's link straight back rather than holding it", function()
+        --[[
+        The difference is the radio. A loop stopped by Duo's own setup
+        script leaves the peer talking all along, so counting that silence
+        against it drops a link that never went anywhere. A loop stopped by
+        a suspend took the radio with it, and the connection is over.
+
+        Reported the day the forgiveness shipped: Wi-Fi reconnects went
+        from instant to about eight seconds. A ready link whose silence has
+        been forgiven looks healthy, so Duo held a dead connection for the
+        whole of PEER_TIMEOUT before noticing, then redialled, then
+        connected -- six seconds and change of doing nothing.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        local forgiven = 0
+        Core.links = { {
+            isClosed = function() return false end,
+            forgive = function(_self, seconds) forgiven = forgiven + seconds end,
+        } }
+
+        local now = 6000
+        Core.last_poll_at = now
+        Core.resumed_at = nil
+        local real_resume = Core.resume
+        Core.resume = function() end
+
+        Core:noticeFrozenLoop(now + Core.SLEPT_THROUGH + 40)
+        T.assertEquals(forgiven, 0,
+            "a link that slept through the radio going off was kept alive")
+
+        -- And the freeze it was written for is still forgiven.
+        Core.last_poll_at = now
+        Core.resumed_at = nil
+        local shorter = (Core.FROZEN_LOOP + Core.SLEPT_THROUGH) / 2
+        Core:noticeFrozenLoop(now + shorter)
+        T.assertEquals(forgiven, shorter,
+            "a peer was dropped for the seconds Duo spent in its own script")
+
+        Core.resume = real_resume
+        Core.links = {}
+        Core.last_poll_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("puts the other clocks forward by exactly what it lost", function()
         -- A dial, a backoff and a deferred notice are all measured against
         -- a clock that went on running while nothing else did.
