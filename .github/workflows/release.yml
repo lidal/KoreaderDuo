@@ -1,0 +1,83 @@
+# Cuts a release from a tag.
+#
+#     git tag v1.0.0 && git push origin v1.0.0
+#
+# The tag is the trigger and `_meta.lua` is the authority: if the two
+# disagree the build stops rather than publishing an archive whose version
+# is a lie. That matters more here than it looks, because the plugin stores
+# that install Duo on a device compare the version in `_meta.lua` with the
+# one on the release, and a mismatch means either a device that never sees
+# an update or one that installs the same version forever.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # LuaJIT because that is what KOReader runs. The suite also passes on
+      # plain lua5.1, and both are here so that `make check` has its
+      # fallback syntax checker.
+      - name: Install Lua
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends luajit lua5.1 zip
+
+      - name: Check the tag says what _meta.lua says
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          meta="$(sed -n 's/^[[:space:]]*version = "\([^"]*\)".*/\1/p' duo.koplugin/_meta.lua)"
+          if [ -z "$meta" ]; then
+            echo "no version in duo.koplugin/_meta.lua"
+            exit 1
+          fi
+          if [ "$tag" != "$meta" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, _meta.lua says $meta"
+            echo "Set them to the same thing and tag again."
+            exit 1
+          fi
+          echo "version=$meta" >> "$GITHUB_ENV"
+
+      # Before building, not after. A release that does not pass its own
+      # tests is worse than no release: on a device the updater that would
+      # install the fix is the code that just broke.
+      #
+      # The two-namespace direct-link suite needs root and skips itself
+      # here, which is the whole of what a runner cannot do.
+      - name: Run the suite
+        run: make test
+
+      - name: Build the archive
+        run: make dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          archive="dist/duo.koplugin-${version}.zip"
+          sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+          notes="$(mktemp)"
+          {
+            echo "Unzip into your KOReader \`plugins\` folder on **both** devices and restart:"
+            echo
+            echo '```sh'
+            echo "unzip duo.koplugin-${version}.zip -d /mnt/us/koreader/plugins/"
+            echo '```'
+            echo
+            echo "The archive holds a single \`duo.koplugin/\` folder, which is the folder KOReader wants."
+            echo
+            echo "\`sha256\` \`${sha}\`"
+          } > "$notes"
+          gh release create "$GITHUB_REF_NAME" "$archive" \
+            --title "Duo $version" \
+            --notes-file "$notes"

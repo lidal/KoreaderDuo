@@ -2420,6 +2420,36 @@ T.describe("the log the reader can send on", function()
         T.assertMatch(line, "role=")
     end)
 
+    T.it("says which Duo wrote it, which no report ever includes either", function()
+        --[[
+        Learnt from a bug report that came with two days of logs and the
+        sentence "these issues are not tested with the new version". Half of
+        what was in the file was about a fault that had already been fixed,
+        and nothing in the file said so.
+        ]]
+        local line = device.plugin:describeEnvironment()
+        T.assertMatch(line, "duo=%d+%.%d+%.%d+")
+    end)
+
+    T.it("takes its version from the one place it is written down", function()
+        --[[
+        _meta.lua, because that is the copy KOReader loads and the copy a
+        plugin store reads to work out whether what is installed is older
+        than what is published. A second copy anywhere else is one that
+        disagrees with itself by the second release.
+
+        Read rather than required: _meta.lua wants gettext, and a version
+        number is not worth dragging KOReader's translations in for.
+        ]]
+        local handle = assert(io.open("duo.koplugin/_meta.lua", "r"))
+        local meta = handle:read("*a")
+        handle:close()
+        local written = meta:match('version%s*=%s*"([^"]+)"')
+        T.assertTrue(written ~= nil,
+            "_meta.lua has no version, so nothing can tell an update from an install")
+        T.assertEquals(device.plugin:getVersion(), written)
+    end)
+
     T.it("stops writing when it is switched off again", function()
         reset()
         Core:set("debug_log", true)

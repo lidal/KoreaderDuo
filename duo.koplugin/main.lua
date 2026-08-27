@@ -251,6 +251,35 @@ function Duo:getLogWriter()
     return writer
 end
 
+--[[--
+Duo's own version, as written in `_meta.lua`.
+
+KOReader's plugin loader copies every field of `_meta.lua` onto the plugin,
+so on a reader this is already here and the file is never opened. The
+fallback is for everywhere else -- the test harness, a checkout being poked
+at by hand -- and it reads the file rather than requiring it, because
+`_meta.lua` wants `gettext` and a version number is not worth dragging
+KOReader's translation machinery in for.
+
+One place, deliberately. A version written down twice is a version that
+disagrees with itself by the second release.
+--]]--
+function Duo:getVersion()
+    if self.version then return tostring(self.version) end
+    if Duo.read_version then return Duo.read_version end
+    Duo.read_version = "?"
+    -- .../duo.koplugin/main.lua -> .../duo.koplugin/_meta.lua
+    local source = debug.getinfo(1, "S").source:gsub("^@", "")
+    local directory = source:match("^(.*)/[^/]*$")
+    if not directory then return Duo.read_version end
+    local handle = io.open(directory .. "/_meta.lua", "r")
+    if not handle then return Duo.read_version end
+    local text = handle:read("*a") or ""
+    handle:close()
+    Duo.read_version = text:match('version%s*=%s*"([^"]+)"') or "?"
+    return Duo.read_version
+end
+
 --- KOReader's version, asked for rather than required: this file has no
 --- other use for it, and a build that has moved it must not stop the log.
 function Duo:getReaderVersion()
@@ -264,6 +293,10 @@ end
 --- nobody remembers to include.
 function Duo:describeEnvironment()
     local parts = {
+        -- First, because it is the first thing anybody reading a log needs
+        -- to know and the one thing a bug report never says: which Duo
+        -- wrote this.
+        ("duo=%s"):format(self:getVersion()),
         ("device=%s"):format(tostring(Device and Device.model or "?")),
         ("koreader=%s"):format(Duo:getReaderVersion()),
         ("role=%s"):format(tostring(Core.role)),

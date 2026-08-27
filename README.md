@@ -24,6 +24,26 @@ make install KOREADER=/mnt/us/koreader
 It appears under **☰ → Network → Duo (two-device spread)**, in the reader
 and the file manager.
 
+Or unzip a [release](https://github.com/lidal/KoreaderDuo/releases) into
+`plugins/`, which is the same folder by another route and needs no checkout.
+
+### Updating
+
+Duo does not update itself. What it does is carry a version — in `_meta.lua`,
+where KOReader and the community plugin stores both look — so something else
+can. [AppStore](https://github.com/omer-faruq/appstore.koplugin),
+[Storefront](https://github.com/ultimatejimmy/storefront.koplugin) and
+[Updates Manager](https://github.com/advokatb/updatesmanager.koplugin) each
+find plugins from GitHub and install them on the device, which saves the USB
+cable and the doing-it-twice.
+
+Otherwise: unzip the new release over the old folder and restart. Settings
+and the pairing code live in KOReader's own settings, not in the plugin
+folder, so they survive.
+
+The version is in the log's first line as `duo=`, which is the thing to
+check before reporting anything.
+
 ## Pairing
 
 **Duo → Connect the two devices…**, then two questions on each device: how
@@ -385,7 +405,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-483 tests, with the interesting parts unmocked: two and three device
+485 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -402,6 +422,27 @@ would measure whatever was there before.
 luajit tools/duo-demo.lua 3      # three devices, printing what each displayed
 luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 ```
+
+## Releasing
+
+Set the version in `duo.koplugin/_meta.lua`, then tag it:
+
+```sh
+make dist                 # dist/duo.koplugin-<version>.zip, and its sha256
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+The tag runs the suite, builds the archive and publishes it. It refuses a
+tag that disagrees with `_meta.lua`, because a plugin store compares those
+two numbers to decide whether a device needs updating, and one that lies
+means a device that never updates or one that updates forever.
+
+The archive holds a single `duo.koplugin/` folder and nothing of the tests
+or the Makefile — the folder as KOReader wants it, ready to unzip into
+`plugins/`.
+
+For the stores to find the repository at all it needs the `koreader-plugin`
+topic, which is set in GitHub's repository settings rather than here.
 
 ## What has not been verified
 

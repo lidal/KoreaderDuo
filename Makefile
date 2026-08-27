@@ -2,6 +2,7 @@
 #
 #   make test       run everything (unit, plugin, two-process integration)
 #   make check      syntax-check every Lua file
+#   make dist       build the release archive from _meta.lua's version
 #   make install KOREADER=/path/to/koreader   copy the plugin into KOReader
 #
 # KOReader runs LuaJIT, so that is the default interpreter here; the suite
@@ -16,7 +17,18 @@ SPECS := spec/protocol_spec.lua spec/link_spec.lua spec/plugin_spec.lua \
          spec/directlink_spec.lua spec/directlink_net_spec.lua spec/log_spec.lua
 SOURCES := $(wildcard duo.koplugin/*.lua duo.koplugin/duo/*.lua spec/*.lua spec/harness/*.lua)
 
-.PHONY: test check install clean real
+#[[
+# The version, read from the one place it is written down.
+#
+# `_meta.lua` rather than a variable here, because that is the copy KOReader
+# loads and the copy a plugin store reads to decide whether what somebody
+# has installed is older than what is published. A version kept in the
+# Makefile as well would be a version that disagrees with itself by the
+# second release.
+#]]
+VERSION := $(shell sed -n 's/^[[:space:]]*version = "\([^"]*\)".*/\1/p' duo.koplugin/_meta.lua)
+
+.PHONY: test check dist install clean real
 
 test: check
 	@failed=0; \
@@ -63,5 +75,28 @@ endif
 	cp -r duo.koplugin "$(KOREADER)/plugins/"
 	@echo "Installed to $(KOREADER)/plugins/duo.koplugin"
 
+#[[
+# The archive a release attaches, and the one to unzip into `plugins/` by
+# hand.
+#
+# Built from the repository root so that the single thing inside it is
+# `duo.koplugin/` -- the folder as it must land in KOReader, no wrapper
+# directory to dig through and nothing of the tests or the Makefile along
+# for the ride.
+#
+# Checked first, because a release that does not compile is worse than no
+# release: the updater that would install the fix is the code that just
+# broke.
+#]]
+dist: check
+	@test -n "$(VERSION)" || { echo "no version in duo.koplugin/_meta.lua"; exit 1; }
+	@rm -rf dist && mkdir -p dist
+	@zip -qr "dist/duo.koplugin-$(VERSION).zip" duo.koplugin \
+		-x '*.pyc' -x '*/.*' -x '.*'
+	@echo "dist/duo.koplugin-$(VERSION).zip"
+	@sha256sum "dist/duo.koplugin-$(VERSION).zip" 2>/dev/null || \
+		shasum -a 256 "dist/duo.koplugin-$(VERSION).zip"
+
 clean:
 	rm -f /tmp/duo-*.log
+	rm -rf dist
