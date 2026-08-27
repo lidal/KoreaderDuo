@@ -687,6 +687,54 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("lets the host make the cell before the joiner looks for it", function()
+        --[[
+        The two roles are not symmetrical: the host makes the cell and the
+        joiner joins it, so a joiner that starts first has nothing to join
+        and forms a cell of its own. From a log, a second apart:
+
+            18:47:21 [follower] rebuilt the link the two had been apart on
+            18:47:22 [leader]   rebuilt the link the two had been apart on
+
+        after which the follower dialled the host's address for a minute and
+        a half without an answer.
+
+        Waking together is what puts them in step, so this is the check that
+        needs the stagger -- it is the one that fires first after a wake, and
+        without it here the pair rebuilt in the same instant however long the
+        repeating repair waited.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "up" end
+        Core.role = Core.ROLE_FOLLOWER
+        Core.joiner_waited = nil
+        Core.link_check_at = 0
+
+        Core:checkLink()
+        T.assertEquals(rebuilt, 0, "the joiner went looking before there was a cell")
+        T.assertTrue(Core.link_check_at ~= nil, "and it dropped the check doing so")
+
+        -- Once, not on every pass: the point is to go second.
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(rebuilt, 1, "it hung back a second time")
+
+        -- The host has nothing to wait for.
+        Core.settings.direct_link = "host"
+        Core.joiner_waited = nil
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(rebuilt, 2, "the host waited for a cell only it can make")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.joiner_waited = nil
+        reset()
+    end)
+
     T.it("makes the first repair after waking a prompt one", function()
         --[[
         The backoff exists to stop a device hammering a partner switched off
@@ -889,7 +937,8 @@ T.describe("coming back after a sleep", function()
         that was most of the time.
         ]]
         reset()
-        Core.settings.direct_link = "join"
+        -- Hosting, so the joiner's head start is not what is under test here.
+        Core.settings.direct_link = "host"
         local checked = 0
         Core.hooks.reviveDirectLink = function() checked = checked + 1 return "up" end
         Core.role = Core.ROLE_FOLLOWER

@@ -122,6 +122,34 @@ where the link really has gone, and there the wait buys nothing at all.
 local LINK_CHECK_DELAY = 1
 
 --[[--
+How much longer the joining device waits before rebuilding after a wake, in
+seconds.
+
+The two roles are not symmetrical: the host makes the cell and the joiner
+joins it, so a joiner that starts first has nothing to join and forms a cell
+of its own -- two of them, same name, made in the same instant, that never
+become one. That is what a log showed once, a second apart:
+
+    18:47:21 [follower] rebuilt the link the two had been apart on
+    18:47:22 [leader]   rebuilt the link the two had been apart on
+
+after which the follower dialled the host's address for a minute and a half
+without an answer.
+
+Taken out once, on the grounds that the failure it was introduced for had a
+different cause and the script already guards this by joining at a fixed
+cell address. Put back on the evidence of the pair struggling without it.
+Two seconds, which is about one run of that script: long enough that the
+host's cell exists by the time the joiner's join executes, and short enough
+to be invisible against the rebuild itself.
+
+Only after a wake. The repeating repair, for a pair that has been apart a
+while, still runs on both devices at once -- their clocks have long since
+drifted apart by then, and it is waking together that puts them in step.
+--]]--
+local JOINER_LEAD = 2
+
+--[[--
 Healing a link Duo built, without waiting to be told to, in seconds.
 
 The wake-up notification is a nice-to-have and not something to depend on:
@@ -4642,6 +4670,7 @@ function Core:resume()
     -- look after is the plugin's question, and it can answer it without a
     -- setting having been recorded.
     self.link_check_at = Util.now() + LINK_CHECK_DELAY
+    self.joiner_waited = nil
     --[[
     Asked for again on the way back. A reader's own connection manager puts
     its wireless settings back the way it likes them when it brings the
@@ -4739,7 +4768,18 @@ function Core:checkLink()
         self.link_check_at = Util.now() + LINK_CHECK_DELAY
         return
     end
+    --[[
+    And the joiner goes second, since the host is the one that makes the cell
+    for it to join. Once, on the first pass: the point is to go second, not
+    to keep going second.
+    ]]
+    if self:get("direct_link") == "join" and not self.joiner_waited then
+        self.joiner_waited = true
+        self.link_check_at = Util.now() + JOINER_LEAD
+        return
+    end
     self.link_check_at = nil
+    self.joiner_waited = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
     --[[
