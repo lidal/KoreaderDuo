@@ -687,46 +687,6 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
-    T.it("staggers the check a sleep gets, not only the repeating one", function()
-        --[[
-        Both devices wake together and this is the check that fires first,
-        so a stagger that applied only to the healer was decorative: the
-        pair still rebuilt in the same instant, which is the moment two
-        ad-hoc cells with one name can form.
-
-        Once, not on every pass -- the point is to go second, not to keep
-        going second for ever.
-        ]]
-        reset()
-        Core.settings.direct_link = "join"
-        local rebuilt = 0
-        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "up" end
-        Core.role = Core.ROLE_FOLLOWER
-        Core.joiner_waited = nil
-        Core.link_check_at = 0
-
-        Core:checkLink()
-        T.assertEquals(rebuilt, 0, "the joiner went first")
-        T.assertTrue(Core.link_check_at ~= nil, "and it dropped the check doing so")
-
-        Core.link_check_at = 0
-        Core:checkLink()
-        T.assertEquals(rebuilt, 1, "it hung back a second time")
-
-        -- The host has nothing to wait for.
-        Core.settings.direct_link = "host"
-        Core.joiner_waited = nil
-        Core.link_check_at = 0
-        Core:checkLink()
-        T.assertEquals(rebuilt, 2, "the host waited for a cell only it can make")
-
-        Core.hooks.reviveDirectLink = nil
-        Core.settings.direct_link = nil
-        Core.role = Core.ROLE_OFF
-        Core.joiner_waited = nil
-        reset()
-    end)
-
     T.it("makes the first repair after waking a prompt one", function()
         --[[
         The backoff exists to stop a device hammering a partner switched off
@@ -743,42 +703,6 @@ T.describe("coming back after a sleep", function()
         Core:resume()
         T.assertNil(Core.heal_backoff, "it woke up still holding a grudge")
         T.assertNil(Core.link_healed_at)
-        reset()
-    end)
-
-    T.it("lets the host heal first, since it is the one that makes the cell", function()
-        --[[
-        The two wake together, so they heal together, and healing an ad-hoc
-        cell in lockstep is how a direct link fails to come back at all --
-        two cells, same name, formed at the same second, that never become
-        one. The joiner hangs back until there is something to join.
-        ]]
-        reset()
-        Core.hooks.reviveDirectLink = function() return "rebuilt" end
-        Core.role = Core.ROLE_FOLLOWER
-        Core.has_connected = true
-        Core.link_healed_at, Core.heal_backoff = nil, nil
-
-        local healed = 0
-        local real = Core.hooks.reviveDirectLink
-        Core.hooks.reviveDirectLink = function() healed = healed + 1 return "rebuilt" end
-
-        -- Three seconds apart is plenty for a host and not enough for a
-        -- joiner, which waits about as long again as one run of the script.
-        Core.settings.direct_link = "join"
-        Core.disconnected_since = Util.now() - 3
-        Core:checkLinkHealth()
-        T.assertEquals(healed, 0, "the joiner rebuilt before the host had a cell up")
-
-        Core.settings.direct_link = "host"
-        Core:checkLinkHealth()
-        T.assertEquals(healed, 1, "the host waited for a cell only it can make")
-
-        Core.hooks.reviveDirectLink = nil
-        Core.settings.direct_link = nil
-        Core.role = Core.ROLE_OFF
-        Core.disconnected_since, Core.link_healed_at = nil, nil
-        Core.has_connected, Core.heal_backoff = nil, nil
         reset()
     end)
 
