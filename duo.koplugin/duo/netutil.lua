@@ -226,4 +226,65 @@ function NetUtil.setRadioAlwaysOn(awake)
     return iface, "iwconfig", worked(status)
 end
 
+--[[--
+Reads power saving out of a driver's own words.
+
+Both tools are covered because both are asked. `iw dev wlan0 get power_save`
+says `Power save: on`; `iwconfig wlan0` says `Power Management:on` somewhere
+in a paragraph about the association, and older builds spell it with an `=`.
+Some drivers answer `Power Management:off` and mean it, and some print the
+line without a value at all, which is a driver saying it does not know.
+
+Backwards from what it reads, deliberately: this returns whether the radio
+is being *kept awake*, which is power saving being off, so that it can be
+compared with what Duo asked for without anybody having to invert it in
+their head at the call site.
+
+@string output  what the tool printed
+@treturn ?boolean  true if the radio is kept awake, false if it is dozing,
+    nil if the output does not say
+--]]--
+function NetUtil.parsePowerSave(output)
+    if not output then return nil end
+    local state = output:lower():match("power%s*save[:=]%s*(%a+)")
+        or output:lower():match("power%s*management[:=]%s*(%a+)")
+    if state == "off" then return true end
+    if state == "on" then return false end
+    return nil
+end
+
+--[[--
+Asks the card whether power saving is on, rather than assuming it stayed
+where it was put.
+
+It does not stay. A driver reapplies its defaults when the interface
+re-associates, and a reader re-associates every time it wakes from sleep, so
+a `set` from before the sleep is gone and nothing announces that it went.
+The only way to know is to read it back.
+
+Silent when neither tool answers, and `nil` rather than a guess: a caller
+that cannot tell should leave the radio alone, not poke it on a hunch.
+
+@treturn ?boolean  true if kept awake, false if dozing, nil if unknown
+@treturn ?string   the interface it asked about
+@treturn ?string   which tool answered
+--]]--
+function NetUtil.radioIsAwake()
+    local iface = wirelessInterface()
+    if not iface then return nil end
+    for _, attempt in ipairs({
+        { tool = "iw", command = "iw dev %s get power_save 2>/dev/null" },
+        { tool = "iwconfig", command = "iwconfig %s 2>/dev/null" },
+    }) do
+        local pipe = io.popen(attempt.command:format(iface))
+        if pipe then
+            local output = pipe:read("*a")
+            pipe:close()
+            local state = NetUtil.parsePowerSave(output)
+            if state ~= nil then return state, iface, attempt.tool end
+        end
+    end
+    return nil, iface
+end
+
 return NetUtil

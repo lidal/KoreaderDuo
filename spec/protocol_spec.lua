@@ -224,6 +224,35 @@ wlan0     Link encap:Ethernet  HWaddr 00:11:22:33:44:55
         T.assertTrue(found, "a /16 link-local network broadcasts to 169.254.255.255")
         T.assertEquals(NetUtil.getBroadcastAddresses("192.168.1.24")[1], "192.168.1.255")
     end)
+
+    T.it("reads power saving out of what the tool printed", function()
+        --[[
+        Both spellings, because both tools are asked. `iw` says one thing in
+        one line; `iwconfig` says another somewhere in a paragraph about the
+        association, and older builds put an `=` where newer ones put a `:`.
+
+        Backwards from what it reads, deliberately: true means the radio is
+        kept awake, which is power saving being off.
+        ]]
+        T.assertEquals(NetUtil.parsePowerSave("Power save: off"), true)
+        T.assertEquals(NetUtil.parsePowerSave("Power save: on"), false)
+        T.assertEquals(NetUtil.parsePowerSave([[
+wlan0     IEEE 802.11  ESSID:"home"
+          Mode:Managed  Frequency:2.437 GHz  Access Point: AA:BB:CC:DD:EE:FF
+          Power Management:on
+]]), false)
+        T.assertEquals(NetUtil.parsePowerSave("          Power Management=off"), true)
+    end)
+
+    T.it("says nothing rather than guessing when the card does not answer", function()
+        -- A driver that prints the line with no value is a driver saying it
+        -- does not know, and a caller that cannot tell should leave the
+        -- radio alone rather than poke it on a hunch.
+        T.assertNil(NetUtil.parsePowerSave("          Power Management:"))
+        T.assertNil(NetUtil.parsePowerSave("command not found"))
+        T.assertNil(NetUtil.parsePowerSave(""))
+        T.assertNil(NetUtil.parsePowerSave(nil))
+    end)
 end)
 
 T.describe("util", function()

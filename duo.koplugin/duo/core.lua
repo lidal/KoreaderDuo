@@ -912,6 +912,10 @@ function Core:applyRadioSetting()
     if not self.hooks or not self.hooks.setRadioAwake then return end
     local wanted = (self:get("keep_radio_awake") and self:isActive()) and true or false
     if self.radio_awake == wanted then return end
+    -- A fresh decision deserves a fresh count: the driver refusing three
+    -- times to keep the radio awake says nothing about whether it will hand
+    -- it back, or about the next time Duo runs.
+    self.radio_retries = 0
     local never_asked = self.radio_awake == nil
     self.radio_awake = wanted
     --[[
@@ -933,6 +937,79 @@ function Core:applyRadioSetting()
         "-", tostring(iface), tostring(how),
         ok and tostring(worked) or "call failed",
         ("%.0fms"):format((Util.now() - began) * 1000))
+end
+
+--[[--
+How often to ask the card what it actually did with power saving, in
+seconds.
+--]]--
+Core.RADIO_CHECK_EVERY = 30
+
+--[[--
+How many times to ask again before letting the driver have its way.
+--]]--
+Core.RADIO_RETRIES = 3
+
+--[[--
+Checks that power saving is still off, and asks again when it is not.
+
+Because setting it is not keeping it set. A driver puts its defaults back
+when the interface re-associates, and a reader re-associates every time it
+wakes from sleep -- so the `iw` Duo ran before the sleep is undone, and
+nothing says so. Worse, `radio_awake` remembered the request as though it
+had held, which turned one lost setting into a permanent one: `resume`
+clears that flag, but it clears it while the Wi-Fi is still down, so the
+reply goes to a card that is about to associate and overwrite it anyway.
+Reported from a pair of Kindles as page turns that lag after every sleep
+and never come right until Duo is stopped and started.
+
+So the flag is treated as what Duo asked for, and the driver is asked what
+is true. Only that way round works: there is no event for "your setting was
+reapplied", and the only honest way to know is to look.
+
+Not forever, though. A driver that will not turn power saving off is
+entitled to that, and a device that pokes it every thirty seconds for the
+whole of a book is spending battery to be told no repeatedly -- on hardware
+that may answer a power-save change by re-associating, which is to say by
+dropping the link. Three tries, then quiet until something changes.
+--]]--
+function Core:checkRadioSetting()
+    if not self.hooks or not self.hooks.radioIsAwake then return end
+    -- Only a radio Duo asked to keep awake, and still wants awake. Handing
+    -- one back is a thing that happens once, on the way out, and nobody is
+    -- harmed by the reader turning power saving on afterwards.
+    if self.radio_awake ~= true then return end
+    if not self:isActive() or not self:get("keep_radio_awake") then return end
+    if (self.radio_retries or 0) >= Core.RADIO_RETRIES then return end
+    local now = Util.now()
+    if self.radio_checked_at
+        and now - self.radio_checked_at < Core.RADIO_CHECK_EVERY then return end
+    self.radio_checked_at = now
+    local ok, actual = pcall(self.hooks.radioIsAwake)
+    -- A card that will not say is not a card to argue with.
+    if not ok or actual == nil then return end
+    if actual == true then
+        self.radio_retries = 0
+        return
+    end
+    local tries = (self.radio_retries or 0) + 1
+    self:log("power saving came back on by itself, asking again -",
+        ("try %d of %d"):format(tries, Core.RADIO_RETRIES))
+    --[[
+    Recorded as the truth it is, rather than cleared. `applyRadioSetting`
+    reads this as what the radio is doing now, and "dozing" is both accurate
+    and the thing that makes it act; nil would read as "never asked", which
+    it takes as a reason to leave alone a radio it has in fact already taken
+    charge of.
+    ]]
+    self.radio_awake = false
+    self:applyRadioSetting()
+    -- Put back after, because applyRadioSetting starts the count again on a
+    -- change of mind and this is not one: it is the same mind, said again.
+    self.radio_retries = tries
+    if tries >= Core.RADIO_RETRIES then
+        self:log("power saving will not stay off on this device; leaving it alone")
+    end
 end
 
 function Core:getSpreadOptions()
@@ -1437,6 +1514,7 @@ function Core:pollOnce()
     self:checkTypography()
     self:checkFrontlight()
     self:checkLinkHealth()
+    self:checkRadioSetting()
     self:checkDropNotice()
     self:checkDocumentAcks()
     self:checkLibrary()
@@ -1627,6 +1705,12 @@ function Core:onLinkReady(link)
         self:save()
     end
     self:applyRadioSetting()
+    --[[
+    And checked shortly, rather than up to half a minute from now. A link
+    coming up is proof the card associated, and associating is exactly what
+    makes a driver put its own power-save default back over Duo's.
+    ]]
+    self.radio_checked_at = nil
     self:notify(("Duo: connected to %s"):format(link.peer_name or "peer"))
     if self:isLeader() then
         -- The leader pushes; the follower does not need to ask. Asking as well
@@ -4679,6 +4763,10 @@ function Core:resume()
     asking a second time.
     ]]
     self.radio_awake = nil
+    -- And a device that gave up asking gets to ask again: a driver that
+    -- would not keep the radio awake before the sleep is a different
+    -- proposition after it, with the interface freshly brought up.
+    self.radio_retries = 0
     --[[
     And the repair is prompt again. The backoff is there to stop a device
     hammering a partner that is switched off for the night; it has nothing

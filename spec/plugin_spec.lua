@@ -3081,6 +3081,123 @@ T.describe("keeping the radio awake while the pair is connected", function()
         core.links = {}
         core.role = core.ROLE_OFF
     end)
+
+    --[[
+    And asking again is not the same as it having worked.
+
+    Reported from the pair as page turns that lag after every sleep, and
+    never come right until Duo is stopped and started. Asking on the way
+    back was there already; what was missing is that the answer does not
+    hold. A driver puts its own defaults back when the interface
+    re-associates, which is what a reader does on every wake -- and `resume`
+    asks while the Wi-Fi is still down, so the request lands on a card that
+    is about to overwrite it. Nothing announces that, and the flag saying
+    Duo had asked was taken as the radio being awake, so it never asked
+    twice.
+
+    So the flag is what Duo wants, and the card is asked what is true.
+    ]]
+    local function watching(state)
+        local looked = 0
+        local asked = {}
+        local instance, core = device_with(function(awake) asked[#asked+1] = awake end)
+        core.hooks.radioIsAwake = function()
+            looked = looked + 1
+            return state
+        end
+        core.settings.keep_radio_awake = true
+        core.role = core.ROLE_LEADER
+        core.links = { fakeLink() }
+        core:onLinkReady(core.links[1])
+        core.radio_checked_at = nil
+        core.radio_retries = 0
+        return core, asked, function() return looked end
+    end
+
+    local function put_away(core)
+        core.hooks.radioIsAwake = nil
+        core.links = {}
+        core.role = core.ROLE_OFF
+        core.radio_checked_at = nil
+        core.radio_retries = nil
+    end
+
+    T.it("notices power saving came back on, and says so again", function()
+        local core, asked = watching(false)
+        local before = #asked
+
+        core:checkRadioSetting()
+        T.assertEquals(#asked, before + 1,
+            "the card said it was dozing and Duo let it")
+        T.assertEquals(asked[#asked], true, "and asked for the wrong thing")
+
+        -- Not on every poll, though: this runs an external command.
+        core:checkRadioSetting()
+        T.assertEquals(#asked, before + 1, "it asked twice in the same second")
+        put_away(core)
+    end)
+
+    T.it("says nothing more when the card is doing what was asked", function()
+        local core, asked, looked = watching(true)
+        local before = #asked
+        core:checkRadioSetting()
+        T.assertEquals(looked(), 1, "it did not look")
+        T.assertEquals(#asked, before, "a radio already awake was poked anyway")
+        put_away(core)
+    end)
+
+    T.it("leaves a card alone that will not answer", function()
+        -- nil is a driver saying it does not know, which is not a reason to
+        -- poke it every thirty seconds for the whole of a book.
+        local core, asked = watching(nil)
+        local before = #asked
+        core:checkRadioSetting()
+        T.assertEquals(#asked, before, "it argued with a card that said nothing")
+        put_away(core)
+    end)
+
+    T.it("takes no for an answer after a few tries", function()
+        --[[
+        A driver that will not turn power saving off is entitled to that,
+        and changing power save may be answered by re-associating -- so a
+        device that asks every thirty seconds forever is spending battery to
+        be told no, and dropping the link to hear it.
+        ]]
+        local core, asked = watching(false)
+        local before = #asked
+        for _ = 1, core.RADIO_RETRIES + 3 do
+            core.radio_checked_at = nil
+            core:checkRadioSetting()
+        end
+        T.assertEquals(#asked - before, core.RADIO_RETRIES,
+            "it kept poking a driver that had made itself clear")
+
+        -- Until the next sleep, which brings the interface up again and is
+        -- a different proposition. Waking asks once by itself, which is the
+        -- behaviour above; what is under test is that it asks again after.
+        core:resume()
+        core.role = core.ROLE_LEADER
+        core.radio_awake = true
+        core.radio_checked_at = nil
+        local woken = #asked
+        core:checkRadioSetting()
+        T.assertEquals(#asked, woken + 1,
+            "a device that gave up once gave up for good")
+        put_away(core)
+    end)
+
+    T.it("does not chase a radio it has handed back", function()
+        -- Duo stopping is Duo having no opinion: the reader turning power
+        -- saving back on afterwards is the reader's business.
+        local core, asked = watching(false)
+        core.links = {}
+        core:stop("test done")
+        local before = #asked
+        core.radio_checked_at = nil
+        core:checkRadioSetting()
+        T.assertEquals(#asked, before, "it went on managing a radio it gave up")
+        put_away(core)
+    end)
 end)
 
 T.describe("a follower's own page turn", function()

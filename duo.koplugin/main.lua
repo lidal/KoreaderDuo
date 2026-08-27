@@ -108,6 +108,7 @@ function Duo:init()
             -- No device check: this only ever runs because somebody asked
             -- for it, and asking is the permission.
             setRadioAwake = function(awake) return NetUtil.setRadioAlwaysOn(awake) end,
+            radioIsAwake = function() return NetUtil.radioIsAwake() end,
         },
     }
 
