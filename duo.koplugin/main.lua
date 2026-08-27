@@ -81,6 +81,7 @@ function Duo:init()
             sleepDevice = function() Duo:sleepForPeer() end,
             askForToken = function() Duo:askForTokenAgain() end,
             wakeNetwork = function() Duo:wakeNetwork() end,
+            switchTransport = function(to, ours) Duo:onPeerSwitch(to, ours) end,
             reviveDirectLink = function(quiet, force, silent)
                 return Duo:reviveDirectLink(quiet, force, silent)
             end,
@@ -1368,6 +1369,106 @@ function Duo:standingRole()
     return nil
 end
 
+--[[--
+How long to wait for the other device to say it heard, in seconds.
+
+Three, because the answer crosses a link that is up and comes back in
+milliseconds when it is coming at all. Waiting longer only lengthens the
+pause before Duo gives up on a device that is not going to answer -- one
+running an older version, which has no idea what it was asked.
+--]]--
+Duo.SWITCH_ACK_WAIT = 3
+
+--[[--
+How long the joining device holds back before building, in seconds.
+
+The two roles are not symmetrical: the host makes the cell and the joiner
+joins it, so a joiner that starts first has nothing to join and forms a cell
+of its own. Whichever device the switch was asked on, the host goes first.
+--]]--
+Duo.JOINER_HOLD = 3
+
+--[[--
+Moves both devices to the same transport, rather than one of them.
+
+Switching has always meant doing the same thing twice, on two devices, in
+the right order, and getting it wrong strands one reader on a cell nobody
+else is on. They are talking to each other at the moment the question is
+asked, so it can be settled between them: this device asks, the other says
+it heard and starts moving, and this one follows.
+
+Alone if it has to be. A device with nobody to ask, or whose partner does
+not answer, still switches -- and says so, so that "nothing happened" is
+never the outcome.
+
+@string to  "direct" or "wifi"
+--]]--
+function Duo:switchTransportWith(to)
+    if not Core:askPeerToSwitch(to) then
+        self:performSwitch(to)
+        return
+    end
+    Duo.switch_pending = to
+    Duo.switch_waiting = InfoMessage:new{
+        text = _("Telling the other device…"),
+        timeout = Duo.SWITCH_ACK_WAIT + 1,
+    }
+    UIManager:show(Duo.switch_waiting)
+    UIManager:forceRePaint()
+    UIManager:scheduleIn(self.SWITCH_ACK_WAIT, function()
+        if Duo.switch_pending ~= to then return end
+        Duo.switch_pending = nil
+        self:closeSwitchNotice()
+        Core:log("no answer about the switch; going alone")
+        UIManager:show(InfoMessage:new{
+            text = _("The other device did not answer.\n\nSwitching this one; do the same over there."),
+            timeout = 5,
+        })
+        self:performSwitch(to)
+    end)
+end
+
+function Duo:closeSwitchNotice()
+    if not Duo.switch_waiting then return end
+    UIManager:close(Duo.switch_waiting)
+    Duo.switch_waiting = nil
+end
+
+--[[--
+The other device has either agreed to our request or made one of its own.
+
+@string to    "direct" or "wifi"
+@bool ours    true when this is the answer to a request from here
+--]]--
+function Duo:onPeerSwitch(to, ours)
+    if ours then
+        if Duo.switch_pending ~= to then return end
+        Duo.switch_pending = nil
+    end
+    self:closeSwitchNotice()
+    self:performSwitch(to)
+end
+
+--[[--
+Does the move on this device.
+
+The joining half of a direct link holds back a moment, because there has to
+be a cell before there is anything to join -- and whichever device the
+switch was asked on, one of the two is the joiner.
+--]]--
+function Duo:performSwitch(to)
+    if to ~= "direct" then
+        self:switchToWifi()
+        return
+    end
+    if self:standingRole() == Core.ROLE_FOLLOWER then
+        Core:notify(_("Duo: waiting for the other device to make the link…"))
+        UIManager:scheduleIn(self.JOINER_HOLD, function() self:switchToDirectLink() end)
+        return
+    end
+    self:switchToDirectLink()
+end
+
 --- Moves the pair onto a link of their own, in the role they already have.
 function Duo:switchToDirectLink()
     local role = self:standingRole()
@@ -2360,14 +2461,14 @@ function Duo:getMenuTable()
                     help_text = _("Move the pair onto a Wi-Fi link of their own, keeping the sides they already have. For reading away from any network — on a train, in a garden — where there is nothing to connect to.\n\nDo it on both devices: the leader first, then the follower."),
                     enabled_func = function() return not Duo:onADirectLink() end,
                     keep_menu_open = true,
-                    callback = function() self:switchToDirectLink() end,
+                    callback = function() self:switchTransportWith("direct") end,
                 },
                 {
                     text = _("Switch to Wi-Fi"),
                     help_text = _("Hand the radio back to the system, wait for your usual network, and pair over that instead — keeping the sides the two already have.\n\nDo it on both devices."),
                     enabled_func = function() return Duo:onADirectLink() end,
                     keep_menu_open = true,
-                    callback = function() self:switchToWifi() end,
+                    callback = function() self:switchTransportWith("wifi") end,
                 },
                 {
                     text = _("Set up a direct link (no router)…"),

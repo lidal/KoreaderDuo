@@ -137,11 +137,16 @@ and the direct-link path is one screen away.
 
 ### Going out, and coming home
 
-**Duo → Link → Switch to a direct link** and **Switch to Wi-Fi** do the whole
-move in one tap each, keeping the sides the two already have — no walking
-back through the pairing screens. Do it on both devices. Switching to Wi-Fi
-hands the radio back, waits for your usual network, and starts Duo again
-over it.
+**Duo → Link → Switch to a direct link** and **Switch to Wi-Fi** move *both*
+devices in one tap, keeping the sides they already have — no walking back
+through the pairing screens and no doing it twice. The device you tap asks
+the other one, waits for it to say it heard, and then they go together; on a
+direct link the host makes the cell first and the joiner follows a moment
+later. If there is nobody to ask, or the other device does not answer, this
+one switches anyway and says so.
+
+Switching to Wi-Fi hands the radio back, waits for your usual network, and
+starts Duo again over it.
 
 Waking somewhere with no Wi-Fi at all, Duo offers the direct link itself
 rather than sitting there retrying a leader that is not on any network. It
@@ -260,8 +265,8 @@ is the live connection: role, peer, and the pages on show.
 | **Layout → This device holds the right-hand page** | Swaps the sides. |
 | **Match typography** | Both devices lay the book out alike. On. |
 | **Match the frontlight** | Same brightness and warmth. On. |
-| **Keep the Wi-Fi awake** | Stop the radio dozing while connected. On. |
-| **Link → Switch to a direct link / Switch to Wi-Fi** | Move the pair between the two, keeping their sides. |
+| **Keep the Wi-Fi awake** | Stop the radio dozing while Duo is running. On. |
+| **Link → Switch to a direct link / Switch to Wi-Fi** | Move both devices between the two, keeping their sides. |
 | **Share the book list too** | Spread the file browser as well. On. |
 | **Lock one, lock both** | Sleeping either sleeps the other. On. |
 | **Keep the whole library in step** | Fetch whatever the shared folder is missing. On. |
@@ -375,7 +380,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-468 tests, with the interesting parts unmocked: two and three device
+473 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

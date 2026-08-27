@@ -129,6 +129,25 @@ simply because the pair has been apart for a while. It costs one status
 call, and only rebuilds when the link really has gone.
 --]]--
 local LINK_HEAL_AFTER = 2
+
+--[[--
+How much longer the joining device waits before rebuilding, in seconds.
+
+Because the two wake together, and healing in lockstep is how a direct link
+fails to come back at all. From a log, one second apart:
+
+    18:47:21 [follower] rebuilt the link the two had been apart on
+    18:47:22 [leader]   rebuilt the link the two had been apart on
+
+Both then reported the link up, and the follower dialled the host's address
+every seven seconds for a minute and a half without an answer. Two ad-hoc
+cells, formed at the same moment under the same name, that never became one.
+
+The roles are not symmetrical even though the healing was: the host makes
+the cell and the joiner joins it. So the joiner hangs back long enough for
+there to be something to join.
+--]]--
+local JOINER_LEAD = 6
 local LINK_HEAL_EVERY = 20
 
 --[[--
@@ -857,9 +876,17 @@ way.
 
 On by default, which is not the obvious choice for a knob that costs
 battery, and is the right one here because of what it is scoped to: the
-radio is kept awake only while the two devices are actually connected --
-which is to say while somebody is reading across both of them, in the
-foreground, with the screen on. It sleeps normally the rest of the time.
+radio is kept awake only while Duo is running -- which is to say while
+somebody is reading across both devices, in the foreground, with the screen
+on. It sleeps normally the rest of the time.
+
+While Duo is *running*, not only while it is connected. That looked like a
+tighter scope and was really a much noisier one: every connection and every
+disconnection poked the driver, so a pair that was flapping ran `iw` four
+times in ten seconds -- on hardware that may answer a power-save change by
+re-associating, which is to say by causing the next disconnection. And it
+bought nothing, since a Duo that is disconnected is dialling every few
+seconds and wants the radio quite as much as a connected one does.
 
 Measured on the reader's own hardware rather than argued from theory: with
 `iw dev wlan0 set power_save off` on both Kindles, page turns over an
@@ -870,7 +897,7 @@ Switchable off for anyone who would rather have the battery.
 --]]--
 function Core:applyRadioSetting()
     if not self.hooks or not self.hooks.setRadioAwake then return end
-    local wanted = (self:get("keep_radio_awake") and self:isConnected()) and true or false
+    local wanted = (self:get("keep_radio_awake") and self:isActive()) and true or false
     if self.radio_awake == wanted then return end
     local never_asked = self.radio_awake == nil
     self.radio_awake = wanted
@@ -1017,7 +1044,6 @@ function Core:stop(reason, goodbye)
         link:close(reason or "stopped", true, goodbye)
     end
     self.links = {}
-    self:applyRadioSetting()
     if self.server then
         self.server:close()
         self.server = nil
@@ -1061,6 +1087,10 @@ function Core:stop(reason, goodbye)
         self:save()
         self:changed()
     end
+    -- After the role is cleared, not before: what the radio is wanted for is
+    -- Duo running, so asking while the role still says it is running gets
+    -- the answer it was already giving and hands nothing back.
+    self:applyRadioSetting()
 end
 
 --[[--
@@ -2004,6 +2034,49 @@ function Core:applyRelativeTurn(diff)
     end
     self.reader.turnRelative(diff * step)
     return true
+end
+
+--[[--
+Asks the other device to move to the same transport this one is moving to.
+
+Because a pair is a pair. Switching between a direct link and an ordinary
+network has always meant doing the same thing twice, on two devices, in the
+right order -- and getting it wrong leaves one reader on a cell nobody else
+is on. The devices are talking to each other at the moment the question is
+asked, which is exactly the moment to settle it between them.
+
+@string to  "direct" or "wifi"
+@treturn boolean  whether there was anybody to ask
+--]]--
+function Core:askPeerToSwitch(to)
+    local links = self:getReadyLinks()
+    if #links == 0 then return false end
+    self:log("asking the other device to switch to", to)
+    for _, link in ipairs(links) do
+        link:send(Protocol.SWITCH, { to = to })
+    end
+    return true
+end
+
+--[[--
+Answers, or acts on, a request to move to the other transport.
+
+The reply goes out before this device touches its own radio, because
+touching it is what ends the conversation the reply has to cross.
+--]]--
+function Core:handleSwitch(link, msg)
+    local to = msg.to
+    if to ~= "direct" and to ~= "wifi" then return end
+    if not self.hooks or not self.hooks.switchTransport then return end
+    if Protocol.bool(msg, "ack") then
+        -- The other device has heard and is moving. So can this one.
+        self:log("the other device is switching to", to)
+        pcall(self.hooks.switchTransport, to, true)
+        return
+    end
+    self:log("the other device asks to switch to", to)
+    link:send(Protocol.SWITCH, { to = to, ack = 1 })
+    pcall(self.hooks.switchTransport, to, false)
 end
 
 --- Called by the plugin whenever this device's page changed, for any reason.
@@ -3971,6 +4044,8 @@ function Core:handleMessage(link, msg)
         if not self:isLeader() then return end
         if not self:get("follower_can_turn") then return end
         self:applyRemoteJump(link, Protocol.num(msg, "page"))
+    elseif msg.type == Protocol.SWITCH then
+        self:handleSwitch(link, msg)
     elseif msg.type == Protocol.NAP then
         self:handleNap(msg)
     elseif msg.type == Protocol.SYNC then
@@ -4666,6 +4741,7 @@ function Core:checkLinkHealth()
     -- A link that has worked and stopped is broken now; one that has never
     -- worked is probably still being set up by somebody.
     local patience = self.has_connected and LINK_HEAL_AFTER or LINK_HEAL_FIRST
+    if self:get("direct_link") == "join" then patience = patience + JOINER_LEAD end
     if now - self.disconnected_since < patience then return end
     local base = self.has_connected and LINK_HEAL_EVERY or LINK_HEAL_EVERY_WAITING
     local between = math.min(base * (self.heal_backoff or 1), LINK_HEAL_CEILING)

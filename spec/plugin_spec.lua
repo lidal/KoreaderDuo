@@ -641,6 +641,42 @@ T.describe("coming back after a sleep", function()
         Core.disconnected_since, Core.link_healed_at = nil, nil
     end)
 
+    T.it("lets the host heal first, since it is the one that makes the cell", function()
+        --[[
+        The two wake together, so they heal together, and healing an ad-hoc
+        cell in lockstep is how a direct link fails to come back at all --
+        two cells, same name, formed at the same second, that never become
+        one. The joiner hangs back until there is something to join.
+        ]]
+        reset()
+        Core.hooks.reviveDirectLink = function() return "rebuilt" end
+        Core.role = Core.ROLE_FOLLOWER
+        Core.has_connected = true
+        Core.link_healed_at, Core.heal_backoff = nil, nil
+
+        local healed = 0
+        local real = Core.hooks.reviveDirectLink
+        Core.hooks.reviveDirectLink = function() healed = healed + 1 return "rebuilt" end
+
+        -- Four seconds apart is plenty for a host and nothing like enough
+        -- for a joiner.
+        Core.settings.direct_link = "join"
+        Core.disconnected_since = Util.now() - 4
+        Core:checkLinkHealth()
+        T.assertEquals(healed, 0, "the joiner rebuilt before the host had a cell up")
+
+        Core.settings.direct_link = "host"
+        Core:checkLinkHealth()
+        T.assertEquals(healed, 1, "the host waited for a cell only it can make")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.disconnected_since, Core.link_healed_at = nil, nil
+        Core.has_connected, Core.heal_backoff = nil, nil
+        reset()
+    end)
+
     T.it("stops hammering a link the other device is not on", function()
         --[[
         Twenty seconds is right for the case the healer is for: the two went
@@ -1318,6 +1354,127 @@ T.describe("leaving a direct link to pair over a network", function()
         T.assertEquals(Core:get("peer_host"), "",
             "the old host address is what lets the link put itself back up")
         device.plugin.RESTORE_POLL = nil
+        reset()
+    end)
+
+    T.it("takes the other device with it", function()
+        --[[
+        Switching has always meant doing the same thing twice, on two
+        devices, in the right order, and getting it wrong strands one reader
+        on a cell nobody else is on. They are talking to each other at the
+        moment the question is asked, so it gets settled between them.
+        ]]
+        reset()
+        Core.settings.autostart_role = Core.ROLE_LEADER
+        local asked, switched = nil, false
+        local real_ask = Core.askPeerToSwitch
+        Core.askPeerToSwitch = function(_, to) asked = to return true end
+        device.plugin.performSwitch = function() switched = true end
+
+        device.plugin:switchTransportWith("direct")
+        T.assertEquals(asked, "direct", "it switched without a word to the other device")
+        T.assertTrue(not switched, "it moved before the other device had heard")
+
+        -- The answer comes back; now both move.
+        device.plugin:onPeerSwitch("direct", true)
+        T.assertTrue(switched)
+
+        Core.askPeerToSwitch = real_ask
+        device.plugin.performSwitch = nil
+        device.plugin:closeSwitchNotice()
+        reset()
+    end)
+
+    T.it("goes alone rather than not at all", function()
+        -- A device with nobody to ask, or whose partner is on an older
+        -- version and has no idea what it was asked, still switches. Doing
+        -- nothing is the one outcome that would be worse than doing it
+        -- twice by hand.
+        reset()
+        Core.settings.autostart_role = Core.ROLE_LEADER
+        local switched = 0
+        device.plugin.performSwitch = function() switched = switched + 1 end
+
+        local real_ask = Core.askPeerToSwitch
+        Core.askPeerToSwitch = function() return false end
+        device.plugin:switchTransportWith("wifi")
+        T.assertEquals(switched, 1, "with nobody to ask it should just go")
+
+        -- And with somebody who never answers.
+        Core.askPeerToSwitch = function() return true end
+        device.plugin.SWITCH_ACK_WAIT = 0
+        device.plugin:switchTransportWith("wifi")
+        T.assertEquals(switched, 1, "it did not wait to be answered")
+        device:drainMessages()
+        device.UIManager:pump()
+        T.assertEquals(switched, 2, "it gave up on the switch entirely")
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "did not answer")
+
+        device.plugin.SWITCH_ACK_WAIT = nil
+        Core.askPeerToSwitch = real_ask
+        device.plugin.performSwitch = nil
+        device.plugin:closeSwitchNotice()
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("answers a request from the other device, then moves", function()
+        --[[
+        The reply goes out before this device touches its own radio, because
+        touching it is what ends the conversation the reply has to cross.
+        ]]
+        reset()
+        local sent, moved = nil, nil
+        local link = { send = function(_, kind, fields) sent = { kind, fields } end }
+        Core.hooks.switchTransport = function(to, ours) moved = { to, ours } end
+
+        Core:handleSwitch(link, { type = "SWITCH", to = "direct" })
+        T.assertEquals(sent[1], "SWITCH")
+        T.assertEquals(sent[2].to, "direct")
+        T.assertEquals(sent[2].ack, 1, "the other device was never told we heard")
+        T.assertEquals(moved[1], "direct")
+        T.assertTrue(not moved[2], "an ack is not a request of our own")
+
+        -- Nonsense is ignored rather than acted on.
+        sent, moved = nil, nil
+        Core:handleSwitch(link, { type = "SWITCH", to = "sideways" })
+        T.assertNil(sent)
+        T.assertNil(moved)
+
+        Core.hooks.switchTransport = nil
+        reset()
+    end)
+
+    T.it("lets the host make the cell before the joiner looks for it", function()
+        --[[
+        From a log, one second apart:
+
+            18:47:21 [follower] rebuilt the link the two had been apart on
+            18:47:22 [leader]   rebuilt the link the two had been apart on
+
+        Both then said the link was up, and the follower dialled the host's
+        address every seven seconds for a minute and a half without an
+        answer: two ad-hoc cells, same name, formed at the same moment,
+        which never became one.
+        ]]
+        reset()
+        Core.settings.autostart_role = Core.ROLE_FOLLOWER
+        local built = 0
+        device.plugin.switchToDirectLink = function() built = built + 1 end
+        device.plugin.JOINER_HOLD = 0
+
+        device.plugin:performSwitch("direct")
+        T.assertEquals(built, 0, "the joiner went looking before there was a cell")
+        device.UIManager:pump()
+        T.assertEquals(built, 1)
+
+        -- The host has nothing to wait for.
+        Core.settings.autostart_role = Core.ROLE_LEADER
+        device.plugin:performSwitch("direct")
+        T.assertEquals(built, 2, "the host held back for no reason")
+
+        device.plugin.JOINER_HOLD = nil
+        device.plugin.switchToDirectLink = nil
         reset()
     end)
 
@@ -2769,7 +2926,16 @@ T.describe("keeping the radio awake while the pair is connected", function()
         return instance, instance.Core
     end
 
-    T.it("asks for it when the two connect, and hands it back when they part", function()
+    T.it("asks for it while Duo runs, and hands it back when Duo stops", function()
+        --[[
+        While running, not while connected. Scoping it to the connection
+        looked tighter and was really much noisier: every connection and
+        every disconnection poked the driver, so a flapping pair ran `iw`
+        four times in ten seconds -- on hardware that may answer a
+        power-save change by re-associating, which is to say by causing the
+        next disconnection. And it saved nothing, because a disconnected Duo
+        is dialling every few seconds and wants the radio just as much.
+        ]]
         local asked = {}
         local instance, core = device_with(function(awake) asked[#asked+1] = awake end)
         core.settings.keep_radio_awake = true
@@ -2777,12 +2943,16 @@ T.describe("keeping the radio awake while the pair is connected", function()
         core.role = core.ROLE_LEADER
         core.links = { fakeLink() }
         core:onLinkReady(core.links[1])
-        T.assertEquals(asked[#asked], true, "the radio was left to doze while connected")
+        T.assertEquals(asked[#asked], true, "the radio was left to doze while running")
 
+        -- Losing the peer is not losing the reason: it is about to dial again.
         core.links = {}
         core:onLinkClosed(nil, "peer disconnected")
+        T.assertEquals(#asked, 1, "it handed the radio back between two dials")
+
+        core:stop("test done")
         T.assertEquals(asked[#asked], false,
-            "the radio was kept awake after the pair came apart, which is battery for nothing")
+            "the radio was kept awake after Duo stopped, which is battery for nothing")
         core.role = core.ROLE_OFF
     end)
 
