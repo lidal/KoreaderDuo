@@ -895,10 +895,20 @@ belongs to the healer.
 --]]--
 function Duo:wakeNetwork()
     if self:onADirectLink() then return end
+    --[[
+    Turning it on, not restoring it. `restoreWifiAsync` puts back whatever
+    the reader had before, which on a device where the radio was deliberately
+    off is nothing at all -- and the logs show exactly that: the ask went out
+    every thirty seconds and the follower went on reporting "Network is
+    unreachable" for minutes. Duo wanting the network is a reason to switch
+    it on, not a reason to reinstate a previous decision.
+    ]]
+    if NetworkMgr.turnOnWifi then
+        local ok = pcall(function() NetworkMgr:turnOnWifi() end)
+        if ok then return end
+    end
     if NetworkMgr.restoreWifiAsync then
         pcall(function() NetworkMgr:restoreWifiAsync() end)
-    elseif NetworkMgr.turnOnWifi then
-        pcall(function() NetworkMgr:turnOnWifi() end)
     end
 end
 

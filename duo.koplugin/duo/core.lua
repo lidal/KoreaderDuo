@@ -72,6 +72,9 @@ reason the dial kept failing.
 --]]--
 local DIAL_TIMEOUT = 3
 
+--- How long a dial is left alone before the repair may interrupt it.
+local DIAL_GRACE = 2
+
 --- How long a book may go without a byte before it is written off, in
 --- seconds. Generous: a slow link is not the same as a dead one.
 local BOOK_SILENCE = 30
@@ -1040,6 +1043,9 @@ Stops Duo and closes everything it was holding.
                              from where the other is standing
 --]]--
 function Core:stop(reason, goodbye)
+    -- Says these closures were asked for, so they are announced at once
+    -- rather than held back in case the pair recovers: nothing is going to.
+    self.stopping = true
     for _, link in ipairs(self.links) do
         link:close(reason or "stopped", true, goodbye)
     end
@@ -1087,10 +1093,29 @@ function Core:stop(reason, goodbye)
         self:save()
         self:changed()
     end
+    self.stopping = nil
+    self.announce_drop_at = nil
     -- After the role is cleared, not before: what the radio is wanted for is
     -- Duo running, so asking while the role still says it is running gets
     -- the answer it was already giving and hands nothing back.
     self:applyRadioSetting()
+end
+
+--[[--
+Says a drop out loud once it has lasted long enough to be worth saying.
+
+Run from the poll loop rather than scheduled, because the engine has no
+timer of its own and the loop is already turning twenty times a second.
+--]]--
+function Core:checkDropNotice()
+    if not self.announce_drop_at then return end
+    if self:isConnected() then
+        self.announce_drop_at = nil
+        return
+    end
+    if Util.now() < self.announce_drop_at then return end
+    self.announce_drop_at = nil
+    self:notify(("Duo: %s"):format(self.drop_reason or "disconnected"))
 end
 
 --[[--
@@ -1154,6 +1179,15 @@ local function meansNoNetwork(err)
         or err:find("no route", 1, true) ~= nil
         or err:find("network is down", 1, true) ~= nil
 end
+
+--[[--
+How long a drop has to last before it is worth mentioning, in seconds.
+
+Long enough to cover a reconnection -- which takes about a second once the
+network is there -- and short enough that a pair that really has come apart
+says so while somebody is still looking at the screen.
+--]]--
+Core.QUIET_DROP = 6
 
 --- How often Duo may ask the reader to put its network back, in seconds.
 --- Rarely: it is the reader's own connection manager doing the work, and
@@ -1393,6 +1427,7 @@ function Core:pollOnce()
     self:checkTypography()
     self:checkFrontlight()
     self:checkLinkHealth()
+    self:checkDropNotice()
     self:checkDocumentAcks()
     self:checkLibrary()
     -- A page the leader sent while this device was still relaying the book
@@ -1565,6 +1600,9 @@ end
 function Core:onLinkReady(link)
     self.reconnect_delay = RECONNECT_MIN
     self.last_error = nil
+    -- Whatever was about to be announced about the last drop is no longer
+    -- true, and was never worth saying.
+    self.announce_drop_at = nil
     --[[
     A follower that got this far proved it knows the leader's code, which is
     the only proof there is. Recorded here rather than where it was typed,
@@ -1650,10 +1688,28 @@ function Core:onLinkClosed(link, reason)
         self:changed()
         return
     end
-    -- A link this device replaced itself is not news: the device it led to
-    -- is connected right now, on the link that replaced it.
+    --[[
+    A drop is only news if it lasts.
+
+    Every one of them used to be announced the instant it happened, so a
+    reader that lost its partner for five seconds and got it straight back
+    said "disconnected" and then "connected" -- which reads as the pair
+    breaking rather than as the pair coping. The ones worth mentioning are
+    the ones still true a few seconds later, so the notice waits and is
+    dropped if they find each other first.
+
+    Not when Duo is putting the link down itself: that is a thing somebody
+    just asked for, and an answer that arrives six seconds late is worse
+    than no answer. And not for a link this device replaced with a better
+    one, which is not a disconnection at all.
+    ]]
     if self:isActive() and not (link and link.superseded) then
-        self:notify(("Duo: %s"):format(reason or "disconnected"))
+        if self.stopping then
+            self:notify(("Duo: %s"):format(reason or "disconnected"))
+        else
+            self.drop_reason = reason or "disconnected"
+            self.announce_drop_at = Util.now() + Core.QUIET_DROP
+        end
     end
     --[[
     Whoever dialled is the one who redials -- but only if there is nothing
@@ -4612,6 +4668,16 @@ function Core:resume()
     asking a second time.
     ]]
     self.radio_awake = nil
+    --[[
+    And the repair is prompt again. The backoff is there to stop a device
+    hammering a partner that is switched off for the night; it has nothing
+    to say about a device that has just woken up, where the link is almost
+    certainly gone and rebuilding it is the whole job. In one log a leader
+    woke, waited out thirty-five seconds of backoff earned an hour earlier,
+    and by the time it rebuilt the cell its partner had given up.
+    ]]
+    self.heal_backoff = nil
+    self.link_healed_at = nil
     self:applyRadioSetting()
     if not self.paused_role then return end
     self.resume_attempts = 0
@@ -4694,7 +4760,14 @@ function Core:checkLink()
     self.link_check_at = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
-    local ok, outcome = pcall(self.hooks.reviveDirectLink, true)
+    --[[
+    Forced, because after a real sleep the answer is always the same and
+    asking costs the one prompt attempt this gets. An ad-hoc cell does not
+    survive the reader taking its interface back, but the address often
+    does, so the polite check reads "still up" and rebuilds nothing -- and
+    the pair then waits out the healer's backoff instead.
+    ]]
+    local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true)
     if ok and outcome == "rebuilt" then self:dialNow() end
 end
 
@@ -4728,6 +4801,19 @@ function Core:checkLinkHealth()
     seconds.
     ]]
     if self:hasLink() then return end
+    --[[
+    And a dial that has only just gone out gets the second or two it needs to
+    become one. Healing runs a script that reconfigures the radio, so firing
+    it a moment after a dial destroys the connection that dial was making --
+    in one log the follower killed its own attempt, and the leader recorded
+    an accepted connection that never said a word.
+
+    Short, and only while the dial is actually outstanding: a dial gives up
+    after three seconds either way, so this yields a fair chance rather than
+    a veto, and a dial that has already resolved holds nothing off.
+    ]]
+    if self.connector and self.dialled_at
+        and Util.now() - self.dialled_at < DIAL_GRACE then return end
     if self:isConnected() then
         self.disconnected_since = nil
         self.has_connected = true

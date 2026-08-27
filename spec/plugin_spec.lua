@@ -641,6 +641,71 @@ T.describe("coming back after a sleep", function()
         Core.disconnected_since, Core.link_healed_at = nil, nil
     end)
 
+    T.it("says nothing about a drop the pair recovers from", function()
+        --[[
+        Every drop used to be announced the instant it happened, so a reader
+        that lost its partner for five seconds and got it straight back said
+        "disconnected" and then "connected" -- which reads as the pair
+        breaking rather than as the pair coping. Five of eleven drops in one
+        log healed within a few seconds.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.links = {}
+        Core:onLinkClosed({}, "peer disconnected")
+        T.assertEquals(table.concat(device:drainMessages(), "\n"), "",
+            "it announced a drop before knowing whether it mattered")
+
+        -- Back before the notice was due: nothing was ever worth saying.
+        Core.links = { { isReady = function() return true end,
+                         isClosed = function() return false end,
+                         close = function() end } }
+        Core:checkDropNotice()
+        T.assertNil(Core.announce_drop_at)
+        T.assertEquals(table.concat(device:drainMessages(), "\n"), "")
+
+        -- And one that lasts does get said.
+        Core.links = {}
+        Core:onLinkClosed({}, "peer stopped responding")
+        Core.announce_drop_at = Util.now() - 1
+        Core:checkDropNotice()
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "peer stopped responding")
+
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("still says so at once when the link was put down on purpose", function()
+        -- Somebody just asked for this, and an answer six seconds late is
+        -- worse than no answer.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.links = {}
+        Core:stop("stopped by user")
+        T.assertMatch(table.concat(device:drainMessages(), "\n") .. " ", " ")
+        T.assertNil(Core.announce_drop_at, "a deliberate stop left a notice pending")
+        reset()
+    end)
+
+    T.it("makes the first repair after waking a prompt one", function()
+        --[[
+        The backoff exists to stop a device hammering a partner switched off
+        for the night. It has nothing to say about a device that has just
+        woken, where the link is almost certainly gone. In one log a leader
+        woke, waited out thirty-five seconds of backoff earned an hour
+        earlier, and by the time it rebuilt the cell its partner had given
+        up and switched to Wi-Fi.
+        ]]
+        reset()
+        Core.heal_backoff = 8
+        Core.link_healed_at = Util.now()
+        Core.paused_role = nil
+        Core:resume()
+        T.assertNil(Core.heal_backoff, "it woke up still holding a grudge")
+        T.assertNil(Core.link_healed_at)
+        reset()
+    end)
+
     T.it("lets the host heal first, since it is the one that makes the cell", function()
         --[[
         The two wake together, so they heal together, and healing an ad-hoc
@@ -790,9 +855,26 @@ T.describe("coming back after a sleep", function()
         ]]
         Core.links = {}
         Core.connector = { poll = function() end, cancel = function() end }
+        Core.dialled_at = Util.now() - 30      -- long since given up on
         Core:checkLinkHealth()
         T.assertEquals(rebuilt, 1, "a dial into the void held the healer off")
-        Core.connector = nil
+
+        --[[
+        A dial that has only just gone out is a different matter: healing
+        reconfigures the radio, so firing it a moment after a dial destroys
+        the connection that dial was making. In one log the follower killed
+        its own attempt and the leader recorded an accepted connection that
+        never said a word.
+        ]]
+        Core.link_healed_at, Core.heal_backoff = nil, nil
+        -- The heal above cancelled the dial it interrupted, which is what
+        -- dialNow is for; this is the next one, freshly out.
+        Core.connector = { poll = function() end, cancel = function() end }
+        Core.dialled_at = Util.now()
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 1, "it pulled the radio out from under a fresh dial")
+
+        Core.connector, Core.dialled_at = nil, nil
 
         Core.hooks.reviveDirectLink = nil
         Core.settings.direct_link = nil
