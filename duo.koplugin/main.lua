@@ -1651,6 +1651,20 @@ function Duo:reviveDirectLink(quiet, force, silent)
         Core:alert(T(_("Duo could not rebuild the direct link.\n\n%1"), failure))
         return "failed"
     end
+    --[[
+    What the script actually did, which used to be thrown away whenever it
+    worked -- so the one question a direct link raises, whether two devices
+    rebuilding at the same moment land in the same cell, was never visible
+    in a log. The mode always; the whole of it when the commentary is on.
+
+    "no cell with a fixed address" in that output is the line that matters:
+    it means the driver refused the fixed cell address the script asks for,
+    and two readers rebuilding together can then form two cells with the
+    same name and never find each other.
+    ]]
+    Core:log("rebuilt as", tostring(DirectLink.modeOf(output)),
+        "-", (output:gsub("%s+", " "):sub(1, 200)))
+    Core:trace("the setup script said:", output)
     -- Said even when `quiet`: something changed, and that is the point.
     if not silent then Core:notify(_("Duo: the direct link is back")) end
     return "rebuilt"

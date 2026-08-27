@@ -149,8 +149,23 @@ cells, formed at the same moment under the same name, that never became one.
 The roles are not symmetrical even though the healing was: the host makes
 the cell and the joiner joins it. So the joiner hangs back long enough for
 there to be something to join.
+
+Two seconds, which is about one run of the setup script -- enough that the
+host's cell exists by the time the joiner's `ibss join` executes, and not a
+second more. It was six, chosen when this looked like the whole explanation
+for a direct link that would not come back. It was not: the real cause was a
+backoff that survived the sleep and a check that asked rather than rebuilt,
+and both are fixed. What is left here is insurance against a window, not a
+remedy for a known fault.
+
+Insurance worth keeping only until the logs say otherwise. The script joins
+with a fixed cell address for exactly this reason, and if that is working on
+a given driver then two devices rebuilding at the same instant land in the
+same cell and this is pure delay. Which of those it is has never been
+visible, because Duo discarded the script's output whenever it succeeded --
+so it now records what came back, and the next log settles it.
 --]]--
-local JOINER_LEAD = 6
+local JOINER_LEAD = 2
 local LINK_HEAL_EVERY = 20
 
 --[[--
@@ -4660,6 +4675,7 @@ function Core:resume()
     -- look after is the plugin's question, and it can answer it without a
     -- setting having been recorded.
     self.link_check_at = Util.now() + LINK_CHECK_DELAY
+    self.joiner_waited = nil
     --[[
     Asked for again on the way back. A reader's own connection manager puts
     its wireless settings back the way it likes them when it brings the
@@ -4753,11 +4769,23 @@ function Core:checkLink()
         self.link_check_at = nil
         return
     end
+    --[[
+    The joiner hangs back here too, for the reason it does when healing: the
+    host makes the cell. Left out, the stagger was decorative -- both devices
+    wake together and this is the check that fires first, so both rebuilt in
+    the same instant anyway.
+    ]]
+    if self:get("direct_link") == "join" and not self.joiner_waited then
+        self.joiner_waited = true
+        self.link_check_at = Util.now() + JOINER_LEAD
+        return
+    end
     if self:hasLink() then
         self.link_check_at = Util.now() + LINK_CHECK_DELAY
         return
     end
     self.link_check_at = nil
+    self.joiner_waited = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
     --[[

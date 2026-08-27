@@ -687,6 +687,46 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("staggers the check a sleep gets, not only the repeating one", function()
+        --[[
+        Both devices wake together and this is the check that fires first,
+        so a stagger that applied only to the healer was decorative: the
+        pair still rebuilt in the same instant, which is the moment two
+        ad-hoc cells with one name can form.
+
+        Once, not on every pass -- the point is to go second, not to keep
+        going second for ever.
+        ]]
+        reset()
+        Core.settings.direct_link = "join"
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "up" end
+        Core.role = Core.ROLE_FOLLOWER
+        Core.joiner_waited = nil
+        Core.link_check_at = 0
+
+        Core:checkLink()
+        T.assertEquals(rebuilt, 0, "the joiner went first")
+        T.assertTrue(Core.link_check_at ~= nil, "and it dropped the check doing so")
+
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(rebuilt, 1, "it hung back a second time")
+
+        -- The host has nothing to wait for.
+        Core.settings.direct_link = "host"
+        Core.joiner_waited = nil
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertEquals(rebuilt, 2, "the host waited for a cell only it can make")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.role = Core.ROLE_OFF
+        Core.joiner_waited = nil
+        reset()
+    end)
+
     T.it("makes the first repair after waking a prompt one", function()
         --[[
         The backoff exists to stop a device hammering a partner switched off
@@ -723,10 +763,10 @@ T.describe("coming back after a sleep", function()
         local real = Core.hooks.reviveDirectLink
         Core.hooks.reviveDirectLink = function() healed = healed + 1 return "rebuilt" end
 
-        -- Four seconds apart is plenty for a host and nothing like enough
-        -- for a joiner.
+        -- Three seconds apart is plenty for a host and not enough for a
+        -- joiner, which waits about as long again as one run of the script.
         Core.settings.direct_link = "join"
-        Core.disconnected_since = Util.now() - 4
+        Core.disconnected_since = Util.now() - 3
         Core:checkLinkHealth()
         T.assertEquals(healed, 0, "the joiner rebuilt before the host had a cell up")
 
