@@ -1461,6 +1461,42 @@ seconds later in one log.
 Core.RESUME_AGAIN_AFTER = 20
 
 --[[--
+How long after a wake to leave the screen alone, in seconds.
+
+Because rebuilding the link stops the reader dead. The setup script is run
+synchronously -- `io.popen`, read to the end -- and KOReader's event loop is
+what waits for it, so for its whole run nothing is drawn and no tap is
+answered. That was a fair bargain when a rebuild was a rare thing somebody
+had asked for from a menu. It is not one now that it happens by itself on
+every wake, which is the exact moment the reader is trying to paint over
+its screensaver.
+
+From a log, the leader's first twelve seconds awake:
+
+    23:03:29 the loop stopped for 296s - taking that as a sleep nobody announced
+    23:03:29 apart for a while; rebuilding the link rather than asking after it
+    23:03:34 loop: ... work avg 35.8ms max 5282.9ms
+    23:03:35 apart for a while; rebuilding the link rather than asking after it
+    23:03:45 loop: ... work avg 73.4ms max 5042.9ms
+
+Eleven of the first twelve seconds blocked inside Duo, and a device that
+looks like it has not woken up at all: the wallpaper stays because nothing
+can replace it.
+
+So the repair holds off for a moment and lets the reader draw. It costs
+that moment on the way to reconnecting, and buys the several seconds of
+looking broken that came before it. The real answer is not to block the
+loop at all, which is a larger change than this one.
+--]]--
+Core.PAINT_FIRST = 1.5
+
+--- True while the reader should be left to redraw after waking.
+function Core:justWoke()
+    return self.resumed_at ~= nil
+        and Util.now() - self.resumed_at < Core.PAINT_FIRST
+end
+
+--[[--
 Notices the loop having stopped, and puts the clocks right.
 
 Runs before anything else in a poll and whatever Duo is doing, including
@@ -5018,6 +5054,11 @@ function Core:checkLink()
         self.link_check_at = Util.now() + LINK_CHECK_DELAY
         return
     end
+    -- Put off rather than dropped, same as above: the reader is drawing.
+    if self:justWoke() then
+        self.link_check_at = Util.now() + LINK_CHECK_DELAY
+        return
+    end
     --[[
     And the joiner goes second, since the host is the one that makes the cell
     for it to join. Once, on the first pass: the point is to go second, not
@@ -5107,6 +5148,9 @@ function Core:checkLinkHealth()
     ]]
     if self.connector and self.dialled_at
         and Util.now() - self.dialled_at < DIAL_GRACE then return end
+    -- And a reader that has just woken is drawing, which this would stop it
+    -- doing for five seconds. See PAINT_FIRST.
+    if self:justWoke() then return end
     if self:isConnected() then
         self.disconnected_since = nil
         self.has_connected = true

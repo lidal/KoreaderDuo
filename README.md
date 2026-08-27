@@ -398,6 +398,12 @@ enough to answer quickly whatever the network does.
 
 The menu says where the file is and offers to show the last few lines.
 
+`work` in that line is time spent inside Duo, and it is time the reader
+cannot draw or answer a tap: building the link runs a shell script the event
+loop waits for, about five seconds. Nothing is rebuilt for a moment after
+waking for that reason — a screensaver that cannot be painted over is a
+device that looks like it never woke up.
+
 A gap between two polls of more than a few seconds means the loop was not
 running at all, and Duo says so: `the loop stopped for 55s`. On a Kindle the
 system can suspend underneath KOReader without KOReader's own suspend path
@@ -412,7 +418,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-497 tests, with the interesting parts unmocked: two and three device
+498 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

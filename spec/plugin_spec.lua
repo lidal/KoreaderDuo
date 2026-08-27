@@ -449,6 +449,20 @@ T.describe("coming back after a sleep", function()
         return function() return attempts end
     end
 
+    --[[
+    A wake, and then the moment Duo leaves the reader to redraw in. The
+    repair blocks the event loop for five seconds and must not do it while
+    the screensaver is still on screen, so nothing rebuilds for PAINT_FIRST
+    after waking -- which in a test is time that has to be said to pass
+    rather than waited for.
+    ]]
+    local function wokeAMomentAgo()
+        Core:resume()
+        if Core.resumed_at then
+            Core.resumed_at = Core.resumed_at - Core.PAINT_FIRST - 0.1
+        end
+    end
+
     local function sleepAsLeader()
         reset()
         Core.role = Core.ROLE_LEADER
@@ -492,7 +506,7 @@ T.describe("coming back after a sleep", function()
 
         -- Nothing paused, nothing failed: exactly the leader's situation.
         Core.paused_role = nil
-        Core:resume()
+        wokeAMomentAgo()
         T.assertEquals(checked, 0, "not the instant the screen lights up")
 
         Core.link_check_at = 0
@@ -538,7 +552,7 @@ T.describe("coming back after a sleep", function()
 
         -- The check on the way back from a sleep.
         Core.paused_role = nil
-        Core:resume()
+        wokeAMomentAgo()
         Core.link_check_at = 0
         Core:poll()
         T.assertTrue(passed ~= nil, "the link was never checked after the sleep")
@@ -865,6 +879,56 @@ T.describe("coming back after a sleep", function()
         Core.resume = real_resume
         Core.link_healed_at, Core.disconnected_since = nil, nil
         Core.last_poll_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("lets the reader draw before it stops the reader dead", function()
+        --[[
+        Rebuilding the link runs a shell script synchronously, and
+        KOReader's event loop is what waits for it -- so for its whole run
+        nothing is drawn and no tap is answered. From a log, the leader's
+        first twelve seconds awake:
+
+            23:03:29 the loop stopped for 296s - taking that as a sleep nobody announced
+            23:03:29 apart for a while; rebuilding the link rather than asking
+            23:03:34 loop: ... work avg 35.8ms max 5282.9ms
+            23:03:35 apart for a while; rebuilding the link rather than asking
+            23:03:45 loop: ... work avg 73.4ms max 5042.9ms
+
+        Eleven of twelve seconds blocked inside Duo, on a device whose
+        wallpaper stayed up because nothing could replace it. Reported as
+        the reader looking like it had not woken at all.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.has_connected = true
+        Core.settings.direct_link = "host"
+        local healed = 0
+        Core.hooks.reviveDirectLink = function() healed = healed + 1 return "rebuilt" end
+
+        Core.resumed_at = Util.now()
+        Core.disconnected_since = Util.now() - 60
+        Core.link_healed_at = nil
+        Core.heal_backoff = nil
+        Core:checkLinkHealth()
+        T.assertEquals(healed, 0, "it froze the reader in the act of waking")
+
+        -- The check after a sleep waits with it, and keeps its one shot.
+        Core.link_check_at = 0
+        Core:checkLink()
+        T.assertTrue(Core.link_check_at ~= nil, "and it lost the check waiting")
+
+        -- A moment later there is nothing left to draw over.
+        Core.resumed_at = Util.now() - Core.PAINT_FIRST - 0.1
+        Core:checkLinkHealth()
+        T.assertEquals(healed, 1, "it never got round to the repair at all")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.resumed_at, Core.disconnected_since = nil, nil
+        Core.link_healed_at, Core.link_check_at = nil, nil
+        Core.has_connected = nil
         Core.role = Core.ROLE_OFF
         reset()
     end)
