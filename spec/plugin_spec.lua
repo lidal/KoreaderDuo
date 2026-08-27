@@ -790,24 +790,129 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
-    T.it("does not call it a sleep twice when the reader mentions it too", function()
-        -- A suspend Duo was told about has already been dealt with, and it
-        -- leaves behind the very same gap.
+    T.it("comes back once per wake, whoever says so", function()
+        --[[
+        Two things report a wake and they do not agree on when: the poll gap
+        at the first turn of the loop, and the reader's own resume event
+        whenever KOReader gets to it -- five to eight seconds later in one
+        log, which was long enough for the repair to have rebuilt in
+        between. Coming back a second time cleared the repair's bookkeeping,
+        so it rebuilt again at once, and the second rebuild tore down the
+        cell the first had just made:
+
+            23:03:30 apart for a while; rebuilding the link rather than asking
+            23:03:35 rebuilt the link the two had been apart on
+            23:03:36 dialling 169.254.13.1:9970
+            23:03:38 apart for a while; rebuilding the link rather than asking
+        ]]
         reset()
         Core.role = Core.ROLE_LEADER
-        local woke = 0
-        local real_resume = Core.resume
-        Core.resume = function(_self) woke = woke + 1 end
 
-        local now = 4000
+        Core:resume()
+        local first = Core.resumed_at
+        T.assertTrue(first ~= nil, "the first wake did nothing at all")
+
+        -- The repair runs, as it did in the log.
+        Core.link_healed_at = Util.now()
+        Core.heal_backoff = 4
+
+        -- And now the reader mentions the sleep it never announced.
+        Core:resume()
+        T.assertEquals(Core.resumed_at, first, "the same wake was taken twice")
+        T.assertTrue(Core.link_healed_at ~= nil,
+            "the second wake wiped the repair's bookkeeping, so it rebuilt again")
+        T.assertEquals(Core.heal_backoff, 4)
+
+        -- A stop between the two says they are different wakes.
+        Core:stop("test done")
+        Core.role = Core.ROLE_LEADER
+        Core:resume()
+        T.assertTrue(Core.resumed_at ~= first, "a wake after a stop was refused")
+
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("does not move a clock stamped after the loop started again", function()
+        --[[
+        The poll that froze goes on to finish, and everything it does is
+        stamped after the freeze: a connection accepted, a dial completed, a
+        disconnection noticed. Moving those forward puts them in the future,
+        and a device whose clocks are ahead of the present has nothing to do
+        until the present catches up -- which in one log was a minute and a
+        half of the leader sitting still while the follower dialled it every
+        four seconds.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local real_resume = Core.resume
+        Core.resume = function() end
+
+        local now = 5000
         Core.last_poll_at = now
-        Core.resumed_at = now + Core.SLEPT_THROUGH + 5   -- the reader got there first
-        Core:noticeFrozenLoop(now + Core.SLEPT_THROUGH + 5)
-        T.assertEquals(woke, 0, "the same sleep was acted on twice")
+        Core.resumed_at = nil
+        local gap = Core.SLEPT_THROUGH + 100
+        -- One from before the freeze, one written by the poll that froze.
+        Core.link_healed_at = now - 3
+        Core.disconnected_since = now + gap - 0.2
+
+        Core:noticeFrozenLoop(now + gap)
+        T.assertEquals(Core.link_healed_at, now - 3 + gap,
+            "the clock that really did stop was not put right")
+        T.assertEquals(Core.disconnected_since, now + gap - 0.2,
+            "a clock stamped after the freeze was pushed into the future")
 
         Core.resume = real_resume
-        Core.resumed_at = nil
+        Core.link_healed_at, Core.disconnected_since = nil, nil
         Core.last_poll_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("keeps the joiner off the air until the host has made the cell", function()
+        --[[
+        The repair, not just the check after a sleep. Both devices woke
+        together, both repaired together, and both rebuilt in the same
+        second:
+
+            23:09:06 [leader]   rebuilt as ibss ... role: host
+            23:09:06 [follower] rebuilt as ibss ... role: join
+
+        after which the follower dialled the host every four seconds for a
+        minute and a half without an answer -- two cells, same name, made at
+        the same moment, which never became one. Scoping the stagger to the
+        wake assumed clocks that drift apart, and a pair that sleeps and
+        wakes on magnets does not have those.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.has_connected = true
+        local healed = 0
+        Core.hooks.reviveDirectLink = function() healed = healed + 1 return "rebuilt" end
+
+        local function repairAfter(apart, role)
+            Core.settings.direct_link = role
+            Core.link_healed_at = nil
+            Core.heal_backoff = nil
+            Core.disconnected_since = Util.now() - apart
+            Core:checkLinkHealth()
+        end
+
+        local before = healed
+        repairAfter(3, "join")
+        T.assertEquals(healed, before, "the joiner went looking for a cell nobody had made")
+
+        repairAfter(3, "host")
+        T.assertEquals(healed, before + 1, "the host waited for a cell only it can make")
+
+        -- And the joiner does get there, once the host has had its run.
+        repairAfter(3 + Core.JOINER_LEAD, "join")
+        T.assertEquals(healed, before + 2, "the joiner never rebuilt at all")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.disconnected_since, Core.link_healed_at = nil, nil
+        Core.has_connected = nil
         Core.role = Core.ROLE_OFF
         reset()
     end)
@@ -3307,6 +3412,9 @@ T.describe("keeping the radio awake while the pair is connected", function()
         core:onLinkReady(core.links[1])
         core.radio_checked_at = nil
         core.radio_retries = 0
+        -- A device that has not just woken, so that a test which wakes it
+        -- is not refused as the same wake as the test before.
+        core.resumed_at = nil
         return core, asked, function() return looked end
     end
 

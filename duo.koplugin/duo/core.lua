@@ -138,16 +138,29 @@ without an answer.
 
 Taken out once, on the grounds that the failure it was introduced for had a
 different cause and the script already guards this by joining at a fixed
-cell address. Put back on the evidence of the pair struggling without it.
-Two seconds, which is about one run of that script: long enough that the
-host's cell exists by the time the joiner's join executes, and short enough
-to be invisible against the rebuild itself.
+cell address. It does not always: the log line is "no cell with a fixed
+address; joining the ordinary way", and joining the ordinary way is a scan,
+which finds what is on the air at the moment it looks.
 
-Only after a wake. The repeating repair, for a pair that has been apart a
-while, still runs on both devices at once -- their clocks have long since
-drifted apart by then, and it is waking together that puts them in step.
+Eight seconds, from measurement rather than taste. The host's script takes
+about five to build the cell, so anything shorter has the joiner scanning
+for something that does not exist yet, finding nothing and forming a cell
+of its own. Two of those, same name, made in the same second, never become
+one. Once, at 23:09:06, both devices rebuilt in the same second and the
+follower then dialled the host every four seconds for a minute and a half
+without an answer; twelve hours earlier they were a second apart and it
+worked, slowly. The margin has to cover the script, not the scheduling.
+
+It applies to the repeating repair as well as to the check after a sleep.
+Scoping it to the wake was reasoning from clocks that drift apart, and this
+pair's do not: they sleep and wake on magnets, together, so the repair on
+one fires within a second of the repair on the other however long they have
+been parted.
+
+Only the joiner waits, and only when a rebuild is actually wanted. The host
+is the one making the cell and has nothing to wait for.
 --]]--
-local JOINER_LEAD = 2
+Core.JOINER_LEAD = 8
 
 --[[--
 Healing a link Duo built, without waiting to be told to, in seconds.
@@ -1189,6 +1202,13 @@ function Core:stop(reason, goodbye)
     answer for the check after it. See checkLink.
     ]]
     self.link_rebuilt_at = nil
+    --[[
+    And a wake before a stop holds nothing back after it. The point of
+    refusing a second wake is that two things report the same one; a stop in
+    between says this is a different one, and a suspend Duo was told about
+    comes through here on its way to the sleep.
+    ]]
+    self.resumed_at = nil
     -- After the role is cleared, not before: what the radio is wanted for is
     -- Duo running, so asking while the role still says it is running gets
     -- the answer it was already giving and hands nothing back.
@@ -1431,6 +1451,16 @@ mistaken for a night.
 Core.SLEPT_THROUGH = 12
 
 --[[--
+How long a wake stands before another one is believed, in seconds.
+
+Long enough to cover the spread between the two things that report a wake:
+the poll gap, at the first turn of the loop, and the reader's own resume
+event whenever KOReader gets round to delivering it -- five to eight
+seconds later in one log.
+--]]--
+Core.RESUME_AGAIN_AFTER = 20
+
+--[[--
 Notices the loop having stopped, and puts the clocks right.
 
 Runs before anything else in a poll and whatever Duo is doing, including
@@ -1454,22 +1484,38 @@ function Core:noticeFrozenLoop(now)
     how soon to try again.
     ]]
     for _, link in ipairs(self.links) do
-        if link.forgive then link:forgive(gap) end
+        if link.forgive then link:forgive(gap, last) end
     end
+    --[[
+    And only what was already there, which is what `last` is for. The poll
+    that froze went on to finish: a connection the kernel took while the
+    process was down was accepted, a dial completed, stamps were written --
+    all of it after the freeze, all of it stamped later than `last`. Moving
+    those forward puts them in the future, and a device whose clocks are
+    ahead of the present has nothing to do until the present catches up.
+
+    Which is exactly what happened, for a minute and a half:
+
+        23:09:01 link L closing peer disconnected age=-103.4s state=handshake
+        23:09:06 rebuilt the link the two had been apart on
+        ... and then nothing at all, while the other device dialled ...
+
+    A deadline still to come is left alone rather than pushed back, and
+    fires at once instead. That is right too: a reconnect due during the
+    freeze is a reconnect that is overdue now.
+    ]]
     for _, field in ipairs({
         "dialled_at", "reconnect_at", "disconnected_since", "link_healed_at",
         "announce_drop_at", "link_check_at", "radio_checked_at",
         "sleep_announced_at", "network_woken_at",
     }) do
-        if self[field] then self[field] = self[field] + gap end
+        if self[field] and self[field] <= last then
+            self[field] = self[field] + gap
+        end
     end
     if gap < Core.SLEPT_THROUGH then return end
-    --[[
-    And only then is it a sleep. Not if the reader already said so: a
-    suspend Duo was told about has been dealt with properly, and the gap it
-    leaves behind is the same gap.
-    ]]
-    if self.resumed_at and self.resumed_at >= last then return end
+    -- And only then is it a sleep. Saying so twice is resume's own business
+    -- to refuse, because the reader may say it either side of this.
     self:resume()
 end
 
@@ -4835,14 +4881,35 @@ for the first few seconds after waking, not something to interrupt reading
 with.
 --]]--
 function Core:resume()
+    --[[
+    Once per wake, whoever says so.
+
+    Two things report it now and they do not agree on when. The poll gap
+    notices at the first turn of the loop; the reader's own resume event
+    arrives whenever KOReader gets to it, which in one log was five to eight
+    seconds later -- long enough for the repair to have run a rebuild in
+    between. Coming back a second time then cleared the repair's
+    bookkeeping, so it rebuilt again immediately, and the second rebuild
+    tore down the cell the first had just made:
+
+        23:03:30 apart for a while; rebuilding the link rather than asking
+        23:03:35 rebuilt the link the two had been apart on
+        23:03:36 dialling 169.254.13.1:9970
+        23:03:38 apart for a while; rebuilding the link rather than asking
+
+    A sleep beginning and ending inside this window is not told apart from
+    the wake before it, which is a fair trade: the forgiveness above is not
+    debounced and still runs, and a sleep that short leaves little for this
+    to do.
+    ]]
+    local now = Util.now()
+    if self.resumed_at and now - self.resumed_at < Core.RESUME_AGAIN_AFTER then
+        self:trace("already came back a moment ago; not doing it twice")
+        return
+    end
+    self.resumed_at = now
     self.sleeping_for_peer = false
     self.sleep_announced_at = nil
-    --[[
-    Noted, so that a sleep worked out from a stopped loop is not acted on
-    twice when the reader gets round to mentioning it as well. See
-    noticeFrozenLoop.
-    ]]
-    self.resumed_at = Util.now()
 
     -- Checked whatever happens next, and that is the point: see checkLink.
     -- Not conditional on the setting: whether this is a link Duo has to
@@ -4979,7 +5046,7 @@ function Core:checkLink()
     end
     if self:get("direct_link") == "join" and not self.joiner_waited then
         self.joiner_waited = true
-        self.link_check_at = Util.now() + JOINER_LEAD
+        self.link_check_at = Util.now() + Core.JOINER_LEAD
         return
     end
     self.link_check_at = nil
@@ -5053,6 +5120,18 @@ function Core:checkLinkHealth()
     -- A link that has worked and stopped is broken now; one that has never
     -- worked is probably still being set up by somebody.
     local patience = self.has_connected and LINK_HEAL_AFTER or LINK_HEAL_FIRST
+    --[[
+    And the joiner is the more patient of the two, always, so that the host
+    has finished making the cell before the joiner goes looking for it. A
+    standing offset rather than a one-off: both devices heal on the same
+    schedule from their own first attempt, so staggering the first staggers
+    all of them.
+
+    It often means no rebuild at all on this side. The host re-forms the
+    cell, the joiner's next dial finds it, and the seconds spent waiting
+    were cheaper than the rebuild they replaced.
+    ]]
+    if self:get("direct_link") == "join" then patience = patience + Core.JOINER_LEAD end
     if now - self.disconnected_since < patience then return end
     local base = self.has_connected and LINK_HEAL_EVERY or LINK_HEAL_EVERY_WAITING
     local between = math.min(base * (self.heal_backoff or 1), LINK_HEAL_CEILING)

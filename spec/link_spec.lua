@@ -719,6 +719,30 @@ T.describe("forgiving a device that was not running", function()
         T.assertEquals(link.closed_with, "handshake timed out")
     end)
 
+    T.it("leaves a link made after the freeze exactly where it is", function()
+        --[[
+        A connection the kernel took while the process was down is handed
+        over the moment it comes back, so it is made during the stopped
+        poll and lived through none of it. Moving its clocks puts them in
+        the future:
+
+            23:09:01 link L closing peer disconnected age=-103.4s state=handshake
+
+        A link a hundred seconds old before it was made, on a device that
+        then had nothing to do for a minute and a half.
+        ]]
+        local now = Util.now()
+        local link = sleptThrough(55)
+        -- Made now, which is after the loop was last known to be turning.
+        link.created_at = now
+        link.last_rx = now
+        link:forgive(55, now - 55)
+        T.assertEquals(link.created_at, now, "a link was aged before it existed")
+        T.assertEquals(link.last_rx, now)
+        link:checkTimers()
+        T.assertNil(link.closed_with)
+    end)
+
     T.it("leaves nothing-sent-yet alone rather than moving it", function()
         -- Zero is not a time. A leader repeats its challenge once a second
         -- from last_tx, and a last_tx pushed into the future is a challenge

@@ -86,17 +86,36 @@ them. The link gets its full allowance from the moment the device is really
 awake, which in that log would have been a connection at once rather than
 nineteen seconds and four rebuilds later.
 
+Only what was already there. A link made *during* the stopped poll -- a
+connection accepted by the kernel while the process was down, handed over
+the moment it came back -- did not live through any of this, and moving its
+clocks puts them in the future. That is not theory either:
+
+    23:09:01 link L closing peer disconnected age=-103.4s ... state=handshake
+
+A link a hundred seconds old before it was made, on a device that then had
+nothing to do for a minute and a half because every clock it owned was
+ahead of the present. Hence the cutoff: the last time the loop was known to
+be turning. Anything stamped after that happened after the freeze.
+
 @number seconds  how long the loop was stopped
+@number before   the last time the loop was known to be running; stamps
+    later than this are left alone
 --]]--
-function Link:forgive(seconds)
+function Link:forgive(seconds, before)
     if not seconds or seconds <= 0 then return end
-    self.created_at = self.created_at + seconds
-    self.last_rx = self.last_rx + seconds
+    local function moved(value)
+        if not value then return value end
+        if before and value > before then return value end
+        return value + seconds
+    end
+    self.created_at = moved(self.created_at)
+    self.last_rx = moved(self.last_rx)
     -- Zero means nothing has been sent yet, and is not a time to move.
     if self.last_tx and self.last_tx > 0 then
-        self.last_tx = self.last_tx + seconds
+        self.last_tx = moved(self.last_tx)
     end
-    if self.grace_until then self.grace_until = self.grace_until + seconds end
+    self.grace_until = moved(self.grace_until)
 end
 
 --[[--
