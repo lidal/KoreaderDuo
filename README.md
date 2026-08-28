@@ -423,7 +423,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-527 tests, with the interesting parts unmocked: two and three device
+535 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -440,6 +440,31 @@ would measure whatever was there before.
 luajit tools/duo-demo.lua 3      # three devices, printing what each displayed
 luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 ```
+
+## Over a wire
+
+**Duo → Link → Over a wire** talks down a character device instead of a
+network: the two readers' debug UARTs, TX to RX with a common ground. On a
+matched pair no level shifting is needed, since both sides are the same.
+
+The attraction is that there is nothing to reconnect. Every fault this
+plugin has chased — associating, power saving, cells that have to be rebuilt,
+links that die at eight seconds — is a radio fault. A line is simply there
+whenever both devices have power, so the leader starts the handshake and the
+follower answers whenever it wakes.
+
+115200 baud is 11.5 KB/s. Duo's own traffic is about 80 bytes a second, so
+there is room to spare — but send books with something else
+([localsend](https://github.com/kaikozlov/localsend.koplugin) does it well),
+because a book down a serial line takes minutes.
+
+Two things to know before wiring anything up. The device is a guess and says
+so: `/dev/ttymxc0` is the usual debug UART on these readers, and it is
+usually also the console, so a getty may be reading the same bytes and
+answering the other reader with a login prompt — stop it first. And what the
+suite proves about this is narrower than it looks: the framing, the handshake
+and the state machine are tested over a pseudo-terminal, but nothing about
+baud rates, framing errors or a full FIFO is. Those wait for a real wire.
 
 ## Reconnecting the plain way
 

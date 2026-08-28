@@ -225,6 +225,64 @@ Beside KOReader's own `crash.log`, in the data folder, because that is the
 folder somebody already knows how to find over a USB cable -- and because a
 log nobody can lay hands on is not a log, it is a habit.
 --]]--
+--[[--
+Moves Duo between a network and a wire.
+
+Stopping first, because the two have nothing in common: one listens and
+dials, the other opens a file that was already there.
+--]]--
+function Duo:setTransport(transport)
+    if Core:get("transport") == transport then return end
+    local role = Core.role
+    local was_active = Core:isActive()
+    if was_active then
+        Core:stop("switching link")
+    end
+    Core:set("transport", transport)
+    if transport == Core.TRANSPORT_SERIAL
+        and not require("duo/transport_serial").isAvailable() then
+        UIManager:show(InfoMessage:new{
+            text = _("This build of KOReader cannot open a serial device, so Duo will stay on the network."),
+        })
+        Core:set("transport", Core.TRANSPORT_TCP)
+        return
+    end
+    if was_active then
+        Core:start(role)
+    end
+    self:refreshMenu()
+end
+
+function Duo:showSerialDeviceDialog()
+    local dialog
+    dialog = InputDialog:new{
+        title = _("Serial device"),
+        description = _("The character device both readers are joined by. On the readers this runs on the debug UART is usually /dev/ttymxc0, which is also where the console lives — stop anything reading it first."),
+        input = Core:get("serial_device"),
+        input_hint = "/dev/ttymxc0",
+        buttons = {{
+            {
+                text = _("Cancel"),
+                id = "close",
+                callback = function() UIManager:close(dialog) end,
+            },
+            {
+                text = _("Save"),
+                is_enter_default = true,
+                callback = function()
+                    local path = (dialog:getInputText() or ""):gsub("%s", "")
+                    UIManager:close(dialog)
+                    if path == "" then return end
+                    Core:set("serial_device", path)
+                    self:refreshMenu()
+                end,
+            },
+        }},
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
 function Duo:getLogPath()
     return DataStorage:getDataDir() .. "/duo.log"
 end
@@ -2722,6 +2780,40 @@ On connecting, the leader's settings win. After that a change on either device m
                 Core:set("sync_frontlight", not Core:get("sync_frontlight"))
                 if Core:get("sync_frontlight") then Core:pushFrontlight("switched on") end
             end,
+        },
+        {
+            text_func = function()
+                if Core:usesSerial() then
+                    return T(_("Link: a wire (%1)"), Core:get("serial_device"))
+                end
+                return _("Link: a network")
+            end,
+            help_text = _("A network link is TCP over Wi-Fi, or over a direct link Duo builds itself. A wire is a character device — two readers joined TX to RX with a common ground, or any serial port.\n\nOn a wire there is nothing to dial and nothing to reconnect: the line is simply there whenever both devices have power."),
+            sub_item_table = {
+                {
+                    text = _("Over a network"),
+                    checked_func = function() return not Core:usesSerial() end,
+                    callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
+                },
+                {
+                    text = _("Over a wire"),
+                    help_text = _("A serial line. Set the device below, and make sure nothing else is holding it — on most readers the debug UART is also the console, so a getty will be reading the same bytes."),
+                    checked_func = function() return Core:usesSerial() end,
+                    callback = function() self:setTransport(Core.TRANSPORT_SERIAL) end,
+                    separator = true,
+                },
+                {
+                    text_func = function()
+                        return T(_("Device: %1"), Core:get("serial_device"))
+                    end,
+                    enabled_func = function() return Core:usesSerial() end,
+                    keep_menu_open = true,
+                    callback = function(touchmenu_instance)
+                        self.menu_container = touchmenu_instance
+                        self:showSerialDeviceDialog()
+                    end,
+                },
+            },
         },
         {
             text = _("Reconnect the plain way"),

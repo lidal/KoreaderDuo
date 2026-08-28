@@ -25,6 +25,7 @@ local NetUtil = require("duo/netutil")
 local Protocol = require("duo/protocol")
 local Spread = require("duo/spread")
 local TcpTransport = require("duo/transport_tcp")
+local SerialTransport = require("duo/transport_serial")
 local Util = require("duo/util")
 
 local Core = {
@@ -282,9 +283,25 @@ the book goes down.
 local IDLE_HOLD = 300
 
 Core.TRANSPORT_TCP = "tcp"
+Core.TRANSPORT_SERIAL = "serial"
 
 local DEFAULTS = {
     transport = "tcp",
+    --[[
+    Where the wire is, when there is one.
+
+    A guess, and said to be one: on the i.MX6 readers this runs on the
+    debug UART is usually `/dev/ttymxc0`, and that is usually also where the
+    console lives -- so a getty may be reading the same line and answering
+    the other reader's handshake with a login prompt. Check with `ls /dev/tty*`
+    and stop the getty before trusting it.
+
+    Not `/dev/rfcomm0` any more, which is what it was when this transport
+    was written for Bluetooth. The devices it now runs on have no Bluetooth
+    radio at all, so a cable is the only thing this can be.
+    ]]
+    serial_device = "/dev/ttymxc0",
+    serial_baud = 115200,
     keep_radio_awake = true,
     --[[
     Reconnect the plain way: try again in a second, and keep trying.
@@ -1131,6 +1148,33 @@ function Core:start(role, options)
     self.sleeping_for_peer = false
     self.sleep_announced_at = nil
 
+    --[[
+    A wire has no listen and no dial. Both devices open the same character
+    device and the leader starts the handshake, so everything below about
+    ports and addresses simply does not apply.
+    ]]
+    if self:usesSerial() then
+        if role ~= Core.ROLE_LEADER and role ~= Core.ROLE_FOLLOWER then return false end
+        if not SerialTransport.isAvailable() then
+            self:alert("This build of KOReader cannot use a serial link.")
+            return false
+        end
+        self.role = role
+        self.settings.autostart_role = role
+        self:save()
+        if not self:openSerialLink() then
+            self:alert(("Could not open %s.\n%s\n\nCheck the device exists and nothing else is holding it:\n  ls -l %s"):format(
+                self:get("serial_device"), tostring(self.last_error),
+                self:get("serial_device")))
+            self:stop("serial device unavailable")
+            return false
+        end
+        self.last_activity = Util.now()
+        self:updateAwake()
+        self:changed()
+        return true
+    end
+
     if role == Core.ROLE_LEADER then
         local port = self:get("port")
         local server, err = TcpTransport.listen(port)
@@ -1662,6 +1706,31 @@ leaves alone is everything structural -- the repair still runs, the check
 after a sleep still happens, links still close when they go quiet. This is
 a question about timing, and only timing.
 --]]--
+--- True when Duo is talking over a wire rather than a network.
+function Core:usesSerial()
+    return self:get("transport") == Core.TRANSPORT_SERIAL
+end
+
+--[[--
+Brings up the serial link.
+
+There is no dialling on a serial line: both devices open the same channel
+and the leader starts talking. Whoever gets there first waits for the other.
+--]]--
+function Core:openSerialLink()
+    self.reconnect_at = nil
+    local path = self:get("serial_device")
+    local stream, err = SerialTransport.open(path, { baud = self:get("serial_baud") })
+    if not stream then
+        self.last_error = err
+        self:scheduleReconnect()
+        return false
+    end
+    self:adoptStream(stream, self:isLeader())
+    self:changed()
+    return true
+end
+
 function Core:isPlain()
     return self:get("plain_reconnect") and true or false
 end
@@ -1828,7 +1897,14 @@ function Core:pollOnce()
 
     if self.responder then self.responder:poll() end
 
-    do
+    if self:usesSerial() then
+        -- One line, one link: reopen it when it has gone away. There is
+        -- nobody to accept from and nowhere to dial.
+        if #self.links == 0 and self.reconnect_at
+            and Util.now() >= self.reconnect_at then
+            self:openSerialLink()
+        end
+    else
         if self:isLeader() and self.server then
             while true do
                 local stream = self.server:accept()
@@ -2198,7 +2274,12 @@ function Core:onLinkClosed(link, reason)
     two devices taking turns disconnecting each other for as long as anyone
     watched.
     ]]
-    if self:isActive() and self:isFollower() and not self:hasLiveLink() then
+    --[[
+    Whoever dialled is the one who redials. On a serial line neither side
+    dialled, so both keep the channel open and wait for the other.
+    ]]
+    if self:isActive() and (self:isFollower() or self:usesSerial())
+        and not self:hasLiveLink() then
         self:scheduleReconnect()
     end
     self:changed()
