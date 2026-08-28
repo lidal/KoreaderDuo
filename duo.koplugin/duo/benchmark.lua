@@ -215,6 +215,13 @@ function Benchmark:start(now)
         ("(%ds from now)"):format(self.began_at - now))
     self:log("-- trials:", #self.trials, "slot:", Benchmark.SLOT,
         "sleep:", Benchmark.SLEEP)
+    --[[
+    And which way it is reconnecting, because that is the thing two runs
+    are now compared on and neither file said. A run whose settings are not
+    in it is a run that has to be dated against a memory.
+    ]]
+    local plain = self.core and self.core.isPlain and self.core:isPlain()
+    self:log("-- reconnecting the", plain and "plain" or "usual", "way")
     return self.began_at
 end
 
