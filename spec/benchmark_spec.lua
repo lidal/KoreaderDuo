@@ -69,6 +69,40 @@ T.describe("agreeing on when to start without asking", function()
         T.assertTrue(not late_moved, "the later device moved, and would say so for ever")
     end)
 
+    T.it("starts the plan over when the other device turns up late", function()
+        --[[
+        The ordinary case, not a corner. Whoever is tapped first begins on
+        its own if the second is slow, and what it does alone measures
+        nothing -- half of every trial is what the other device did. So the
+        rows taken against nobody go, rather than sitting in the file
+        looking like results.
+        ]]
+        local connected = false
+        local bench, clock = rig{
+            trials = { { phase = "wifi", label = "one" },
+                       { phase = "wifi", label = "two" } },
+            core = { isConnected = function() return connected end },
+        }
+        bench:start(clock.at)
+        clock.at = bench.began_at
+        bench:update(clock.at)
+        clock.at = bench.began_at + Benchmark.SETTLE
+        bench:update(clock.at)
+        connected = true
+        clock.at = clock.at + 1
+        bench:update(clock.at)
+        T.assertEquals(#bench.results, 1, "the fixture ran nothing to throw away")
+
+        -- And now the other device says when it is really starting.
+        T.assertTrue(bench:agree(bench.began_at + 600))
+        T.assertEquals(#bench.results, 0, "it kept rows measured against nobody")
+        T.assertNil(bench.stage, "it would skip the first trial of the real run")
+
+        clock.at = bench.began_at
+        bench:update(clock.at)
+        T.assertEquals(bench.stage, 1, "the plan did not begin again from the top")
+    end)
+
     T.it("adopts a time outright when it has none of its own yet", function()
         local bench = rig()
         T.assertTrue(not bench:agree(12345), "it answered back on a proposal it simply took")

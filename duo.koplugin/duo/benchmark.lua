@@ -137,6 +137,21 @@ function Benchmark:agree(at)
     self:log("-- moving the first trial from", ("%d"):format(self.began_at),
         "to", ("%d"):format(at), "to meet the other device")
     self.began_at = at
+    --[[
+    And starting the plan over, because the schedule it was keeping no
+    longer exists. This is the ordinary case, not a corner: the device
+    tapped first begins on its own if the second is slow to be tapped, and
+    what it does alone is a measurement of nothing -- half of every trial is
+    what the *other* device did. Better to throw those away and run the
+    whole plan together than to leave a file whose first rows were taken
+    against nobody and say nothing about it.
+    ]]
+    if self.stage then
+        self:log("-- starting again from the top; what ran before this was measured alone")
+    end
+    self.stage = nil
+    self.current = nil
+    self.results = {}
     return true
 end
 

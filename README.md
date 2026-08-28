@@ -420,7 +420,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-516 tests, with the interesting parts unmocked: two and three device
+517 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -449,11 +449,11 @@ first, with the sleep announced and unannounced, then moves the pair to a
 direct link and sweeps the joiner's head start from nothing to twelve
 seconds, twice at each value. Then it puts the Wi-Fi back.
 
-The two keep in step by naming the second they start on: the device you tap
-first tells the other over the link they are already on, and if both were
-tapped they take the later of the two proposals. Failing that they align on
-the wall clock, which is why the notification says the exact second — if the
-two disagree, stop and start again.
+You do not have to tap them together. The second device to start names the
+second the run begins on, over the link they are already on, and the first
+comes to meet it — starting the plan over if it had begun alone, since a
+trial run against nobody measures nothing. Failing a link they align on the
+wall clock, which is why the notification says the exact second.
 
 Each writes `benchmarkHOST.log` or `benchmarkFOLLOWER.log` beside the Duo
 log, ending in a table of every trial: how long the reconnect took, how many
