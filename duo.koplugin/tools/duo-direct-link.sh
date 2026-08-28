@@ -501,9 +501,17 @@ bring_up_ibss_iw() {
         run_sh "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID"
         return 0
     fi
-    fixed_said=$(sh -c "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID 2>&1" || true)
+    fixed_said=$(sh -c "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID 2>&1")
+    fixed_ok=$?
     fixed_said=$(echo "$fixed_said" | tr '\n' ' ')
-    if ! wait_for 3 cell_joined "$iface"; then
+    #[[
+    # Waited on only if it was accepted. The readers this runs on answer
+    # "command failed: Operation not supported (-95)" and answer it at once,
+    # so the three seconds afterwards were spent watching for a cell that
+    # was never going to appear -- most of the four or five a rebuild costs,
+    # burned on every rebuild, on a driver that had already said no.
+    #]]
+    if [ "$fixed_ok" -ne 0 ] || ! wait_for 3 cell_joined "$iface"; then
         log "no cell with a fixed address; joining the ordinary way${fixed_said:+ -- iw said: $fixed_said}"
         run_sh "iw dev $iface ibss join $SSID $FREQUENCY 2>/dev/null || true"
         wait_for 3 cell_joined "$iface"

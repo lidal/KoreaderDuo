@@ -979,6 +979,56 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("starts the clock on being apart when the two come apart", function()
+        --[[
+        `disconnected_since` used to be cleared below a guard that returns
+        whenever a link exists -- which is whenever the pair is connected,
+        so it was never cleared at all. It held the time the two were first
+        ever apart, and every patience measured against it had been passed
+        hours before. From a log, the moment a healthy link dropped:
+
+            09:02:20 [follower] link closed: peer disconnected age=67.8s
+            09:02:20 [follower] apart for a while; rebuilding the link
+            09:02:23 [leader]   link closed: peer disconnected age=67.7s
+            09:02:23 [leader]   apart for a while; rebuilding the link
+
+        Both rebuilding within three seconds, the joiner's lead stepped
+        over, two cells of the same name, and the follower dialling into
+        nothing.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.disconnected_since = Util.now() - 3600   -- apart, an hour ago
+        Core.has_connected = nil
+        Core.heal_backoff = 8
+
+        local link = { isReady = function() return true end,
+                       isClosed = function() return false end }
+        Core.links = { link }
+        Core:checkLinkHealth()
+
+        T.assertNil(Core.disconnected_since,
+            "a connected pair went on counting how long it had been apart")
+        T.assertTrue(Core.has_connected,
+            "a pair that has met was treated as one that never had")
+        T.assertNil(Core.heal_backoff, "the backoff earned while apart outlived it")
+
+        -- And the count starts again from now, not from an hour ago.
+        Core.links = {}
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "rebuilt" end
+        Core.settings.direct_link = "host"
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 0, "it rebuilt the instant the link dropped")
+        T.assertTrue(Core.disconnected_since ~= nil)
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.disconnected_since, Core.has_connected = nil, nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("keeps the joiner off the air until the host has made the cell", function()
         --[[
         The repair, not just the check after a sleep. Both devices woke

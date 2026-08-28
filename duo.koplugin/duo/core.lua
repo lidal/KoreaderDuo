@@ -5161,6 +5161,41 @@ keeps checking that the stream still has somewhere to be.
 function Core:checkLinkHealth()
     if not self:isActive() then return end
     --[[
+    Connected settles all of this, and has to be asked before anything else
+    returns.
+
+    It used to be asked further down, below the guard on a link existing --
+    which is unreachable while the pair is connected, because a connected
+    pair has a link and that guard returns on one. So none of the
+    bookkeeping in it ever ran: `disconnected_since` kept whatever time the
+    two were first ever apart, `has_connected` stayed false for the life of
+    the process, and the backoff never went back to being prompt.
+
+    Which turned every patience below into no patience at all. From a log,
+    the moment a healthy link dropped:
+
+        09:02:20 [follower] link closed: peer disconnected age=67.8s
+        09:02:20 [follower] apart for a while; rebuilding the link
+        09:02:23 [leader]   link closed: peer disconnected age=67.7s
+        09:02:23 [leader]   apart for a while; rebuilding the link
+
+    Both rebuilding within three seconds of each other, the joiner's lead
+    stepped straight over because the threshold it is added to had been
+    passed hours before -- so two cells again, same name, and the follower
+    dialling into nothing. And then neither tried again for five minutes,
+    because a `has_connected` stuck at false picks the interval meant for a
+    pair that has never met rather than the one for a pair that just lost
+    each other.
+    ]]
+    if self:isConnected() then
+        self.disconnected_since = nil
+        self.has_connected = true
+        -- Back to prompt: the next time they are parted, the first few
+        -- attempts should be as quick as they ever were.
+        self.heal_backoff = nil
+        return
+    end
+    --[[
     Nothing is healed while a connection is being made. Rebuilding the link
     means reconfiguring the radio, and doing that to a handshake in progress
     kills it -- and worse, the rebuild runs a shell script the event loop
@@ -5188,14 +5223,6 @@ function Core:checkLinkHealth()
     -- And a reader that has just woken is drawing, which this would stop it
     -- doing for five seconds. See PAINT_FIRST.
     if self:justWoke() then return end
-    if self:isConnected() then
-        self.disconnected_since = nil
-        self.has_connected = true
-        -- Back to prompt: the next time they are parted, the first few
-        -- attempts should be as quick as they ever were.
-        self.heal_backoff = nil
-        return
-    end
     local now = Util.now()
     self.disconnected_since = self.disconnected_since or now
     -- A link that has worked and stopped is broken now; one that has never
