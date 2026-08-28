@@ -1305,6 +1305,10 @@ function Core:beginConnect()
     self.connector = nil
     self.reconnect_at = nil
     local host, port = self:get("peer_host"), self:get("peer_port")
+    -- Counted as well as traced. A benchmark cannot read the log it is
+    -- writing, and "how many times did it dial" is the difference between a
+    -- reconnect that was slow and one that was fought for.
+    self.dials_made = (self.dials_made or 0) + 1
     self:trace("dialling", ("%s:%s"):format(tostring(host), tostring(port)))
     self.dialled_at = Util.now()
     local connector, err = TcpTransport.connect(host, port, DIAL_TIMEOUT)
@@ -1622,6 +1626,7 @@ function Core:noticeFrozenLoop(now)
         end
     end
     if gap < Core.SLEPT_THROUGH then return end
+    self.sleeps_noticed = (self.sleeps_noticed or 0) + 1
     -- And only then is it a sleep. Saying so twice is resume's own business
     -- to refuse, because the reader may say it either side of this.
     self:resume()
@@ -1757,6 +1762,9 @@ function Core:pollOnce()
     self:checkFrontlight()
     self:checkLinkHealth()
     self:checkRadioSetting()
+    -- The benchmark, when there is one. It measures Duo from outside, so it
+    -- runs after everything Duo does rather than among it.
+    if self.hooks and self.hooks.benchmarkTick then pcall(self.hooks.benchmarkTick) end
     self:checkDropNotice()
     self:checkDocumentAcks()
     self:checkLibrary()
@@ -2434,6 +2442,14 @@ asked, which is exactly the moment to settle it between them.
 @string to  "direct" or "wifi"
 @treturn boolean  whether there was anybody to ask
 --]]--
+--- Tells the other device which second the benchmark begins on.
+function Core:proposeBenchmark(at)
+    local link = self:getReadyLinks()[1]
+    if not link then return false end
+    link:send(Protocol.BENCH, { at = ("%d"):format(at) })
+    return true
+end
+
 function Core:askPeerToSwitch(to)
     local links = self:getReadyLinks()
     if #links == 0 then return false end
@@ -4406,6 +4422,26 @@ end
 --------------------------------------------------------------------------
 
 function Core:handleMessage(link, msg)
+    --[[
+    Settling when the benchmark starts, while there is still a link to
+    settle it over. Aligning on the wall clock alone has a seam in it: two
+    devices either side of a boundary pick times a whole window apart and
+    then run different trials at each other for twenty minutes. They are
+    connected when this is set up -- that is how the benchmark begins -- so
+    the seam is avoidable simply by saying which second is meant.
+
+    Both take the later of the two proposals, so they agree whoever spoke
+    first, and the one whose answer changed says so once. An older Duo
+    falls off the end of this chain and ignores the message, which is the
+    right thing for it to do with a benchmark it does not have.
+    ]]
+    if msg.type == Protocol.BENCH then
+        if not self.hooks or not self.hooks.benchmarkAgreed then return end
+        local at = Protocol.num(msg, "at")
+        if not at or at <= 0 then return end
+        pcall(self.hooks.benchmarkAgreed, at)
+        return
+    end
     if msg.type == Protocol.STATE then
         if self:isLeader() then return end -- only the leader decides
         self:noteTurnAnswered()
@@ -5343,6 +5379,7 @@ function Core:checkLinkHealth()
     local ok, outcome = pcall(self.hooks.reviveDirectLink, true, forced, true)
     if ok and outcome == "rebuilt" then
         self:log("rebuilt the link the two had been apart on")
+        self.rebuilds_made = (self.rebuilds_made or 0) + 1
         -- Noted, because it settles the question the check after a sleep
         -- exists to ask. See checkLink.
         self.link_rebuilt_at = Util.now()

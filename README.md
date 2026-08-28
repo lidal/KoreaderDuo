@@ -420,7 +420,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-503 tests, with the interesting parts unmocked: two and three device
+516 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -437,6 +437,33 @@ would measure whatever was there before.
 luajit tools/duo-demo.lua 3      # three devices, printing what each displayed
 luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 ```
+
+## The reconnect benchmark
+
+**Duo → Run the reconnect benchmark…**, on *both* devices. Twenty minutes of
+taking the network away and giving it back, timing what Duo does about it.
+
+Each trial takes the interface down, freezes the event loop the way a
+suspend does, gives it back, and times the reconnect. It measures Wi-Fi
+first, with the sleep announced and unannounced, then moves the pair to a
+direct link and sweeps the joiner's head start from nothing to twelve
+seconds, twice at each value. Then it puts the Wi-Fi back.
+
+The two keep in step by naming the second they start on: the device you tap
+first tells the other over the link they are already on, and if both were
+tapped they take the later of the two proposals. Failing that they align on
+the wall clock, which is why the notification says the exact second — if the
+two disagree, stop and start again.
+
+Each writes `benchmarkHOST.log` or `benchmarkFOLLOWER.log` beside the Duo
+log, ending in a table of every trial: how long the reconnect took, how many
+dials and rebuilds it needed, and how many peers the radio could see
+afterwards. That last one is the interesting column on a direct link —
+`peers 0` on the joiner means it made a cell of its own instead of finding
+the host's.
+
+**The reader is unusable while it runs**, on purpose: twenty seconds of every
+minute are the event loop deliberately stopped.
 
 ## Releasing
 

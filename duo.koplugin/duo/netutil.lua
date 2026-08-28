@@ -169,6 +169,11 @@ local function wirelessInterface()
     return nil
 end
 
+--- The wireless interface's name, for anything that has to name it.
+function NetUtil.wirelessInterfaceName()
+    return wirelessInterface()
+end
+
 --[[--
 Turns the wireless card's power saving off, or puts it back.
 

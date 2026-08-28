@@ -140,6 +140,14 @@ end
 -- UIManager polls every registered "ZMQ" at least every 50ms, which is the
 -- cheapest way for a plugin to get a timer without keeping the CPU awake.
 function Duo:ensurePolling()
+    Core.hooks = Core.hooks or {}
+    Core.hooks.benchmarkTick = function() Duo:tickBenchmark() end
+    Core.hooks.benchmarkAgreed = function(at)
+        local benchmark = Duo.benchmark
+        if not benchmark then return end
+        -- Only when ours moved, or the two would agree at each other for ever.
+        if benchmark:agree(at) then Core:proposeBenchmark(benchmark.began_at) end
+    end
     local poller = Core:getPoller()
     for _, registered in ipairs(UIManager._zeromqs or {}) do
         if registered == poller then return end
@@ -214,6 +222,92 @@ log nobody can lay hands on is not a log, it is a habit.
 --]]--
 function Duo:getLogPath()
     return DataStorage:getDataDir() .. "/duo.log"
+end
+
+--- Named by role, because the whole point is to read the two side by side.
+function Duo:getBenchmarkPath()
+    return DataStorage:getDataDir() ..
+        (Core:isLeader() and "/benchmarkHOST.log" or "/benchmarkFOLLOWER.log")
+end
+
+--[[--
+Starts the reconnect benchmark, or stops one that is running.
+
+Twenty minutes of taking the network away and giving it back, on both
+devices at once, timing what Duo does about it. See duo/benchmark.lua for
+what it measures and why it can be trusted to keep in step without a word
+passing between the two.
+
+The reader is unusable while this runs -- the loop is frozen on purpose for
+twenty seconds of every minute -- and it puts the Wi-Fi back at the end.
+--]]--
+function Duo:toggleBenchmark()
+    if Duo.benchmark and Duo.benchmark.running then
+        Duo.benchmark:stop("asked to stop")
+        Duo:closeBenchmark()
+        Core:notify(_("Duo: benchmark stopped"))
+        return
+    end
+    local Benchmark = require("duo/benchmark")
+    local Log = require("duo/log")
+    local writer, err = Log.open(self:getBenchmarkPath())
+    if not writer then
+        Core:notify(T(_("Duo: could not write the benchmark log: %1"), tostring(err)))
+        return
+    end
+    Duo.benchmark_writer = writer
+    local DirectLink = require("duo/directlink")
+    local NetUtil = require("duo/netutil")
+    Duo.benchmark = Benchmark.new{
+        core = Core,
+        role = Core:isLeader() and "host" or "follower",
+        iface = NetUtil.wirelessInterfaceName() or "wlan0",
+        now = function() return require("duo/util").now() end,
+        write = function(line) writer:write(line) end,
+        shell = function(command)
+            local pipe = io.popen(command)
+            if not pipe then return "" end
+            local out = pipe:read("*a") or ""
+            pipe:close()
+            return out
+        end,
+    }
+    Duo.benchmark.script = DirectLink.scriptPath()
+    local begins = Duo.benchmark:start(require("duo/util").now())
+    --[[
+    Said out loud while there is still a link to say it over. Aligning on
+    the wall clock alone has a seam in it, and the two are connected when
+    this is set up -- that is how the benchmark begins -- so the seam is
+    avoidable simply by naming the second.
+    ]]
+    if Core:proposeBenchmark(begins) then
+        Core:log("benchmark: told the other device to begin at", tostring(begins))
+    end
+    Core:notify(T(_("Duo: benchmark starts in %1s. Start it on the other device too."),
+        tostring(math.max(0, math.floor(begins - os.time())))))
+end
+
+function Duo:closeBenchmark()
+    if Duo.benchmark_writer then
+        pcall(function() Duo.benchmark_writer:close() end)
+        Duo.benchmark_writer = nil
+    end
+    Duo.benchmark = nil
+end
+
+--- One turn of the benchmark, hung off Duo's own poll.
+function Duo:tickBenchmark()
+    local benchmark = Duo.benchmark
+    if not benchmark or not benchmark.running then return end
+    local ok, err = pcall(function() benchmark:update(require("duo/util").now()) end)
+    if not ok then
+        Core:log("benchmark error:", tostring(err))
+        benchmark:stop("it went wrong: " .. tostring(err))
+        Duo:closeBenchmark()
+    elseif not benchmark.running then
+        Duo:closeBenchmark()
+        Core:notify(_("Duo: benchmark finished"))
+    end
 end
 
 --[[--
@@ -2731,6 +2825,17 @@ On connecting, the leader's settings win. After that a change on either device m
                 Core:log(wanted and "verbose log switched on" or "verbose log switched off")
                 self:refreshMenu()
             end,
+        },
+        {
+            text_func = function()
+                if Duo.benchmark and Duo.benchmark.running then
+                    return _("Stop the reconnect benchmark")
+                end
+                return _("Run the reconnect benchmark…")
+            end,
+            help_text = _("Twenty minutes of taking the network away and giving it back, timing what Duo does about it, and trying the direct link with a range of settings. Start it on BOTH devices within two minutes and they will keep in step by the clock.\n\nThe reader is unusable while it runs. It puts the Wi-Fi back at the end, and writes benchmarkHOST.log or benchmarkFOLLOWER.log beside the Duo log."),
+            keep_menu_open = true,
+            callback = function() Duo:toggleBenchmark() end,
         },
         {
             text_func = function()

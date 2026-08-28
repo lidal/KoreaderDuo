@@ -59,6 +59,7 @@ Protocol.BOOK_DONE = "BOOK_DONE" -- leader -> peer: that was all of it
 Protocol.BOOK_ERR  = "BOOK_ERR"  -- either way: the transfer failed
 Protocol.NAP       = "NAP"       -- leader -> peer: I am dozing off / I am back
 Protocol.SWITCH    = "SWITCH"    -- either way: let us both move to this
+Protocol.BENCH     = "BENCH"     -- either way: begin the benchmark at this second
                                  -- transport; ack=1 on the reply
 Protocol.SLEEP     = "SLEEP"     -- either way: I am going to sleep, do the same
 Protocol.RELOAD    = "RELOAD"    -- either way: I am reloading the book; do the same
