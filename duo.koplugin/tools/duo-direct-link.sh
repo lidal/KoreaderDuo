@@ -482,10 +482,29 @@ bring_up_ibss_iw() {
     # the plain form is tried after it, judged on whether a cell appeared
     # rather than on what the interface calls itself.
     #]]
-    run_sh "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID 2>/dev/null || true"
-    [ "$DRY_RUN" = "1" ] && return 0
+    #[[
+    # What it said is kept, because on the readers this runs on the fixed
+    # join has never once taken: every log says "joining the ordinary way".
+    # That costs the three seconds this waits before giving up, and it
+    # costs the thing the fixed address is for -- two readers rebuilding at
+    # the same moment landing in one cell rather than two.
+    #
+    # Whether the driver refuses the syntax or merely takes longer than
+    # three seconds to join is the question, and discarding the error is
+    # what has kept it unanswered. So it is carried into the line below,
+    # flattened to one line because a log entry is one line.
+    #]]
+    # A dry run is asked to show the command, so it cannot be one whose
+    # output is captured; run_sh's only job is that branch, and this takes
+    # it first rather than swallowing what it prints.
+    if [ "$DRY_RUN" = "1" ]; then
+        run_sh "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID"
+        return 0
+    fi
+    fixed_said=$(sh -c "iw dev $iface ibss join $SSID $FREQUENCY fixed-freq $BSSID 2>&1" || true)
+    fixed_said=$(echo "$fixed_said" | tr '\n' ' ')
     if ! wait_for 3 cell_joined "$iface"; then
-        log "no cell with a fixed address; joining the ordinary way"
+        log "no cell with a fixed address; joining the ordinary way${fixed_said:+ -- iw said: $fixed_said}"
         run_sh "iw dev $iface ibss join $SSID $FREQUENCY 2>/dev/null || true"
         wait_for 3 cell_joined "$iface"
     fi
