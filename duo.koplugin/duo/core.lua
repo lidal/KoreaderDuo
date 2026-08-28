@@ -1248,6 +1248,7 @@ function Core:stop(reason, goodbye)
     self.stopping = nil
     self.announce_drop_at = nil
     self.announce_connect_at = nil
+    self.radio_unverified = nil
     --[[
     A rebuild belongs to an episode of Duo running, and this is the end of
     one -- including the end that a sleep makes, since stop is what a
@@ -2008,6 +2009,16 @@ function Core:onLinkReady(link)
     if self:isFollower() and self:get("token_source") ~= "peer" then
         self.settings.token_source = "peer"
         self:save()
+    end
+    --[[
+    The association is behind us now, so whatever it did to power saving can
+    be undone. Duo's belief about the radio survived the sleep and is very
+    likely wrong: see the note in resume.
+    ]]
+    if self.radio_unverified then
+        self.radio_unverified = nil
+        self.radio_awake = nil
+        self.radio_retries = 0
     end
     self:applyRadioSetting()
     -- Said in a moment, if it lasts that long. See QUIET_CONNECT.
@@ -5132,6 +5143,31 @@ function Core:resume()
     asking a second time.
     ]]
     self.radio_awake = nil
+    --[[
+    And what it is set to is not to be believed until a link proves it.
+
+    The request made just below is usually thrown away. A reader wakes with
+    its radio off and has to re-join the access point before anything can
+    cross it, and that association resets the driver's settings -- so Duo
+    asks for power saving off, the card associates a second later and turns
+    it back on, and Duo goes on believing it is off because it asked.
+
+    It is not a small difference. From a log, the round trip on a link made
+    in that state, and the moment Duo finally noticed:
+
+        18:18:52  rtt=685ms      18:19:12  rtt=1415ms   <- noticed here
+        18:19:02  rtt=988ms      18:19:22  rtt=119ms
+
+    Twelve times slower, for twenty-eight seconds, on a local network. That
+    is a page turn taking a second and a half, and it is most likely what
+    killed the link at 8.6 seconds in that same log.
+
+    A link coming up is proof the association has happened, since there is
+    nothing to dial over until it has. So the belief is marked unverified
+    here and settled there, which is one `iw` call at the only moment it is
+    known to stick. See onLinkReady.
+    ]]
+    self.radio_unverified = true
     --[[
     And looked at as soon as it is safe to, rather than a whole interval
     after that. The reader's Wi-Fi re-associates a second or two after the

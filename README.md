@@ -85,8 +85,10 @@ Measured on a pair of Kindle Paperwhite 3s: with power saving left on, page
 turns lag noticeably; with it off they do not.
 
 Setting it is not the same as it staying set — a driver puts its own default
-back whenever the card re-associates, which is every time the device wakes —
-so Duo reads it back rather than trusting the request, and asks again when it
+back whenever the card re-associates, which is every time the device wakes.
+So what Duo asked for on the way up is not believed: it asks again the moment
+a link comes up, which is proof the association is behind it. After that it
+reads the setting back rather than trusting the request, and asks again when it
 finds power saving on. Three times, then it leaves the card alone. Not in the
 first few seconds of a link, though: those are fragile whatever anybody does
 to them, and changing power save is one more thing to go wrong while the
@@ -421,7 +423,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-521 tests, with the interesting parts unmocked: two and three device
+522 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

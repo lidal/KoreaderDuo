@@ -3770,6 +3770,45 @@ T.describe("keeping the radio awake while the pair is connected", function()
         put_away(core)
     end)
 
+    T.it("does not believe its own request survived the wake", function()
+        --[[
+        A reader wakes with its radio off and has to re-join the access
+        point before anything can cross it, and that association resets the
+        driver's settings. So Duo asks for power saving off on the way up,
+        the card associates a second later and turns it back on, and Duo
+        goes on believing it is off because it asked.
+
+        From a log, the round trip on a link made in that state, and the
+        moment Duo finally noticed:
+
+            18:18:52  rtt=685ms      18:19:12  rtt=1415ms   <- noticed here
+            18:19:02  rtt=988ms      18:19:22  rtt=119ms
+
+        Twelve times slower, for twenty-eight seconds, on a local network.
+        A link coming up is proof the association has happened, since there
+        is nothing to dial over until it has.
+        ]]
+        local core, asked = watching(true)
+        core.settings.keep_radio_awake = true
+        core.role = core.ROLE_LEADER
+        core.radio_awake = true            -- asked on the way up, and believed
+        core.radio_unverified = true       -- but the wake says do not believe it
+        local before = #asked
+
+        core:onLinkReady(core.links[1])
+        T.assertEquals(#asked, before + 1,
+            "it took its own word for the radio across an association")
+        T.assertEquals(asked[#asked], true)
+        T.assertNil(core.radio_unverified, "and it would ask again on every link")
+
+        -- On an ordinary connection, with nothing to doubt, it stays quiet.
+        local quiet = #asked
+        core:onLinkReady(core.links[1])
+        T.assertEquals(#asked, quiet, "it poked the driver on a link mid-session")
+
+        put_away(core)
+    end)
+
     T.it("leaves a link alone until it is old enough to survive the asking", function()
         --[[
         Changing power save can drop the link, and on a link a second old it
