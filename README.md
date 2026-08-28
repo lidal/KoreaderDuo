@@ -87,9 +87,10 @@ turns lag noticeably; with it off they do not.
 Setting it is not the same as it staying set — a driver puts its own default
 back whenever the card re-associates, which is every time the device wakes —
 so Duo reads it back rather than trusting the request, and asks again when it
-finds power saving on. Three times, then it leaves the card alone. Never on a
-link that has just come up, though: changing power save can drop the link, and
-on a link a second old it reliably does.
+finds power saving on. Three times, then it leaves the card alone. Not in the
+first few seconds of a link, though: those are fragile whatever anybody does
+to them, and changing power save is one more thing to go wrong while the
+Wi-Fi is still settling.
 
 ## A direct link, with no router
 

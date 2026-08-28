@@ -966,26 +966,37 @@ Core.RADIO_RETRIES = 3
 --[[--
 How settled a link must be before the radio is touched, in seconds.
 
-Because changing power save can drop the link, and on a link a second old
-it reliably does. Sorted by how old the link was when Duo re-applied the
-setting, from a log of one morning:
+Set at twenty on the strength of this, sorted by how old the link was when
+Duo re-applied the setting:
 
     link 0s old   -> the link died 1, 1, 4, 5, 6, 7, 7 and 8 seconds later
-    link 90s+ old -> the next death was 48, 78, 108, 121, 211, 241s later
+    link 90s+ old -> the next death was 48, 78, 108, 121, 211s later
 
-Which is Duo's own doing twice over: the check was arranged to run the
-moment a link came up, on the reasoning that a link is proof the card just
-associated and association is what puts the driver's power-save default
-back. True, and the wrong moment to act on it -- the association is still
-settling, and asking it to change again while it is drops what was just
-made. The reader sees "connected", "disconnected", "connected".
+Which was half the picture. A later log settled the other half: the device
+that never re-applied power saving once in two and a half hours still lost
+links at 0.5, 0.6, 0.7, 2.3 and 8.8 seconds old. Young links die on their
+own -- the Wi-Fi is still settling behind them, and in that log a link went
+at 8.8 seconds with the peer mid-sentence and no `iw` called on either
+side. So the poke was never the whole cause, and waiting twenty seconds was
+buying much less than it looked.
 
-So the setting is put right on the way back from a sleep, before there is
-any link to lose, and after that only on a link old enough to take it. A
-link that has been up for half a minute has survived whatever the driver
-was going to do to it.
+What it cost was the thing the setting is for. Page turns are why power
+saving is turned off at all, and the twenty seconds fell exactly where
+somebody has picked the reader up and started turning them.
+
+Five, then. Past the cluster of deaths under three seconds, well inside the
+lag anybody would notice, and cheap to be wrong about now that a connection
+is not announced until it has held for three seconds: a flap here costs a
+reconnect nobody sees rather than a second "connected" on the screen.
+
+The wake still asks first, before there is any link to lose. On Wi-Fi that
+request is usually thrown away by the association that follows -- you
+cannot dial the other device before associating, so anything Duo sets
+beforehand is set against a card about to reset itself -- but it costs
+forty milliseconds and it is the only chance on a link with no association
+coming.
 --]]--
-Core.RADIO_SETTLE = 20
+Core.RADIO_SETTLE = 5
 
 --- How long the newest link here has been up, or nil if there is none.
 function Core:youngestLinkAge()
