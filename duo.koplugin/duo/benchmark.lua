@@ -233,14 +233,27 @@ function Benchmark:radioState()
     return (tostring(out or ""):gsub("%s+", " "):gsub("^%s*(.-)%s*$", "%1"))
 end
 
---- How many peers the interface can see in its cell, which is the only
---- honest answer to "did the joiner land in the host's cell or its own".
-function Benchmark:peers()
-    local out = self.shell(("iw dev %s station dump 2>/dev/null"):format(self.iface))
-    local count = 0
-    for _ in tostring(out or ""):gmatch("\nStation") do count = count + 1 end
-    if tostring(out or ""):match("^Station") then count = count + 1 end
-    return count
+--[[--
+Which cell this device is actually in.
+
+`station dump` was the first answer to "did the joiner land in the host's
+cell or its own" and it turned out to be no answer at all: on this driver it
+lists nothing even while the two are connected and passing traffic, so every
+trial of the first real run reported peers 0, connected and disconnected
+alike.
+
+The cell's address does answer it, and better, because it can be compared
+between the two logs directly: if the host says one address and the joiner
+another, they are in rival cells of the same name, which is the failure the
+joiner's head start existed to prevent. `iw link` prints it as "Joined IBSS
+<address>" or names the SSID it associated to.
+--]]--
+function Benchmark:cell()
+    local out = tostring(self.shell(
+        ("iw dev %s link 2>/dev/null"):format(self.iface)) or "")
+    local bssid = out:match("[Jj]oined IBSS%s+(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+        or out:match("[Cc]onnected to%s+(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+    return bssid or (out:match("Not connected") and "none") or "?"
 end
 
 --[[--
@@ -253,6 +266,18 @@ the first would measure a case that never happens on the device.
 --]]--
 function Benchmark:emulateSleep(trial)
     self:log("sleep: taking", self.iface, "down for", Benchmark.SLEEP, "s")
+    --[[
+    The cell goes, not just the interface. Taking the link down and putting
+    it back leaves the driver's ad-hoc configuration intact, so it rejoins
+    the same cell by itself -- which is not what a suspend does, and made
+    the first run flatter than the truth: one trial reconnected in 0.2s
+    having done nothing at all, because nothing had been taken away.
+
+    Leaving the cell first makes the wake face what a real one faces. It
+    fails harmlessly on an interface that is not in ad-hoc mode, which is
+    every Wi-Fi trial.
+    ]]
+    self.shell(("iw dev %s ibss leave >/dev/null 2>&1"):format(self.iface))
     self.shell(("ip link set %s down >/dev/null 2>&1"):format(self.iface))
     if trial.announced and self.core then
         self:log("sleep: telling Duo about it, as a reader sometimes does")
@@ -299,7 +324,7 @@ function Benchmark:beginTrial(index, now)
         self:log("parameter: joiner lead =", trial.joiner_lead)
     end
     self:log("state: connected =", tostring(self:connected()),
-        "- power save:", self:radioState(), "- peers:", self:peers())
+        "- power save:", self:radioState(), "- cell:", self:cell())
 end
 
 --[[--
@@ -344,12 +369,12 @@ function Benchmark:finishTrial(now, outcome, seconds)
     record.dials = after.dials - record.before.dials
     record.rebuilds = after.rebuilds - record.before.rebuilds
     record.sleeps = after.sleeps - record.before.sleeps
-    record.peers = self:peers()
+    record.cell = self:cell()
     self.results[#self.results + 1] = record
-    self:log(("result: %s%s - dials %d, rebuilds %d, sleeps noticed %d, peers %d"):format(
+    self:log(("result: %s%s - dials %d, rebuilds %d, sleeps noticed %d, cell %s"):format(
         outcome,
         seconds and (" in %.1fs"):format(seconds) or "",
-        record.dials, record.rebuilds, record.sleeps, record.peers))
+        record.dials, record.rebuilds, record.sleeps, record.cell))
     self.last_result = ("last: %s%s"):format(
         outcome, seconds and (" in %.1fs"):format(seconds) or "")
     self:say(("Duo benchmark %d/%d\n%s\n%s"):format(
@@ -420,13 +445,13 @@ end
 function Benchmark:report()
     self:log("")
     self:log("-- summary")
-    self:log(("%-34s %-22s %8s %6s %8s %6s"):format(
-        "trial", "outcome", "seconds", "dials", "rebuilds", "peers"))
+    self:log(("%-34s %-22s %8s %6s %8s %-18s"):format(
+        "trial", "outcome", "seconds", "dials", "rebuilds", "cell"))
     for _, record in ipairs(self.results) do
-        self:log(("%-34s %-22s %8s %6d %8d %6d"):format(
+        self:log(("%-34s %-22s %8s %6d %8d %-18s"):format(
             record.trial.label, record.outcome,
             record.seconds and ("%.1f"):format(record.seconds) or "-",
-            record.dials, record.rebuilds, record.peers))
+            record.dials, record.rebuilds, record.cell))
     end
     local best
     for _, record in ipairs(self.results) do

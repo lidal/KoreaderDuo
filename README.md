@@ -420,7 +420,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-520 tests, with the interesting parts unmocked: two and three device
+519 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -457,10 +457,10 @@ wall clock, which is why the notification says the exact second.
 
 Each writes `benchmarkHOST.log` or `benchmarkFOLLOWER.log` beside the Duo
 log, ending in a table of every trial: how long the reconnect took, how many
-dials and rebuilds it needed, and how many peers the radio could see
-afterwards. That last one is the interesting column on a direct link —
-`peers 0` on the joiner means it made a cell of its own instead of finding
-the host's.
+dials and rebuilds it needed, and which cell the radio ended up in. That last
+column is the interesting one on a direct link — two different addresses in
+the two files means the pair formed rival cells of the same name instead of
+meeting in one.
 
 It says where it has got to on screen as it goes, and holds the reader awake
 for the whole run — a device left alone goes to sleep, and a benchmark

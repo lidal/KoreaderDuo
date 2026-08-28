@@ -1172,77 +1172,40 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
-    T.it("makes the joiner wait for the cell the host is making", function()
+    T.it("does not make the joiner wait on the path every wake takes", function()
         --[[
-        The two roles are not symmetrical: the host makes the cell and the
-        joiner joins it, so a joiner that starts first has nothing to join
-        and forms a cell of its own. From a log, a second apart:
+        Settled by the benchmark, over twelve direct-link trials on the
+        readers themselves. The reconnect came in at about four seconds plus
+        exactly whatever the joiner had been told to wait:
 
-            18:47:21 [follower] rebuilt the link the two had been apart on
-            18:47:22 [leader]   rebuilt the link the two had been apart on
+            lead  0s ->  4.1s,  5.9s     lead  6s -> 10.1s, 10.1s
+            lead  2s -> 11.0s, 11.1s     lead  8s -> 13.2s, 12.2s
+            lead  4s ->  8.1s,  8.2s     lead 12s -> 16.0s
 
-        after which the follower dialled the host's address for a minute and
-        a half without an answer.
-
-        Waking together is what puts them in step, so this is the check that
-        needs the stagger -- it is the one that fires first after a wake, and
-        without it here the pair rebuilt in the same instant however long the
-        repeating repair waited.
+        A second for a second, and nothing bought: the trials at no lead
+        were the quickest and not one of them failed. What the lead was for
+        is answered at the host's end now, where a host that has already
+        rebuilt since waking leaves its own cell alone -- so the tax was
+        being paid on every wake against something that had stopped
+        happening. It stays on the repeating repair, which only runs when
+        the pair is stuck already.
         ]]
         reset()
         Core.settings.direct_link = "join"
         local rebuilt = 0
-        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "up" end
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "rebuilt" end
         Core.role = Core.ROLE_FOLLOWER
-        Core.joiner_waited = nil
+        Core.resumed_at = Util.now() - Core.PAINT_FIRST - 0.1
+        Core.link_rebuilt_at = nil
         Core.link_check_at = 0
 
         Core:checkLink()
-        T.assertEquals(rebuilt, 0, "the joiner went looking before there was a cell")
-        T.assertTrue(Core.link_check_at ~= nil, "and it dropped the check doing so")
-
-        -- Once, not on every pass: the point is to go second.
-        Core.link_check_at = 0
-        Core:checkLink()
-        T.assertEquals(rebuilt, 1, "it hung back a second time")
-
-        -- The host has nothing to wait for.
-        Core.settings.direct_link = "host"
-        Core.joiner_waited = nil
-        Core.link_check_at = 0
-        Core:checkLink()
-        T.assertEquals(rebuilt, 2, "the host waited for a cell only it can make")
+        T.assertEquals(rebuilt, 1, "the joiner sat out a wait it gains nothing from")
+        T.assertNil(Core.link_check_at, "and it kept the check hanging about after")
 
         Core.hooks.reviveDirectLink = nil
         Core.settings.direct_link = nil
-        Core.role = Core.ROLE_OFF
-        Core.joiner_waited = nil
-        reset()
-    end)
-
-    T.it("makes the first dial after waking a prompt one too", function()
-        --[[
-        The dial backoff reaches its ceiling after three failures and stays
-        there, so a wake inherited a four-second wait earned before the
-        sleep -- and spent it, because the first dial after waking goes out
-        before the reader's Wi-Fi is back and is bound to fail:
-
-            09:22:26 the loop stopped for 37s
-            09:22:26 dialling 192.168.1.227:9970
-            09:22:29 redialling in 4.0s
-            09:22:33 dialling 192.168.1.227:9970
-            09:22:36 connected
-
-        Ten seconds, four of them waiting out a backoff that had nothing to
-        do with the network it was about to find working.
-        ]]
-        reset()
-        Core.role = Core.ROLE_FOLLOWER
-        Core.reconnect_delay = 4
-        Core.resumed_at = nil
-        Core:resume()
-        T.assertEquals(Core.reconnect_delay, 1,
-            "it woke up still waiting out a backoff it earned before the sleep")
+        Core.resumed_at, Core.link_rebuilt_at = nil, nil
         Core.role = Core.ROLE_OFF
         reset()
     end)

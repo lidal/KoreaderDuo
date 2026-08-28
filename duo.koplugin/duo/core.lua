@@ -5207,11 +5207,28 @@ function Core:checkLink()
         self:trace("the link was rebuilt since waking; nothing left to check")
         return
     end
-    if self:get("direct_link") == "join" and not self.joiner_waited then
-        self.joiner_waited = true
-        self.link_check_at = Util.now() + Core.JOINER_LEAD
-        return
-    end
+    --[[
+    And no head start for the joiner here, which the benchmark settled.
+    Across twelve direct-link trials the reconnect came in at about four
+    seconds plus exactly whatever the joiner had been told to wait:
+
+        lead  0s ->  4.1s,  5.9s     lead  6s -> 10.1s, 10.1s
+        lead  2s -> 11.0s, 11.1s     lead  8s -> 13.2s, 12.2s
+        lead  4s ->  8.1s,  8.2s     lead 12s -> 16.0s
+
+    A straight tax, a second for a second, and nothing bought with it: the
+    trials at no lead at all were the quickest and not one of them failed.
+    What the lead was for -- two devices forming rival cells of the same
+    name because they rebuilt in the same instant -- is answered at the
+    other end now, where a host that has already rebuilt since waking leaves
+    its own cell alone. This is the path every wake takes, so the tax was
+    being paid on every wake to insure against something the host had
+    already stopped doing.
+
+    It stays on the repeating repair, which is the cold path: by the time
+    that runs the pair is stuck anyway, and eight seconds against being
+    stuck is a bargain rather than a tax.
+    ]]
     self.link_check_at = nil
     self.joiner_waited = nil
     if not self.hooks or not self.hooks.reviveDirectLink then return end
@@ -5224,7 +5241,13 @@ function Core:checkLink()
     the pair then waits out the healer's backoff instead.
     ]]
     local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true)
-    if ok and outcome == "rebuilt" then self:dialNow() end
+    if ok and outcome == "rebuilt" then
+        -- Counted here as well as in the repair. Without this a benchmark
+        -- read "rebuilds 0" through twelve trials that had each spent four
+        -- seconds inside one.
+        self.rebuilds_made = (self.rebuilds_made or 0) + 1
+        self:dialNow()
+    end
 end
 
 --[[--
