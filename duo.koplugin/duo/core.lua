@@ -1236,6 +1236,7 @@ function Core:stop(reason, goodbye)
     end
     self.stopping = nil
     self.announce_drop_at = nil
+    self.announce_connect_at = nil
     --[[
     A rebuild belongs to an episode of Duo running, and this is the end of
     one -- including the end that a sleep makes, since stop is what a
@@ -1262,6 +1263,24 @@ Says a drop out loud once it has lasted long enough to be worth saying.
 Run from the poll loop rather than scheduled, because the engine has no
 timer of its own and the loop is already turning twenty times a second.
 --]]--
+--- Says a connection held, once it has.
+function Core:checkConnectNotice()
+    if not self.announce_connect_at then return end
+    --[[
+    A link that went before it was announced is never announced, and takes
+    the pending word with it. That is the whole point: the flap the reader
+    was being shown twice is one it now sees once, when the connection that
+    lasted arrives.
+    ]]
+    if not self:isConnected() then
+        self.announce_connect_at = nil
+        return
+    end
+    if Util.now() < self.announce_connect_at then return end
+    self.announce_connect_at = nil
+    self:notify(("Duo: connected to %s"):format(self.announce_connect_to or "peer"))
+end
+
 function Core:checkDropNotice()
     if not self.announce_drop_at then return end
     if self:isConnected() then
@@ -1347,6 +1366,30 @@ network is there -- and short enough that a pair that really has come apart
 says so while somebody is still looking at the screen.
 --]]--
 Core.QUIET_DROP = 6
+
+--[[--
+How long a connection must hold before it is worth mentioning, in seconds.
+
+The mirror of QUIET_DROP, and for the same reason. A link made on a
+just-reassociated Wi-Fi is not always a link that lasts: the reader's own
+connection manager is still settling behind it, and in one log it took the
+socket away eight seconds later with the peer still talking --
+
+    13:30:48 [leader] link L ready handshake took 0.11s
+    13:30:48 [leader] notify: Duo: connected to KindleHøgre
+    13:30:57 [leader] link L closing peer disconnected age=8.8s silent=0.1s rtt=1064ms
+    13:30:59 [leader] notify: Duo: connected to KindleHøgre
+
+-- twice in eleven seconds, which is what the reader sees and what got
+reported. Duo cannot stop the Wi-Fi doing that. It can decline to narrate
+it: a connection announced once it has held for a moment is announced once,
+and one that does not hold is never announced at all.
+
+Short, because the point is the announcement being right rather than late,
+and a pair that is really connected should say so while somebody is still
+looking at the screen.
+--]]--
+Core.QUIET_CONNECT = 3
 
 --- How often Duo may ask the reader to put its network back, in seconds.
 --- Rarely: it is the reader's own connection manager doing the work, and
@@ -1762,6 +1805,7 @@ function Core:pollOnce()
     self:checkFrontlight()
     self:checkLinkHealth()
     self:checkRadioSetting()
+    self:checkConnectNotice()
     -- The benchmark, when there is one. It measures Duo from outside, so it
     -- runs after everything Duo does rather than among it.
     if self.hooks and self.hooks.benchmarkTick then pcall(self.hooks.benchmarkTick) end
@@ -1955,7 +1999,9 @@ function Core:onLinkReady(link)
         self:save()
     end
     self:applyRadioSetting()
-    self:notify(("Duo: connected to %s"):format(link.peer_name or "peer"))
+    -- Said in a moment, if it lasts that long. See QUIET_CONNECT.
+    self.announce_connect_at = Util.now() + Core.QUIET_CONNECT
+    self.announce_connect_to = link.peer_name or "peer"
     if self:isLeader() then
         -- The leader pushes; the follower does not need to ask. Asking as well
         -- would have it told twice, and a second DOC can mean opening the
@@ -5075,6 +5121,14 @@ function Core:resume()
     asking a second time.
     ]]
     self.radio_awake = nil
+    --[[
+    And looked at as soon as it is safe to, rather than a whole interval
+    after that. The reader's Wi-Fi re-associates a second or two after the
+    wake and puts its own power-save default back over the one set just
+    above, so the first honest check is the one that matters -- and leaving
+    radio_checked_at alone could push it most of a minute out.
+    ]]
+    self.radio_checked_at = nil
     -- And a device that gave up asking gets to ask again: a driver that
     -- would not keep the radio awake before the sleep is a different
     -- proposition after it, with the interface freshly brought up.

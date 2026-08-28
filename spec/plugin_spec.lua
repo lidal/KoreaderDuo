@@ -655,6 +655,72 @@ T.describe("coming back after a sleep", function()
         Core.disconnected_since, Core.link_healed_at = nil, nil
     end)
 
+    T.it("says a connection held before it says it was made", function()
+        --[[
+        A link made on a just-reassociated Wi-Fi is not always a link that
+        lasts: the reader's own connection manager is still settling behind
+        it, and in one log it took the socket away eight seconds later with
+        the peer still talking --
+
+            13:30:48 [leader] link L ready handshake took 0.11s
+            13:30:48 [leader] notify: Duo: connected to KindleHøgre
+            13:30:57 [leader] link L closing peer disconnected age=8.8s silent=0.1s
+            13:30:59 [leader] notify: Duo: connected to KindleHøgre
+
+        Twice in eleven seconds, which is what the reader sees. Duo cannot
+        stop the Wi-Fi doing that; it can decline to narrate it.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local link = {
+            state = "ready", slot = 1, peer_name = "the other one",
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            allowSilence = function() end,
+            send = function() return true end,
+        }
+        Core.links = { link }
+        Core:onLinkReady(link)
+        T.assertEquals(table.concat(device:drainMessages(), "\n"), "",
+            "it announced a connection it did not yet know would hold")
+
+        Core.announce_connect_at = 0
+        Core:checkConnectNotice()
+        T.assertMatch(table.concat(device:drainMessages(), "\n"),
+            "connected to the other one")
+
+        Core.links = {}
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("never announces a connection that did not hold", function()
+        -- The whole point: the flap the reader was shown twice is one it
+        -- now sees once, when the connection that lasts arrives.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local link = {
+            state = "ready", slot = 1, peer_name = "the other one",
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            allowSilence = function() end,
+            send = function() return true end,
+        }
+        Core.links = { link }
+        Core:onLinkReady(link)
+        device:drainMessages()
+
+        Core.links = {}                 -- gone before it was ever mentioned
+        Core.announce_connect_at = 0
+        Core:checkConnectNotice()
+        T.assertEquals(table.concat(device:drainMessages(), "\n"), "",
+            "it announced a connection that had already gone")
+        T.assertNil(Core.announce_connect_at, "and it would say so later on")
+
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("says nothing about a drop the pair recovers from", function()
         --[[
         Every drop used to be announced the instant it happened, so a reader
