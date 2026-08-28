@@ -1166,6 +1166,33 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("makes the first dial after waking a prompt one too", function()
+        --[[
+        The dial backoff reaches its ceiling after three failures and stays
+        there, so a wake inherited a four-second wait earned before the
+        sleep -- and spent it, because the first dial after waking goes out
+        before the reader's Wi-Fi is back and is bound to fail:
+
+            09:22:26 the loop stopped for 37s
+            09:22:26 dialling 192.168.1.227:9970
+            09:22:29 redialling in 4.0s
+            09:22:33 dialling 192.168.1.227:9970
+            09:22:36 connected
+
+        Ten seconds, four of them waiting out a backoff that had nothing to
+        do with the network it was about to find working.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.reconnect_delay = 4
+        Core.resumed_at = nil
+        Core:resume()
+        T.assertEquals(Core.reconnect_delay, 1,
+            "it woke up still waiting out a backoff it earned before the sleep")
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("makes the first repair after waking a prompt one", function()
         --[[
         The backoff exists to stop a device hammering a partner switched off
@@ -3647,6 +3674,43 @@ T.describe("keeping the radio awake while the pair is connected", function()
         core:checkRadioSetting()
         T.assertEquals(#asked, woken + 1,
             "a device that gave up once gave up for good")
+        put_away(core)
+    end)
+
+    T.it("leaves a link alone until it is old enough to survive the asking", function()
+        --[[
+        Changing power save can drop the link, and on a link a second old it
+        reliably does. Sorted by how old the link was when Duo re-applied
+        the setting, from a log of one morning:
+
+            link 0s old   -> the link died 1, 1, 4, 5, 6, 7, 7 and 8s later
+            link 90s+ old -> the next death was 48, 78, 108, 121, 211s later
+
+        Duo's own doing: the check was arranged to run the moment a link
+        came up, because a link is proof the card just associated and
+        association is what puts the driver's default back. True, and the
+        wrong moment to act on it. The reader saw "connected",
+        "disconnected", "connected", twice in two minutes.
+        ]]
+        local core, asked = watching(false)
+        local before = #asked
+        local now = Util.now()
+        core.links = { {
+            created_at = now,
+            isClosed = function() return false end,
+        } }
+
+        core.radio_checked_at = nil
+        core:checkRadioSetting()
+        T.assertEquals(#asked, before, "it poked the driver under a fresh link")
+
+        -- And not put off for ever: as soon as the link is old enough.
+        core.links[1].created_at = now - Core.RADIO_SETTLE - 1
+        core.radio_checked_at = nil
+        core:checkRadioSetting()
+        T.assertEquals(#asked, before + 1,
+            "a settled link never got its power saving turned off again")
+
         put_away(core)
     end)
 

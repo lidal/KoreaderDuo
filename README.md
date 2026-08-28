@@ -87,7 +87,9 @@ turns lag noticeably; with it off they do not.
 Setting it is not the same as it staying set — a driver puts its own default
 back whenever the card re-associates, which is every time the device wakes —
 so Duo reads it back rather than trusting the request, and asks again when it
-finds power saving on. Three times, then it leaves the card alone.
+finds power saving on. Three times, then it leaves the card alone. Never on a
+link that has just come up, though: changing power save can drop the link, and
+on a link a second old it reliably does.
 
 ## A direct link, with no router
 
@@ -418,7 +420,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-500 tests, with the interesting parts unmocked: two and three device
+502 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

@@ -964,6 +964,42 @@ How many times to ask again before letting the driver have its way.
 Core.RADIO_RETRIES = 3
 
 --[[--
+How settled a link must be before the radio is touched, in seconds.
+
+Because changing power save can drop the link, and on a link a second old
+it reliably does. Sorted by how old the link was when Duo re-applied the
+setting, from a log of one morning:
+
+    link 0s old   -> the link died 1, 1, 4, 5, 6, 7, 7 and 8 seconds later
+    link 90s+ old -> the next death was 48, 78, 108, 121, 211, 241s later
+
+Which is Duo's own doing twice over: the check was arranged to run the
+moment a link came up, on the reasoning that a link is proof the card just
+associated and association is what puts the driver's power-save default
+back. True, and the wrong moment to act on it -- the association is still
+settling, and asking it to change again while it is drops what was just
+made. The reader sees "connected", "disconnected", "connected".
+
+So the setting is put right on the way back from a sleep, before there is
+any link to lose, and after that only on a link old enough to take it. A
+link that has been up for half a minute has survived whatever the driver
+was going to do to it.
+--]]--
+Core.RADIO_SETTLE = 20
+
+--- How long the newest link here has been up, or nil if there is none.
+function Core:youngestLinkAge()
+    local youngest
+    for _, link in ipairs(self.links) do
+        if not link:isClosed() and link.created_at then
+            local age = Util.now() - link.created_at
+            if not youngest or age < youngest then youngest = age end
+        end
+    end
+    return youngest
+end
+
+--[[--
 Checks that power saving is still off, and asks again when it is not.
 
 Because setting it is not keeping it set. A driver puts its defaults back
@@ -994,6 +1030,11 @@ function Core:checkRadioSetting()
     if self.radio_awake ~= true then return end
     if not self:isActive() or not self:get("keep_radio_awake") then return end
     if (self.radio_retries or 0) >= Core.RADIO_RETRIES then return end
+    -- And never on a link too new to survive it. See RADIO_SETTLE. Checked
+    -- without marking the check done, so it happens as soon as the link is
+    -- old enough rather than a whole interval after that.
+    local age = self:youngestLinkAge()
+    if age and age < Core.RADIO_SETTLE then return end
     local now = Util.now()
     if self.radio_checked_at
         and now - self.radio_checked_at < Core.RADIO_CHECK_EVERY then return end
@@ -1900,12 +1941,6 @@ function Core:onLinkReady(link)
         self:save()
     end
     self:applyRadioSetting()
-    --[[
-    And checked shortly, rather than up to half a minute from now. A link
-    coming up is proof the card associated, and associating is exactly what
-    makes a driver put its own power-save default back over Duo's.
-    ]]
-    self.radio_checked_at = nil
     self:notify(("Duo: connected to %s"):format(link.peer_name or "peer"))
     if self:isLeader() then
         -- The leader pushes; the follower does not need to ask. Asking as well
@@ -5012,6 +5047,15 @@ function Core:resume()
     ]]
     self.heal_backoff = nil
     self.link_healed_at = nil
+    --[[
+    And the dial is prompt again too. The backoff reaches its ceiling after
+    three failures and stays there, so a wake inherited a four-second wait
+    earned before the sleep -- and spent it, because the first dial after
+    waking goes out before the reader's Wi-Fi is back and is bound to fail.
+    From a log: woke at 09:22:26, dialled, failed at 09:22:29, waited out
+    four seconds it had no reason to, connected at 09:22:36.
+    ]]
+    self.reconnect_delay = RECONNECT_MIN
     self:applyRadioSetting()
     if not self.paused_role then return end
     self.resume_attempts = 0
