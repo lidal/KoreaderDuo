@@ -1029,6 +1029,60 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("stops the host throwing out a joiner that has just arrived", function()
+        --[[
+        The host makes the cell and the joiner joins it, so a host that
+        keeps re-making it keeps throwing out whoever came. From a log:
+
+            09:49:24 [leader]   apart for a while; rebuilding   (after its wake)
+            09:49:33 [follower] rebuilt the link ... role: join (joined it)
+            09:50:04 [leader]   apart for a while; rebuilding   (and threw it away)
+
+        after which the follower dialled an address with nothing on it
+        until somebody stopped Duo by hand.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.has_connected = true
+        Core.settings.direct_link = "host"
+        local forced = {}
+        Core.hooks.reviveDirectLink = function(_quiet, force)
+            forced[#forced+1] = force and true or false
+            return "rebuilt"
+        end
+
+        local function repairNow()
+            Core.link_healed_at = nil
+            Core.heal_backoff = nil
+            Core.disconnected_since = Util.now() - 60
+            Core:checkLinkHealth()
+        end
+
+        -- Nothing has rebuilt since the wake, so the sleep is still suspect.
+        -- Woken a moment ago rather than this instant, so the repair is not
+        -- held off letting the reader redraw. See PAINT_FIRST.
+        Core.resumed_at = Util.now() - Core.PAINT_FIRST - 0.1
+        Core.link_rebuilt_at = nil
+        repairNow()
+        T.assertEquals(forced[1], true, "the first repair after a wake must force")
+
+        -- And now one has, so the cell is asked after rather than remade.
+        repairNow()
+        T.assertEquals(forced[2], false, "the host tore down its own working cell")
+
+        -- The joiner has nothing to throw away, and keeps forcing.
+        Core.settings.direct_link = "join"
+        repairNow()
+        T.assertEquals(forced[3], true, "the joiner stopped looking for a cell to join")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.direct_link = nil
+        Core.resumed_at, Core.link_rebuilt_at = nil, nil
+        Core.disconnected_since, Core.has_connected = nil, nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("keeps the joiner off the air until the host has made the cell", function()
         --[[
         The repair, not just the check after a sleep. Both devices woke

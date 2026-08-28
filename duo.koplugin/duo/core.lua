@@ -1531,6 +1531,12 @@ loop at all, which is a larger change than this one.
 --]]--
 Core.PAINT_FIRST = 1.5
 
+--- Whether the link has already been rebuilt since this device woke.
+function Core:rebuiltSinceWaking()
+    return self.link_rebuilt_at ~= nil and self.resumed_at ~= nil
+        and self.link_rebuilt_at >= self.resumed_at
+end
+
 --- True while the reader should be left to redraw after waking.
 function Core:justWoke()
     return self.resumed_at ~= nil
@@ -5159,8 +5165,7 @@ function Core:checkLink()
     into it. This check exists to ask whether the sleep broke the link. A
     rebuild since the wake has answered that.
     ]]
-    if self.link_rebuilt_at and self.resumed_at
-        and self.link_rebuilt_at >= self.resumed_at then
+    if self:rebuiltSinceWaking() then
         self.link_check_at = nil
         self.joiner_waited = nil
         self:trace("the link was rebuilt since waking; nothing left to check")
@@ -5303,15 +5308,39 @@ function Core:checkLinkHealth()
     of the one thing that works. Rebuilding a link nobody is using costs a
     few seconds; not rebuilding it costs the feature.
     ]]
+    --[[
+    Forced once, then asked.
+
+    The host makes the cell and the joiner joins it, so a host that keeps
+    re-making it keeps throwing out whoever arrived. From a log:
+
+        09:49:24 [leader]   apart for a while; rebuilding   (forced, after its wake)
+        09:49:33 [follower] rebuilt the link ... role: join (joined it)
+        09:50:04 [leader]   apart for a while; rebuilding   (and threw it away)
+
+    after which the follower dialled an address with nothing on it until
+    somebody stopped Duo by hand. The first rebuild after a wake is the one
+    with a reason -- the sleep really did take the cell -- and forcing it is
+    right. The ones after it are every twenty, forty, eighty seconds, and by
+    then a cell that verifies as up is a cell to leave alone.
+
+    The joiner still forces. Re-joining is how it finds a cell it is not in,
+    and it has nothing to throw away by doing so.
+    ]]
+    local forced = true
+    if self:get("direct_link") == "host" and self:rebuiltSinceWaking() then
+        forced = false
+    end
     -- Traced, not logged: on a pair that is not on a link Duo built this
     -- runs, finds nothing of its own to rebuild and says so, and a line
     -- claiming a rebuild every twenty seconds made those logs unreadable.
-    self:trace("apart for a while; rebuilding the link rather than asking after it")
+    self:trace(forced and "apart for a while; rebuilding the link rather than asking after it"
+        or "apart for a while; asking after the cell this device made")
     -- Silent: this runs again every twenty seconds for as long as the two
     -- are apart, and a device narrating each pass is what read as the link
     -- going up over and over. The check after a sleep is the one that
     -- speaks, because it happens once and something has changed.
-    local ok, outcome = pcall(self.hooks.reviveDirectLink, true, true, true)
+    local ok, outcome = pcall(self.hooks.reviveDirectLink, true, forced, true)
     if ok and outcome == "rebuilt" then
         self:log("rebuilt the link the two had been apart on")
         -- Noted, because it settles the question the check after a sleep

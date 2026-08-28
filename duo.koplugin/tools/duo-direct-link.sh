@@ -460,6 +460,21 @@ cell_joined() {
     return 1
 }
 
+#[[
+# How many other devices are in the cell, as the driver sees them.
+#
+# `iw station dump` lists an entry per peer in an IBSS. Zero on a host means
+# nobody has arrived yet, which is ordinary; zero on a joiner means it is in
+# a cell of its own making, which is the failure that looks like success.
+#]]
+cell_peers() {
+    iface="$1"
+    if has iw; then
+        iw dev "$iface" station dump 2>/dev/null | grep -c "^Station" && return 0
+    fi
+    echo "?"
+}
+
 # True once the interface reports the mode asked of it, whatever it has or
 # has not joined in that mode.
 in_mode() {
@@ -591,6 +606,23 @@ await_link() {
     while [ "$waited" -lt "$LINK_WAIT" ]; do
         if mode_reached "$iface" "$want"; then
             log "verified: $iface is $(current_mode "$iface")"
+            #[[
+            # And who else is in it, which is the question `cell_joined`
+            # cannot answer. It returns true for any joined IBSS including
+            # one this device made itself, so a joiner that scanned a moment
+            # too early forms its own cell of the same name, verifies
+            # happily and then cannot reach anybody. In a log:
+            #
+            #   09:49:29 [leader]   rebuilt as ibss ... role: host
+            #   09:49:33 [follower] rebuilt as ibss ... role: join
+            #   09:49:33 [follower] dialling 169.254.13.1:9970  (and on, unanswered)
+            #
+            # `station dump` lists the peers actually seen in the cell, so
+            # peers=0 on a joiner means it is alone in one of its own
+            # making. Reported rather than acted on here: the script's job
+            # is to say what is true.
+            #]]
+            log "peers=$(cell_peers "$iface")"
             return 0
         fi
         sleep 1
