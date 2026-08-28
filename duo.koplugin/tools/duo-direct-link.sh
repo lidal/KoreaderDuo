@@ -765,6 +765,19 @@ status() {
     # to decide whether a link it built itself survived a sleep. It used to
     # print `mode:` with the value reworded, which matched nothing.
     log "mode=$(current_mode "$iface")"
+    #[[
+    # And which cell, which is the question that decides how much work a
+    # wake really needs. The mode and the address may well survive a
+    # suspend; membership of an ad-hoc cell cannot, because the radio was
+    # off. If they all survive, a wake needs a re-join and nothing else --
+    # and the three seconds spent stopping daemons and setting the mode
+    # again are three seconds spent redoing what was never undone.
+    #]]
+    if has iw; then
+        log "cell=$(iw dev "$iface" link 2>/dev/null \
+            | sed -n 's/.*[Jj]oined IBSS \([0-9a-fA-F:]*\).*/\1/p;s/.*[Cc]onnected to \([0-9a-fA-F:]*\).*/\1/p' \
+            | head -1)"
+    fi
     if [ -f "$RUN_DIR/wpa_supplicant.conf" ]; then
         log "duo link: configured ($RUN_DIR)"
     else

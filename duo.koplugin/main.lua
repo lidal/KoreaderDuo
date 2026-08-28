@@ -109,6 +109,11 @@ function Duo:init()
             -- for it, and asking is the permission.
             setRadioAwake = function(awake) return NetUtil.setRadioAlwaysOn(awake) end,
             radioIsAwake = function() return NetUtil.radioIsAwake() end,
+            -- Reads only, so it costs a few tens of milliseconds and can be
+            -- asked on the way into a rebuild without slowing it down.
+            directLinkStatus = function()
+                return require("duo/directlink").run("status")
+            end,
         },
     }
 

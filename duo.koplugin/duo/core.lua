@@ -5335,6 +5335,25 @@ function Core:checkLink()
     if not self.hooks or not self.hooks.reviveDirectLink then return end
     self:log("checking the direct link survived the sleep")
     --[[
+    And recording what it found before touching anything, because "why does
+    a wake have to build the whole thing again" is a fair question and this
+    is the only place that can answer it. The mode and the address may well
+    have survived the suspend; membership of an ad-hoc cell cannot, since
+    the radio was off. If the first two do survive, a wake needs a re-join
+    and nothing else, and the seconds spent stopping daemons and setting the
+    mode over again are seconds spent undoing nothing.
+
+    A read, not a decision: status only looks at the interface, and what is
+    done about it is still the forced rebuild below until there are enough
+    of these lines to say otherwise.
+    ]]
+    if self:isVerbose() and self.hooks.directLinkStatus then
+        local ok_status, said = pcall(self.hooks.directLinkStatus)
+        if ok_status and said then
+            self:log("what the sleep left behind:", (tostring(said):gsub("%s+", " ")))
+        end
+    end
+    --[[
     Forced, because after a real sleep the answer is always the same and
     asking costs the one prompt attempt this gets. An ad-hoc cell does not
     survive the reader taking its interface back, but the address often
