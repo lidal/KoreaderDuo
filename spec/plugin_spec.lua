@@ -1202,6 +1202,16 @@ T.describe("coming back after a sleep", function()
         Core:checkLink()
         T.assertEquals(rebuilt, 1, "the joiner sat out a wait it gains nothing from")
         T.assertNil(Core.link_check_at, "and it kept the check hanging about after")
+        --[[
+        And it says so, or the repair rebuilds the cell this just made. The
+        benchmark counted that: two rebuilds on the host in ten of twelve
+        direct-link trials, four seconds of script each, one of them for
+        nothing at all.
+        ]]
+        T.assertTrue(Core.link_rebuilt_at ~= nil,
+            "the repair will now rebuild the cell this check just made")
+        T.assertTrue(Core:rebuiltSinceWaking(),
+            "and the guard that would have stopped it cannot see this rebuild")
 
         Core.hooks.reviveDirectLink = nil
         Core.settings.direct_link = nil

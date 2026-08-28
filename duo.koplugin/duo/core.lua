@@ -5246,6 +5246,15 @@ function Core:checkLink()
         -- read "rebuilds 0" through twelve trials that had each spent four
         -- seconds inside one.
         self.rebuilds_made = (self.rebuilds_made or 0) + 1
+        --[[
+        And written down, which it was not, so the repair went on to rebuild
+        the very cell this had just made. The benchmark counted it: two
+        rebuilds on the host in ten of twelve direct-link trials, four
+        seconds of script each, one of them for nothing. The guard that
+        stops the repair doing this reads link_rebuilt_at, and only the
+        repair was setting it.
+        ]]
+        self.link_rebuilt_at = Util.now()
         self:dialNow()
     end
 end
