@@ -286,6 +286,23 @@ Core.TRANSPORT_TCP = "tcp"
 local DEFAULTS = {
     transport = "tcp",
     keep_radio_awake = true,
+    --[[
+    Reconnect the plain way: try again in a second, and keep trying.
+
+    Off, because everything clever below it was put there for a reason found
+    in a log. On, because a great many of those reasons turned out to be the
+    cleverness misfiring rather than the network -- a disconnected_since that
+    was never cleared, a wake acted on twice, clocks moved into the future, a
+    rebuild that did not write itself down. Another plugin solving this same
+    problem does the whole of it with `sleep 1; try again`, and has none of
+    those bugs available to it.
+
+    Which is the better trade is a question about hardware, and hardware
+    answers questions like that faster than argument does. So both are here
+    and the reader can pick, and the benchmark can measure them against each
+    other on the devices themselves.
+    ]]
+    plain_reconnect = false,
     port = 9970,
     discovery_port = Discovery.PORT,
     token = "",
@@ -500,6 +517,7 @@ local SHARED_SETTINGS = {
     "match_typography",
     "share_browser",
     "sleep_together",
+    "plain_reconnect",
     "sync_books",
     "sync_library",
     "covers_first",
@@ -1468,7 +1486,10 @@ function Core:scheduleReconnect()
     self.connector = nil
     self:trace(("redialling in %.1fs"):format(self.reconnect_delay))
     self.reconnect_at = Util.now() + self.reconnect_delay
-    self.reconnect_delay = math.min(self.reconnect_delay * 2, RECONNECT_MAX)
+    -- Plainly: a second, every time, however many times. See isPlain.
+    if not self:isPlain() then
+        self.reconnect_delay = math.min(self.reconnect_delay * 2, RECONNECT_MAX)
+    end
     self:changed()
 end
 
@@ -1628,6 +1649,21 @@ Core.PAINT_FIRST = 1.5
 function Core:rebuiltSinceWaking()
     return self.link_rebuilt_at ~= nil and self.resumed_at ~= nil
         and self.link_rebuilt_at >= self.resumed_at
+end
+
+--[[--
+Whether to reconnect the plain way: a fixed second between tries, and no
+adaptive timing at all.
+
+What it switches off is every rule that decides *when* rather than *what*:
+the dial backoff, the repair's backoff, the joiner's head start, and the
+pause that lets the reader redraw before a rebuild freezes it. What it
+leaves alone is everything structural -- the repair still runs, the check
+after a sleep still happens, links still close when they go quiet. This is
+a question about timing, and only timing.
+--]]--
+function Core:isPlain()
+    return self:get("plain_reconnect") and true or false
 end
 
 --- True while the reader should be left to redraw after waking.
@@ -5316,7 +5352,7 @@ function Core:checkLink()
         return
     end
     -- Put off rather than dropped, same as above: the reader is drawing.
-    if self:justWoke() then
+    if not self:isPlain() and self:justWoke() then
         self.link_check_at = Util.now() + LINK_CHECK_DELAY
         return
     end
@@ -5496,7 +5532,7 @@ function Core:checkLinkHealth()
         and Util.now() - self.dialled_at < DIAL_GRACE then return end
     -- And a reader that has just woken is drawing, which this would stop it
     -- doing for five seconds. See PAINT_FIRST.
-    if self:justWoke() then return end
+    if not self:isPlain() and self:justWoke() then return end
     local now = Util.now()
     self.disconnected_since = self.disconnected_since or now
     -- A link that has worked and stopped is broken now; one that has never
@@ -5513,10 +5549,17 @@ function Core:checkLinkHealth()
     cell, the joiner's next dial finds it, and the seconds spent waiting
     were cheaper than the rebuild they replaced.
     ]]
-    if self:get("direct_link") == "join" then patience = patience + Core.JOINER_LEAD end
+    if self:isPlain() then
+        patience = LINK_HEAL_AFTER
+    elseif self:get("direct_link") == "join" then
+        patience = patience + Core.JOINER_LEAD
+    end
     if now - self.disconnected_since < patience then return end
     local base = self.has_connected and LINK_HEAL_EVERY or LINK_HEAL_EVERY_WAITING
     local between = math.min(base * (self.heal_backoff or 1), LINK_HEAL_CEILING)
+    -- Plainly: the same wait every time, so a pair that has been apart all
+    -- night tries as hard as one that lost each other a moment ago.
+    if self:isPlain() then between = LINK_HEAL_EVERY end
     if self.link_healed_at and now - self.link_healed_at < between then return end
     self.link_healed_at = now
     -- Clamped so the multiplier stops where the interval does, rather than

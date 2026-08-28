@@ -430,6 +430,80 @@ T.describe("what a library sync will and will not copy", function()
     end)
 end)
 
+T.describe("reconnecting the plain way", function()
+    --[[
+    Everything clever in Duo's timing was put there for a reason found in a
+    log, and a fair number of those reasons turned out to be the cleverness
+    misfiring rather than the network: a disconnected_since never cleared, a
+    wake acted on twice, clocks moved into the future, a rebuild that did
+    not write itself down. Another plugin solving the same problem does the
+    whole of it with `sleep 1; try again` and has none of those bugs
+    available to it.
+
+    So both are here, and which is better is left to the devices.
+    ]]
+    T.it("keeps a second between dials however many there have been", function()
+        reset()
+        Core.settings.plain_reconnect = true
+        Core.role = Core.ROLE_FOLLOWER
+        Core.reconnect_delay = 1
+        for _ = 1, 5 do Core:scheduleReconnect() end
+        T.assertEquals(Core.reconnect_delay, 1,
+            "it backed off, which is the whole of what plain means not to do")
+
+        Core.settings.plain_reconnect = false
+        Core.reconnect_delay = 1
+        Core:scheduleReconnect()
+        Core:scheduleReconnect()
+        T.assertTrue(Core.reconnect_delay > 1, "the usual way stopped backing off")
+
+        Core.settings.plain_reconnect = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("does not wait for the reader to redraw, or for the host to go first", function()
+        reset()
+        Core.settings.plain_reconnect = true
+        Core.settings.direct_link = "join"
+        Core.role = Core.ROLE_FOLLOWER
+        Core.has_connected = true
+        local rebuilt = 0
+        Core.hooks.reviveDirectLink = function() rebuilt = rebuilt + 1 return "rebuilt" end
+
+        -- Woken this instant, and a joiner, which the usual way holds back twice.
+        Core.resumed_at = Util.now()
+        -- Apart for longer than the plain patience, which is the only
+        -- patience left when the clever ones are off.
+        Core.disconnected_since = Util.now() - 30
+        Core.link_healed_at = nil
+        Core.heal_backoff = nil
+        Core:checkLinkHealth()
+        T.assertEquals(rebuilt, 1, "it held back, plainly")
+
+        Core.hooks.reviveDirectLink = nil
+        Core.settings.plain_reconnect = nil
+        Core.settings.direct_link = nil
+        Core.resumed_at, Core.disconnected_since = nil, nil
+        Core.has_connected = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("leaves everything structural alone", function()
+        -- It is a question about timing and only timing: the repair still
+        -- runs, the check after a sleep still happens, links still close
+        -- when they go quiet.
+        reset()
+        Core.settings.plain_reconnect = true
+        T.assertTrue(Core:isPlain())
+        Core.settings.plain_reconnect = false
+        T.assertTrue(not Core:isPlain())
+        Core.settings.plain_reconnect = nil
+        reset()
+    end)
+end)
+
 T.describe("coming back after a sleep", function()
     --[[
     A device wakes before its network does. This used to be one attempt

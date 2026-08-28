@@ -423,7 +423,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-524 tests, with the interesting parts unmocked: two and three device
+527 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -440,6 +440,23 @@ would measure whatever was there before.
 luajit tools/duo-demo.lua 3      # three devices, printing what each displayed
 luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 ```
+
+## Reconnecting the plain way
+
+**Duo → Reconnect the plain way** switches off every rule that decides
+*when* rather than *what*: the dial backoff, the repair's backoff, the
+joiner's head start, the pause that lets the screen redraw before a rebuild
+freezes it. What is left is a fixed second between tries, and keeping on
+trying.
+
+It is there to be measured rather than argued about. Duo's usual timing was
+built from things that went wrong in logs, and a fair number of those turned
+out to be the timing itself misfiring rather than the network. Another
+plugin solving the same problem does the whole of it with `sleep 1; try
+again` and has none of those faults available to it.
+
+Set it the same on both devices — it is one of the settings the leader
+shares — and the benchmark will say which is better on your hardware.
 
 ## The reconnect benchmark
 

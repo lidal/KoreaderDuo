@@ -2724,6 +2724,17 @@ On connecting, the leader's settings win. After that a change on either device m
             end,
         },
         {
+            text = _("Reconnect the plain way"),
+            help_text = _("Try again in a second, and keep trying — no backing off, no waiting for the other device to go first, no pausing to let the screen redraw.\n\nDuo's usual timing was built from things that went wrong in logs, and a fair number of those turned out to be the timing itself misfiring rather than the network. This is here so the two can be compared on the devices rather than argued about. Set it the same on both."),
+            checked_func = function() return Core:get("plain_reconnect") end,
+            callback = function()
+                Core:set("plain_reconnect", not Core:get("plain_reconnect"))
+                Core:log(Core:get("plain_reconnect")
+                    and "reconnecting the plain way from now on"
+                    or "reconnecting the usual way from now on")
+            end,
+        },
+        {
             text = _("Lock one, lock both"),
             help_text = _("Sleeping either device sleeps the other, rather than leaving one lit on a page nobody is reading."),
             checked_func = function() return Core:get("sleep_together") end,
