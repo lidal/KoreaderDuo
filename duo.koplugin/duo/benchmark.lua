@@ -109,6 +109,9 @@ function Benchmark.new(options)
         now = options.now,              -- function() -> seconds, wall clock
         iface = options.iface or "wlan0",
         role = options.role or "host",  -- "host" or "follower"
+        switch = options.switch,        -- function("direct"|"wifi")
+        show = options.show,            -- function(text) -> on the screen
+        hold = options.hold,            -- function(bool) keep the reader awake
         trials = options.trials or Benchmark.plan(),
         results = {},
         running = false,
@@ -163,6 +166,18 @@ function Benchmark.startsAt(now, align)
     return math.floor(now / align) * align + align
 end
 
+--[[--
+Puts something on the screen.
+
+Because twenty minutes of a reader doing nothing visible is twenty minutes
+of not knowing whether it is working, and the only way to find out was to
+plug in a cable and read the file it was still writing.
+--]]--
+function Benchmark:say(text)
+    if not self.show then return end
+    pcall(self.show, text)
+end
+
 function Benchmark:log(...)
     local parts = {}
     for index = 1, select("#", ...) do
@@ -183,6 +198,15 @@ end
 
 function Benchmark:start(now)
     self.running = true
+    --[[
+    And the reader is kept awake for the whole of it. The first run lost
+    three trials to the device suspending underneath the benchmark -- the
+    host jumped from trial 12 to trial 16 with a 222-second gap in the file
+    -- because nothing was touching the screen and a reader left alone goes
+    to sleep. It was measuring reconnects while asleep, which is a thing it
+    could only ever fail at.
+    ]]
+    if self.hold then pcall(self.hold, true) end
     self.began_at = Benchmark.startsAt(now)
     self.stage = nil
     self.current = nil
@@ -197,8 +221,10 @@ end
 function Benchmark:stop(reason)
     if not self.running then return end
     self.running = false
+    if self.hold then pcall(self.hold, false) end
     self:log("-- benchmark stopped:", tostring(reason))
     self:report()
+    self:say("Duo benchmark finished\n" .. tostring(reason))
 end
 
 --- What the driver says about power saving, for the record.
@@ -265,6 +291,9 @@ function Benchmark:beginTrial(index, now)
         before = self:counters(),
     }
     self:log(("-- trial %d/%d: %s"):format(index, #self.trials, trial.label))
+    self:say(("Duo benchmark %d/%d\n%s\n%s"):format(
+        index, #self.trials, trial.label,
+        self.last_result or "starting"))
     if trial.joiner_lead and self.core then
         self.core.JOINER_LEAD = trial.joiner_lead
         self:log("parameter: joiner lead =", trial.joiner_lead)
@@ -273,22 +302,37 @@ function Benchmark:beginTrial(index, now)
         "- power save:", self:radioState(), "- peers:", self:peers())
 end
 
+--[[--
+Moves this device onto the other transport, the way the menu does.
+
+Running the setup script and stopping there is not switching transports,
+and the first run of this benchmark proved it by measuring nothing at all:
+fourteen direct-link trials, every one of them NEVER RECONNECTED, and
+`rebuilds 0` on both devices throughout. The script had done its half --
+the interface was in IBSS mode at the right address, verified -- but Duo
+had not been told, so it still believed it was on the house Wi-Fi. It went
+on dialling the router's address for the peer, and its repair asked
+`directLinkRole()`, got nothing, and answered "not ours" every time. The
+joiner's lead being swept from zero to twelve was swept past code that
+never ran.
+
+So this goes through the plugin's own switch, which sets the role, sets the
+address, runs the script and starts Duo again over it.
+--]]--
 function Benchmark:switchTransport(to)
-    local role = self.role == "host" and "host" or "join"
+    local began = self.now()
     if to == "direct" then
-        self:log("switching to the direct link as", role)
-        local began = self.now()
-        local out = self.shell(("sh %s %s 2>&1"):format(self.script or "", role))
-        self:log(("the script took %.1fs"):format(self.now() - began))
-        for line in tostring(out or ""):gmatch("[^\n]+") do
-            self:log("  script:", (line:gsub("%s+$", "")))
-        end
+        self:log("switching to the direct link as", self.role)
     else
         self:log("putting the wi-fi back")
-        local began = self.now()
-        self.shell(("sh %s restore 2>&1"):format(self.script or ""))
-        self:log(("restore took %.1fs"):format(self.now() - began))
     end
+    if not self.switch then
+        self:log("no way to switch transports; this trial measures nothing")
+        return
+    end
+    local ok, err = pcall(self.switch, to)
+    self:log(("the switch took %.1fs"):format(self.now() - began),
+        ok and "" or ("- it went wrong: " .. tostring(err)))
 end
 
 function Benchmark:finishTrial(now, outcome, seconds)
@@ -306,6 +350,10 @@ function Benchmark:finishTrial(now, outcome, seconds)
         outcome,
         seconds and (" in %.1fs"):format(seconds) or "",
         record.dials, record.rebuilds, record.sleeps, record.peers))
+    self.last_result = ("last: %s%s"):format(
+        outcome, seconds and (" in %.1fs"):format(seconds) or "")
+    self:say(("Duo benchmark %d/%d\n%s\n%s"):format(
+        record.index, #self.trials, record.trial.label, self.last_result))
     self.current = nil
 end
 

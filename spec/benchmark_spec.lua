@@ -221,6 +221,69 @@ T.describe("running a trial", function()
     end)
 end)
 
+T.describe("what the first real run showed", function()
+    T.it("switches transports through the plugin, not the script alone", function()
+        --[[
+        Fourteen direct-link trials, every one NEVER RECONNECTED, and
+        `rebuilds 0` on both devices throughout. The script had done its
+        half -- IBSS at the right address, verified -- but Duo had not been
+        told, so it went on dialling the router's address and its repair
+        asked directLinkRole(), got nothing, and answered "not ours" every
+        time. The joiner's lead was swept from zero to twelve past code
+        that never ran.
+        ]]
+        local asked = {}
+        local bench, clock = rig{
+            trials = { { phase = "to-direct", label = "switch" } },
+        }
+        bench.switch = function(to) asked[#asked + 1] = to end
+        bench:start(clock.at)
+        clock.at = bench.began_at
+        bench:update(clock.at)
+        clock.at = bench.began_at + Benchmark.SETTLE
+        bench:update(clock.at)
+        T.assertEquals(asked[1], "direct",
+            "it ran a script and called that switching transports")
+    end)
+
+    T.it("keeps the reader awake for the whole run", function()
+        -- The first run lost three trials to the device suspending
+        -- underneath it: the host jumped from trial 12 to trial 16 with a
+        -- 222-second hole in the file. It was measuring reconnects while
+        -- asleep, which it could only ever fail at.
+        local held = {}
+        local bench, clock = rig{ trials = { { phase = "wifi", label = "one" } } }
+        bench.hold = function(awake) held[#held + 1] = awake end
+        bench:start(clock.at)
+        T.assertEquals(held[1], true, "it left the reader free to doze off")
+        bench:stop("done")
+        T.assertEquals(held[2], false, "it held the reader awake after finishing")
+    end)
+
+    T.it("says on the screen where it has got to", function()
+        -- Twenty minutes of a reader doing nothing visible is twenty
+        -- minutes of not knowing whether it is working, and the only way
+        -- to find out was to plug in a cable and read the file.
+        local said = {}
+        local bench, clock = rig{
+            trials = { { phase = "wifi", label = "the first one" } },
+            core = { isConnected = function() return true end },
+        }
+        bench.show = function(text) said[#said + 1] = text end
+        bench:start(clock.at)
+        clock.at = bench.began_at
+        bench:update(clock.at)
+        T.assertMatch(said[1] or "", "1/1")
+        T.assertMatch(said[1] or "", "the first one")
+
+        clock.at = bench.began_at + Benchmark.SETTLE
+        bench:update(clock.at)
+        clock.at = clock.at + 1
+        bench:update(clock.at)
+        T.assertMatch(said[#said] or "", "last: connected")
+    end)
+end)
+
 T.describe("the plan", function()
     T.it("sweeps the joiner's lead more than once for each value", function()
         local seen = {}

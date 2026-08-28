@@ -271,6 +271,22 @@ function Duo:toggleBenchmark()
             pipe:close()
             return out
         end,
+        -- The plugin's own switch, not the script alone: the script puts
+        -- the interface in IBSS mode and Duo goes on believing it is on the
+        -- house Wi-Fi, which is how the first run measured nothing.
+        switch = function(to)
+            if to == "direct" then Duo:switchToDirectLink() else Duo:switchToWifi() end
+        end,
+        -- Held awake for the whole run. The first one lost three trials to
+        -- the device suspending underneath it.
+        hold = function(awake) Duo:setAwake(awake) end,
+        show = function(text)
+            if Duo.benchmark_message then
+                pcall(function() UIManager:close(Duo.benchmark_message) end)
+            end
+            Duo.benchmark_message = InfoMessage:new{ text = text, timeout = 8 }
+            UIManager:show(Duo.benchmark_message)
+        end,
     }
     Duo.benchmark.script = DirectLink.scriptPath()
     local begins = Duo.benchmark:start(require("duo/util").now())
@@ -288,6 +304,10 @@ function Duo:toggleBenchmark()
 end
 
 function Duo:closeBenchmark()
+    if Duo.benchmark_message then
+        pcall(function() UIManager:close(Duo.benchmark_message) end)
+        Duo.benchmark_message = nil
+    end
     if Duo.benchmark_writer then
         pcall(function() Duo.benchmark_writer:close() end)
         Duo.benchmark_writer = nil

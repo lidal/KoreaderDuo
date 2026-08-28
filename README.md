@@ -420,7 +420,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-517 tests, with the interesting parts unmocked: two and three device
+520 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -461,6 +461,10 @@ dials and rebuilds it needed, and how many peers the radio could see
 afterwards. That last one is the interesting column on a direct link —
 `peers 0` on the joiner means it made a cell of its own instead of finding
 the host's.
+
+It says where it has got to on screen as it goes, and holds the reader awake
+for the whole run — a device left alone goes to sleep, and a benchmark
+measuring reconnects while asleep can only fail at it.
 
 **The reader is unusable while it runs**, on purpose: twenty seconds of every
 minute are the event loop deliberately stopped.

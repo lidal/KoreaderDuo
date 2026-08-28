@@ -470,7 +470,11 @@ cell_joined() {
 cell_peers() {
     iface="$1"
     if has iw; then
-        iw dev "$iface" station dump 2>/dev/null | grep -c "^Station" && return 0
+        # `grep -c` prints its count and then exits 1 when that count is
+        # zero, so this cannot be judged on its exit status: doing that put
+        # a second line saying "?" under every honest peers=0.
+        iw dev "$iface" station dump 2>/dev/null | grep -c "^Station"
+        return 0
     fi
     echo "?"
 }
