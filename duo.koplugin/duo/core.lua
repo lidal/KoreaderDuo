@@ -1248,6 +1248,7 @@ function Core:stop(reason, goodbye)
     self.stopping = nil
     self.announce_drop_at = nil
     self.announce_connect_at = nil
+    self.told_connected_to = nil
     self.radio_unverified = nil
     --[[
     A rebuild belongs to an episode of Duo running, and this is the end of
@@ -1290,7 +1291,38 @@ function Core:checkConnectNotice()
     end
     if Util.now() < self.announce_connect_at then return end
     self.announce_connect_at = nil
-    self:notify(("Duo: connected to %s"):format(self.announce_connect_to or "peer"))
+    local peer = self.announce_connect_to or "peer"
+    --[[
+    Once per stretch of being connected, not once per link.
+
+    Holding the word for three seconds was meant to swallow the flap and did
+    not, because the links were dying at eight and nine seconds, not at one:
+
+        18:18:47  notify: Duo: connected to KindleHøgre
+        18:18:52  link L closing peer disconnected age=8.1s silent=0.1s
+        18:19:00  notify: Duo: connected to KindleHøgre
+
+    And they die whatever Duo does -- the device that never touched its
+    radio once in a whole log still lost links at 0.5, 0.6, 0.7, 2.3 and 8.8
+    seconds old. So this is not a fault to be fixed by waiting longer before
+    speaking, which only makes the first word later; it is one the reader
+    should not be shown at all.
+
+    The drop between the two was never announced either -- a reconnection
+    inside QUIET_DROP takes the notice with it -- so a second "connected"
+    tells the reader about a disconnection they were rightly never told
+    about. Saying it once is the whole of the truth they need.
+
+    Cleared by a stop and by a wake, so the first connection after a sleep
+    still says so: that one is news, because the reader has just picked the
+    device up and is asking themselves whether it worked.
+    ]]
+    if self.told_connected_to == peer then
+        self:trace("connected again to", peer, "- already said so, and the drop was never mentioned")
+        return
+    end
+    self.told_connected_to = peer
+    self:notify(("Duo: connected to %s"):format(peer))
 end
 
 function Core:checkDropNotice()
@@ -1301,6 +1333,8 @@ function Core:checkDropNotice()
     end
     if Util.now() < self.announce_drop_at then return end
     self.announce_drop_at = nil
+    -- Told they are apart, so being told they are together again is news.
+    self.told_connected_to = nil
     self:notify(("Duo: %s"):format(self.drop_reason or "disconnected"))
 end
 
@@ -5168,6 +5202,9 @@ function Core:resume()
     known to stick. See onLinkReady.
     ]]
     self.radio_unverified = true
+    -- And the first connection after a wake is worth saying out loud, since
+    -- somebody has just picked the device up and is wondering.
+    self.told_connected_to = nil
     --[[
     And looked at as soon as it is safe to, rather than a whole interval
     after that. The reader's Wi-Fi re-associates a second or two after the

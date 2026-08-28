@@ -694,6 +694,72 @@ T.describe("coming back after a sleep", function()
         reset()
     end)
 
+    T.it("says connected once per stretch, not once per link", function()
+        --[[
+        Holding the word for three seconds was meant to swallow the flap and
+        did not, because the links were dying at eight and nine seconds:
+
+            18:18:47  notify: Duo: connected to KindleHøgre
+            18:18:52  link L closing peer disconnected age=8.1s silent=0.1s
+            18:19:00  notify: Duo: connected to KindleHøgre
+
+        And they die whatever Duo does -- the device that never touched its
+        radio once in a whole log still lost links at 0.5, 0.6, 0.7, 2.3 and
+        8.8 seconds old. The drop between the two was never announced
+        either, so a second "connected" tells the reader about a
+        disconnection they were rightly never told about.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local link = {
+            state = "ready", slot = 1, peer_name = "the other one",
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            allowSilence = function() end,
+            send = function() return true end,
+        }
+        local function connect()
+            Core.links = { link }
+            Core:onLinkReady(link)
+            Core.announce_connect_at = 0
+            Core:checkConnectNotice()
+            return table.concat(device:drainMessages(), "\n")
+        end
+
+        T.assertMatch(connect(), "connected to the other one")
+        T.assertEquals(connect(), "",
+            "it told the reader again about a drop they were never told about")
+
+        -- Unless they were told, in which case coming back is news. The
+        -- link has to be gone for that: a drop notice on a pair that is
+        -- still connected is one the deferral rightly swallows.
+        Core.links = {}
+        Core.drop_reason = "peer disconnected"
+        Core.announce_drop_at = 0
+        Core:checkDropNotice()
+        device:drainMessages()
+        T.assertMatch(connect(), "connected to the other one")
+
+        Core.links = {}
+        Core.told_connected_to = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("says so again after a sleep, because that one is news", function()
+        -- Somebody has just picked the device up and is wondering whether
+        -- it worked. Silence there reads as failure.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.told_connected_to = "the other one"
+        Core.resumed_at = nil
+        Core:resume()
+        T.assertNil(Core.told_connected_to,
+            "waking up left the reader with no word either way")
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("never announces a connection that did not hold", function()
         -- The whole point: the flap the reader was shown twice is one it
         -- now sees once, when the connection that lasts arrives.
