@@ -2817,7 +2817,7 @@ On connecting, the leader's settings win. After that a change on either device m
         },
         {
             text = _("Reconnect the plain way"),
-            help_text = _("Try again in a second, and keep trying — no backing off, no waiting for the other device to go first, no pausing to let the screen redraw.\n\nDuo's usual timing was built from things that went wrong in logs, and a fair number of those turned out to be the timing itself misfiring rather than the network. This is here so the two can be compared on the devices rather than argued about. Set it the same on both."),
+            help_text = _("On, and the way Duo reconnects: try again in a second, and keep trying — no backing off, no waiting for the other device to go first, no pausing to let the screen redraw.\n\nSwitch it off for the adaptive timing instead, which backs off between tries and is more patient with a pair that has been apart a long while. It was the default until measurement on real devices found it no quicker, and a fair number of the faults it was built to answer turned out to be the timing itself misfiring."),
             checked_func = function() return Core:get("plain_reconnect") end,
             callback = function()
                 Core:set("plain_reconnect", not Core:get("plain_reconnect"))

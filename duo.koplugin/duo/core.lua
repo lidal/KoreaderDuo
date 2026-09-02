@@ -306,20 +306,28 @@ local DEFAULTS = {
     --[[
     Reconnect the plain way: try again in a second, and keep trying.
 
-    Off, because everything clever below it was put there for a reason found
-    in a log. On, because a great many of those reasons turned out to be the
-    cleverness misfiring rather than the network -- a disconnected_since that
-    was never cleared, a wake acted on twice, clocks moved into the future, a
-    rebuild that did not write itself down. Another plugin solving this same
-    problem does the whole of it with `sleep 1; try again`, and has none of
-    those bugs available to it.
+    On, now, and that is a reversal worth writing down.
 
-    Which is the better trade is a question about hardware, and hardware
-    answers questions like that faster than argument does. So both are here
-    and the reader can pick, and the benchmark can measure them against each
-    other on the devices themselves.
+    Everything clever this switches off was put there for a reason found in
+    a log. A great many of those reasons turned out to be the cleverness
+    misfiring rather than the network: a disconnected_since that was never
+    cleared, a wake acted on twice, clocks moved into the future, a rebuild
+    that did not write itself down. Every one of those was a bug that the
+    plain path could not have had, because it has nowhere to keep one.
+
+    Measured on the devices, over a dozen wakes each way, plain came back at
+    least as quickly as the adaptive timing and never worse -- 1, 3, 14 and 8
+    seconds against 2, 4, 2, 10, 12, 18, 16 and 2. Not a large enough sample
+    to call it faster, which is why the benchmark records which way a run
+    used. Large enough, with the bug history beside it, to stop making the
+    complicated one the default.
+
+    The adaptive timing is still here and still one tap away, because the
+    reasons it was written down have not stopped being true -- a pair that
+    has been apart all night really is different from one that lost each
+    other a second ago. It is simply no longer the first thing tried.
     ]]
-    plain_reconnect = false,
+    plain_reconnect = true,
     port = 9970,
     discovery_port = Discovery.PORT,
     token = "",

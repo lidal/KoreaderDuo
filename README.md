@@ -468,20 +468,23 @@ baud rates, framing errors or a full FIFO is. Those wait for a real wire.
 
 ## Reconnecting the plain way
 
-**Duo → Reconnect the plain way** switches off every rule that decides
-*when* rather than *what*: the dial backoff, the repair's backoff, the
-joiner's head start, the pause that lets the screen redraw before a rebuild
-freezes it. What is left is a fixed second between tries, and keeping on
-trying.
+**Duo → Reconnect the plain way** is on by default: a fixed second between
+tries, and keep trying. No backing off, no waiting for the other device to
+go first, no pause to let the screen redraw before a rebuild.
 
-It is there to be measured rather than argued about. Duo's usual timing was
-built from things that went wrong in logs, and a fair number of those turned
-out to be the timing itself misfiring rather than the network. Another
-plugin solving the same problem does the whole of it with `sleep 1; try
-again` and has none of those faults available to it.
+Switching it off gives the adaptive timing instead — a dial backoff, a
+repair backoff to a ten-minute ceiling, an eight-second head start for the
+joining device, a pause for the screen. All of that was written from faults
+found in logs, and a fair number of those faults turned out to be the timing
+itself misfiring rather than the network.
 
-Set it the same on both devices — it is one of the settings the leader
-shares — and the benchmark will say which is better on your hardware.
+Measured on two Kindles over a dozen wakes each way, plain came back at
+least as quickly and never worse: 1, 3, 14, 8 seconds against 2, 4, 2, 10,
+12, 18, 16, 2. Not enough to call it faster — enough, with the bug history
+beside it, to stop making the complicated one the default.
+
+It is one of the settings the leader shares, so both devices move together,
+and the benchmark records which way a run used.
 
 ## The reconnect benchmark
 

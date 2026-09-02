@@ -697,6 +697,9 @@ T.describe("coming back after a sleep", function()
         the first attempt, and it strands a pair whose one rebuild landed
         before the other device was ready: nothing would ever try again.
         ]]
+        -- The adaptive timing, asked for by name: it is no longer what a
+        -- device does unless somebody chooses it. See plain_reconnect.
+        Core.settings.plain_reconnect = false
         reset()
         Core.settings.direct_link = "join"
         local rebuilt = 0
@@ -1152,6 +1155,9 @@ T.describe("coming back after a sleep", function()
         wallpaper stayed up because nothing could replace it. Reported as
         the reader looking like it had not woken at all.
         ]]
+        -- The adaptive timing, asked for by name: it is no longer what a
+        -- device does unless somebody chooses it. See plain_reconnect.
+        Core.settings.plain_reconnect = false
         reset()
         Core.role = Core.ROLE_LEADER
         Core.has_connected = true
@@ -1304,6 +1310,9 @@ T.describe("coming back after a sleep", function()
         wake assumed clocks that drift apart, and a pair that sleeps and
         wakes on magnets does not have those.
         ]]
+        -- The adaptive timing, asked for by name: it is no longer what a
+        -- device does unless somebody chooses it. See plain_reconnect.
+        Core.settings.plain_reconnect = false
         reset()
         Core.role = Core.ROLE_LEADER
         Core.has_connected = true
@@ -1455,6 +1464,9 @@ T.describe("coming back after a sleep", function()
         morning. One log had 1,720 of them, and the shell script that does
         it blocks the event loop while it runs.
         ]]
+        -- The adaptive timing, asked for by name: it is no longer what a
+        -- device does unless somebody chooses it. See plain_reconnect.
+        Core.settings.plain_reconnect = false
         reset()
         Core.settings.direct_link = "join"
         local rebuilt = 0
