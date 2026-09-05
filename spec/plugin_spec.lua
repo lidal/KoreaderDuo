@@ -430,6 +430,50 @@ T.describe("what a library sync will and will not copy", function()
     end)
 end)
 
+T.describe("the debug menu", function()
+    --[[
+    Everything in it is a command somebody would otherwise type on a
+    reader's on-screen keyboard, which is a punishment rather than a
+    diagnostic step. Worth a test only because a menu entry that throws is
+    worse than no menu entry: it is the one place somebody goes when
+    something is already wrong.
+    ]]
+    T.it("says what the wire looks like without anybody typing", function()
+        reset()
+        local shown = false
+        local was_show = device.UIManager.show
+        device.UIManager.show = function(self_ui, widget)
+            if widget and widget.text and tostring(widget.text):find("Duo is set to") then
+                shown = true
+            end
+            return was_show(self_ui, widget)
+        end
+        device.plugin:showWireReport()
+        device.UIManager.show = was_show
+        T.assertTrue(shown, "the report said nothing about the device Duo is set to")
+        reset()
+    end)
+
+    T.it("refuses to call down a wire it cannot open", function()
+        -- The failure people will actually hit: a device path that is a
+        -- guess, on a reader where the guess is wrong.
+        reset()
+        Core.settings.serial_device = "/dev/there-is-no-such-thing"
+        local said
+        local was_show = device.UIManager.show
+        device.UIManager.show = function(self_ui, widget)
+            if widget and widget.text then said = tostring(widget.text) end
+            return was_show(self_ui, widget)
+        end
+        device.plugin:testTheWire()
+        device.UIManager.show = was_show
+        T.assertTrue(said ~= nil, "it said nothing at all")
+        T.assertMatch(said, "there%-is%-no%-such%-thing")
+        Core.settings.serial_device = nil
+        reset()
+    end)
+end)
+
 T.describe("reconnecting the plain way", function()
     --[[
     Everything clever in Duo's timing was put there for a reason found in a

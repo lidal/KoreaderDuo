@@ -231,6 +231,160 @@ Moves Duo between a network and a wire.
 Stopping first, because the two have nothing in common: one listens and
 dials, the other opens a file that was already there.
 --]]--
+--- Whatever a read-only command printed, trimmed, or nil if it said nothing.
+local function ask(command)
+    local pipe = io.popen(command .. " 2>&1")
+    if not pipe then return nil end
+    local out = (pipe:read("*a") or ""):gsub("%s+$", "")
+    pipe:close()
+    if out == "" then return nil end
+    return out
+end
+
+--[[--
+Says what the wire looks like from here, without anybody typing.
+
+Everything in it is a command somebody would otherwise have to enter on a
+reader's on-screen keyboard, which is a punishment rather than a diagnostic
+step. All reads: it lists what serial devices exist, whether the one Duo is
+set to is among them, whether anything else is holding it, and whether the
+kernel is logging to it.
+
+The last two are the ones that bite. On these readers the debug UART is
+usually also the console, so a login prompt may be reading the same bytes
+and answering the other device's handshake with "login:" -- which looks
+exactly like a soldering fault and is not one.
+--]]--
+function Duo:showWireReport()
+    local SerialTransport = require("duo/transport_serial")
+    local path = Core:get("serial_device")
+    local lines = {}
+    local function say(text) lines[#lines + 1] = text end
+
+    say(T(_("Duo is set to: %1"), path))
+    say("")
+
+    local found = ask("ls -1 /dev/ttymxc* /dev/ttyS* /dev/ttyUSB* /dev/rfcomm* 2>/dev/null")
+    say(_("Serial devices on this reader:"))
+    say(found or _("  (none found)"))
+    say("")
+
+    if not SerialTransport.isAvailable() then
+        say(_("This build cannot open a serial device at all (no LuaJIT ffi)."))
+    elseif not SerialTransport.exists(path) then
+        say(T(_("%1 is not there. Pick one from the list above."), path))
+    else
+        local stream, err = SerialTransport.open(path, { baud = Core:get("serial_baud") })
+        if stream then
+            stream:close()
+            say(T(_("%1 opens."), path))
+        else
+            say(T(_("%1 will not open: %2"), path, tostring(err)))
+        end
+    end
+    say("")
+
+    local holder = ask(("fuser %s"):format(path)) or ask("ps | grep -i [g]etty")
+    if holder then
+        say(_("Something else is holding the line:"))
+        say("  " .. holder)
+        say(_("A login prompt on this device will answer the other reader instead of Duo."))
+    else
+        say(_("Nothing else appears to be holding the line."))
+    end
+    say("")
+
+    local console = ask("grep -o 'console=[^ ]*' /proc/cmdline")
+    if console then
+        say(_("The kernel logs to:"))
+        say("  " .. console)
+    else
+        say(_("The kernel does not log to a serial console."))
+    end
+
+    UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+end
+
+--- How long to keep calling down the wire before giving up, in seconds.
+Duo.WIRE_TEST = 12
+
+--[[--
+Calls down the wire and listens for the other reader calling back.
+
+Run it on both devices within a few seconds of each other. Each writes its
+own name down the line and reads whatever comes back, which tells the three
+cases apart without anybody wiring up a second computer:
+
+  * the other device's name -- the wire works, both directions
+  * this device's own name  -- TX is reaching RX on this device, so the two
+    are shorted together rather than crossed to the other reader
+  * nothing at all          -- no wire, wrong device, or something else
+    holding the line
+
+Duo does not need to be running for it, and this deliberately does not use
+the protocol: a handshake that fails tells you nothing about which of those
+three you have.
+--]]--
+function Duo:testTheWire()
+    local SerialTransport = require("duo/transport_serial")
+    local path = Core:get("serial_device")
+    if not SerialTransport.isAvailable() then
+        UIManager:show(InfoMessage:new{
+            text = _("This build of KOReader cannot open a serial device."),
+        })
+        return
+    end
+    local stream, err = SerialTransport.open(path, { baud = Core:get("serial_baud") })
+    if not stream then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Could not open %1.\n%2"), path, tostring(err)),
+        })
+        return
+    end
+
+    local me = Duo:getDefaultDeviceName()
+    local marker = "DUOWIRE " .. me
+    local buffer, deadline = "", os.time() + Duo.WIRE_TEST
+    local message = InfoMessage:new{
+        text = T(_("Calling down %1…\nRun this on the other device too."), path),
+        timeout = Duo.WIRE_TEST + 4,
+    }
+    UIManager:show(message)
+
+    local function finish(text)
+        pcall(function() stream:close() end)
+        pcall(function() UIManager:close(message) end)
+        UIManager:show(InfoMessage:new{ text = text })
+    end
+
+    local function tick()
+        local ok = pcall(function()
+            stream:send(marker .. "\n")
+            stream:flush()
+            buffer = buffer .. (stream:receive() or "")
+        end)
+        if not ok then
+            finish(T(_("The line stopped answering while testing %1."), path))
+            return
+        end
+        local heard = buffer:match("DUOWIRE ([^\r\n]+)")
+        if heard and heard ~= me then
+            finish(T(_("The wire works. Heard %1."), heard))
+            return
+        end
+        if heard then
+            finish(_("Heard this device's own name back.\n\nTX is reaching RX on this device — the two lines are shorted together rather than crossed to the other reader."))
+            return
+        end
+        if os.time() >= deadline then
+            finish(T(_("Nothing came back down %1.\n\nCheck the wiring is crossed (TX to RX), that the grounds are joined, and that nothing else is holding the line."), path))
+            return
+        end
+        UIManager:scheduleIn(0.4, tick)
+    end
+    tick()
+end
+
 function Duo:setTransport(transport)
     if Core:get("transport") == transport then return end
     local role = Core.role
@@ -2920,66 +3074,85 @@ On connecting, the leader's settings win. After that a change on either device m
             end,
         },
         {
-            text = _("Write a log file"),
-            help_text = _("Keep a record of what Duo does, in a file you can copy off the device over USB. Off by default. Worth switching on before reproducing something that went wrong, and worth switching off again afterwards.\n\nThe log holds book and folder names, device names and addresses. It does not hold your pairing code or anything you have read."),
-            checked_func = function() return Core:get("debug_log") end,
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                self.menu_container = touchmenu_instance
-                local wanted = not Core:get("debug_log")
-                Core:set("debug_log", wanted)
-                if wanted then
-                    -- Opened now rather than on the next thing that happens,
-                    -- so the menu can say where it is and be right.
-                    Duo:getLogWriter()
-                    Core:log("log switched on by hand")
-                else
-                    Core:log("log switched off by hand")
-                    if Duo.log_writer then
-                        Duo.log_writer:close()
-                        Duo.log_writer = nil
+            text = _("Debug"),
+            help_text = _("The things somebody would otherwise type on a reader's on-screen keyboard, which is a punishment rather than a diagnostic step."),
+            sub_item_table = {
+                {
+                    text = _("What the wire looks like…"),
+                    help_text = _("Lists the serial devices on this reader, says whether the one Duo is set to opens, whether anything else is holding it, and whether the kernel logs to it. All reads; it changes nothing."),
+                    keep_menu_open = true,
+                    callback = function() Duo:showWireReport() end,
+                },
+                {
+                    text = _("Call down the wire…"),
+                    help_text = _("Writes this device's name down the line and listens for the other one. Run it on both devices within a few seconds of each other.\n\nIt tells apart a wire that works, a TX shorted to its own RX, and nothing at all — which a failed handshake does not."),
+                    keep_menu_open = true,
+                    callback = function() Duo:testTheWire() end,
+                    separator = true,
+                },
+            {
+                text = _("Write a log file"),
+                help_text = _("Keep a record of what Duo does, in a file you can copy off the device over USB. Off by default. Worth switching on before reproducing something that went wrong, and worth switching off again afterwards.\n\nThe log holds book and folder names, device names and addresses. It does not hold your pairing code or anything you have read."),
+                checked_func = function() return Core:get("debug_log") end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self.menu_container = touchmenu_instance
+                    local wanted = not Core:get("debug_log")
+                    Core:set("debug_log", wanted)
+                    if wanted then
+                        -- Opened now rather than on the next thing that happens,
+                        -- so the menu can say where it is and be right.
+                        Duo:getLogWriter()
+                        Core:log("log switched on by hand")
+                    else
+                        Core:log("log switched off by hand")
+                        if Duo.log_writer then
+                            Duo.log_writer:close()
+                            Duo.log_writer = nil
+                        end
                     end
-                end
-                self:refreshMenu()
-            end,
-        },
-        {
-            text = _("Log everything"),
-            help_text = _("Adds the running commentary underneath the log: every message across the link, how long each turn of the event loop took, and how long a page turn took to come back.\n\nThat is what tells a slow network from a starved event loop. Gaps near 50ms with a long round trip mean the network; gaps of hundreds of milliseconds mean Duo is not being run often enough to answer quickly whatever the network does.\n\nNoisy, and it fills the log quickly. On to reproduce something, off again afterwards."),
-            checked_func = function() return Core:get("verbose_log") end,
-            enabled_func = function() return Core:get("debug_log") end,
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                self.menu_container = touchmenu_instance
-                local wanted = not Core:get("verbose_log")
-                Core:set("verbose_log", wanted)
-                Core:log(wanted and "verbose log switched on" or "verbose log switched off")
-                self:refreshMenu()
-            end,
-        },
-        {
-            text_func = function()
-                if Duo.benchmark and Duo.benchmark.running then
-                    return _("Stop the reconnect benchmark")
-                end
-                return _("Run the reconnect benchmark…")
-            end,
-            help_text = _("Twenty minutes of taking the network away and giving it back, timing what Duo does about it, and trying the direct link with a range of settings. Start it on BOTH devices within two minutes and they will keep in step by the clock.\n\nThe reader is unusable while it runs. It puts the Wi-Fi back at the end, and writes benchmarkHOST.log or benchmarkFOLLOWER.log beside the Duo log."),
-            keep_menu_open = true,
-            callback = function() Duo:toggleBenchmark() end,
-        },
-        {
-            text_func = function()
-                if not Core:get("debug_log") then return _("The log is off") end
-                return T(_("Log: %1"), Duo:getLogPath())
-            end,
-            help_text = _("Where the log is written. Connect the device over USB and copy this file off it; there may be a second one beside it, ending .1, holding what came before."),
-            enabled_func = function() return Core:get("debug_log") end,
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                self.menu_container = touchmenu_instance
-                Duo:showLogDialog()
-            end,
+                    self:refreshMenu()
+                end,
+            },
+            {
+                text = _("Log everything"),
+                help_text = _("Adds the running commentary underneath the log: every message across the link, how long each turn of the event loop took, and how long a page turn took to come back.\n\nThat is what tells a slow network from a starved event loop. Gaps near 50ms with a long round trip mean the network; gaps of hundreds of milliseconds mean Duo is not being run often enough to answer quickly whatever the network does.\n\nNoisy, and it fills the log quickly. On to reproduce something, off again afterwards."),
+                checked_func = function() return Core:get("verbose_log") end,
+                enabled_func = function() return Core:get("debug_log") end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self.menu_container = touchmenu_instance
+                    local wanted = not Core:get("verbose_log")
+                    Core:set("verbose_log", wanted)
+                    Core:log(wanted and "verbose log switched on" or "verbose log switched off")
+                    self:refreshMenu()
+                end,
+            },
+            {
+                text_func = function()
+                    if Duo.benchmark and Duo.benchmark.running then
+                        return _("Stop the reconnect benchmark")
+                    end
+                    return _("Run the reconnect benchmark…")
+                end,
+                help_text = _("Twenty minutes of taking the network away and giving it back, timing what Duo does about it, and trying the direct link with a range of settings. Start it on BOTH devices within two minutes and they will keep in step by the clock.\n\nThe reader is unusable while it runs. It puts the Wi-Fi back at the end, and writes benchmarkHOST.log or benchmarkFOLLOWER.log beside the Duo log."),
+                keep_menu_open = true,
+                callback = function() Duo:toggleBenchmark() end,
+            },
+            {
+                text_func = function()
+                    if not Core:get("debug_log") then return _("The log is off") end
+                    return T(_("Log: %1"), Duo:getLogPath())
+                end,
+                help_text = _("Where the log is written. Connect the device over USB and copy this file off it; there may be a second one beside it, ending .1, holding what came before."),
+                enabled_func = function() return Core:get("debug_log") end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self.menu_container = touchmenu_instance
+                    Duo:showLogDialog()
+                end,
+            },
+            },
             separator = true,
         },
         {
