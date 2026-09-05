@@ -659,14 +659,17 @@ Duo.WIRE_TEST = 12
 --[[--
 Calls down the wire and listens for the other reader calling back.
 
-Run it on both devices within a few seconds of each other. Each writes its
-own name down the line and reads whatever comes back, which tells the three
-cases apart without anybody wiring up a second computer:
+Run it on both devices within a few seconds of each other. Each writes a
+line holding a token drawn fresh for this run, followed by its own name,
+and reads back whatever arrives. The token is what tells the three cases
+apart: two readers of the same model answer to the same name, so hearing
+"KindlePaperWhite3" says nothing about which end it came from.
 
-  * the other device's name -- the wire works, both directions
-  * this device's own name  -- TX is reaching RX on this device, so the two
-    are shorted together rather than crossed to the other reader
-  * nothing at all          -- no wire, wrong device, or something else
+  * somebody else's token -- the wire works, both directions
+  * this run's own token  -- what this device sends is coming straight
+    back, so either TX and RX are shorted together rather than crossed to
+    the other reader, or something on the line is echoing
+  * nothing at all        -- no wire, wrong device, or something else
     holding the line
 
 Duo does not need to be running for it, and this deliberately does not use
@@ -690,8 +693,10 @@ function Duo:testTheWire()
         return
     end
 
-    local me = Duo:getDefaultDeviceName()
-    local marker = "DUOWIRE " .. me
+    local mine = Util.randomHex(3)
+    local me = tostring(Core:getDeviceName() or ""):gsub("[%s\r\n]+", "-")
+    if me == "" then me = "unnamed" end
+    local marker = "DUOWIRE " .. mine .. " " .. me
     local buffer, deadline = "", os.time() + Duo.WIRE_TEST
     local message = InfoMessage:new{
         text = T(_("Calling down %1…\nRun this on the other device too."), path),
@@ -705,6 +710,17 @@ function Duo:testTheWire()
         UIManager:show(InfoMessage:new{ text = text })
     end
 
+    -- The first call heard from a token that is not this run's own is the
+    -- other reader; anything else is this device hearing itself.
+    local function whatCameBack()
+        local echoed = false
+        for token, name in buffer:gmatch("DUOWIRE (%x+) ([^\r\n]+)") do
+            if token ~= mine then return name end
+            echoed = true
+        end
+        return nil, echoed
+    end
+
     local function tick()
         local ok = pcall(function()
             stream:send(marker .. "\n")
@@ -715,13 +731,13 @@ function Duo:testTheWire()
             finish(T(_("The line stopped answering while testing %1."), path))
             return
         end
-        local heard = buffer:match("DUOWIRE ([^\r\n]+)")
-        if heard and heard ~= me then
+        local heard, echoed = whatCameBack()
+        if heard then
             finish(T(_("The wire works. Heard %1."), heard))
             return
         end
-        if heard then
-            finish(_("Heard this device's own name back.\n\nTX is reaching RX on this device — the two lines are shorted together rather than crossed to the other reader."))
+        if echoed then
+            finish(_("What this device sent came straight back.\n\nEither TX and RX are shorted together rather than crossed to the other reader, or something on the line is echoing — a login prompt on this device will do that."))
             return
         end
         if os.time() >= deadline then
