@@ -423,7 +423,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-539 tests, with the interesting parts unmocked: two and three device
+541 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -467,12 +467,16 @@ On these readers `/dev/ttymxc0` is both the debug UART and the console, so
 two things are in the way of using it: a login prompt reading the bytes the
 other device sends, and the kernel writing its own messages down the same
 wire. **Duo → Debug → Free the line** stops both — it names what it is about to
-stop and asks first. But a getty started by init comes straight back under a
-new number, which is what happens on these readers, so **Turn off the login
-prompt** comments out the one line of `/etc/inittab` that asks for it and
-tells init to read the file again. It keeps the original at
-`/etc/inittab.duo-original`, and the same menu entry puts it back. Do both on
-both devices.
+stop and asks first. But it comes straight back under a new number, because
+something restarts it: on these readers that is `/etc/upstart/console.conf`,
+run by `init.exe`, which never reads `/etc/inittab`. **Turn off the login
+prompt** moves that job aside — renamed rather than edited, so putting it
+back is exact — and comments out any inittab lines too. The same menu entry
+puts everything back. Do it on both devices.
+
+**What starts the login prompt** is the one to run first if any of this
+misbehaves: it says what process 1 actually is, which decides whether
+`/etc/inittab` is read at all.
 
 **Duo → Debug** answers the rest without a keyboard. **What the wire looks
 like** lists the serial devices on the reader, says whether the one Duo is

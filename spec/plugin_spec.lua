@@ -521,6 +521,61 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("moves the startup job aside, not just the inittab lines", function()
+        --[[
+        Which took a screenshot to find out. Process 1 on these readers is
+        init.exe -- Amazon's upstart -- and it never reads /etc/inittab. So
+        an earlier version commented out four getty lines there, worked
+        perfectly, verified itself, and changed nothing at all: the login
+        prompt was coming from /etc/upstart/console.conf the whole time.
+
+        A job is renamed rather than edited, because upstart reads *.conf
+        and a job called console.conf.duo-off is a job it does not have --
+        and because putting it back is then exact rather than a guess about
+        what else was in the file.
+        ]]
+        reset()
+        local offered
+        local was_show = device.UIManager.show
+        device.UIManager.show = function(self_ui, widget)
+            if widget and widget.text then offered = tostring(widget.text) end
+            return was_show(self_ui, widget)
+        end
+        local was_find = device.Duo.findConsoleJobs
+        device.Duo.findConsoleJobs = function()
+            return { "/etc/upstart/console.conf", "/etc/init/console.conf" }
+        end
+
+        device.plugin:setLoginPrompt(false)
+
+        device.Duo.findConsoleJobs = was_find
+        device.UIManager.show = was_show
+        T.assertMatch(offered or "", "console%.conf")
+        T.assertMatch(offered or "", "renamed rather than edited")
+        reset()
+    end)
+
+    T.it("has nothing to offer when both are already clear", function()
+        -- The state the reader was left in by the inittab-only version:
+        -- every getty line commented, and the prompt still there.
+        reset()
+        local said
+        local was_show = device.UIManager.show
+        device.UIManager.show = function(self_ui, widget)
+            if widget and widget.text then said = tostring(widget.text) end
+            return was_show(self_ui, widget)
+        end
+        local was_find = device.Duo.findConsoleJobs
+        device.Duo.findConsoleJobs = function() return {} end
+
+        device.plugin:setLoginPrompt(false)
+
+        device.Duo.findConsoleJobs = was_find
+        device.UIManager.show = was_show
+        T.assertMatch(said or "", "Nothing left to turn off")
+        reset()
+    end)
+
     T.it("refuses to call down a wire it cannot open", function()
         -- The failure people will actually hit: a device path that is a
         -- guess, on a reader where the guess is wrong.

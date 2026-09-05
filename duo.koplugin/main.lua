@@ -232,8 +232,8 @@ Stopping first, because the two have nothing in common: one listens and
 dials, the other opens a file that was already there.
 --]]--
 --- Whatever a read-only command printed, trimmed, or nil if it said nothing.
-local function ask(command)
-    local pipe = io.popen(command .. " 2>&1")
+local function ask(command, quiet)
+    local pipe = io.popen(command .. (quiet and "" or " 2>&1"))
     if not pipe then return nil end
     local out = (pipe:read("*a") or ""):gsub("%s+$", "")
     pipe:close()
@@ -317,11 +317,19 @@ function Duo:whatHoldsTheLine(path)
     return out and out:match("(%d+)")
 end
 
---- What a process is, for saying out loud before offering to stop it.
+--[[--
+What a process is, for saying out loud before offering to stop it.
+
+Reading only its own output, not the shell's. This used to merge stderr and
+came back with the firmware's logging in it -- "/bin/login -- info
+clickstreamHeartbeatMetricsFramework:Skipping metrics recording" -- which
+is one process name and one piece of somebody else's noise, run together
+where somebody is trying to decide whether to kill it.
+--]]--
 function Duo:nameOfProcess(pid)
-    local out = ask(("tr '\\0' ' ' < /proc/%s/cmdline"):format(pid))
-    if out and out ~= "" then return out end
-    return ask(("readlink /proc/%s/exe"):format(pid))
+    local out = ask(("tr '\\0' ' ' < /proc/%s/cmdline 2>/dev/null"):format(pid), true)
+    if out and out ~= "" then return (out:gsub("%s+$", "")) end
+    return ask(("readlink /proc/%s/exe 2>/dev/null"):format(pid), true)
 end
 
 --[[--
@@ -469,6 +477,63 @@ function Duo:showLoginPromptReport()
 end
 
 --[[--
+The startup jobs that put a login prompt on the serial line.
+
+This is what actually holds it on these readers, and it took a screenshot to
+find out. Process 1 is `init.exe` -- Amazon's upstart -- which does not read
+/etc/inittab at all, so commenting out four getty lines there worked
+perfectly and changed nothing. The job is `/etc/upstart/console.conf`, with
+`/etc/init/console.conf` usually the same file by another name.
+
+Returned as a list of paths, because both names may be real and both would
+have to go.
+--]]--
+function Duo:findConsoleJobs()
+    local jobs = {}
+    local out = ask("grep -l -i 'getty\\|/bin/login' /etc/init/*.conf /etc/upstart/*.conf 2>/dev/null", true)
+    for line in tostring(out or ""):gmatch("[^\n]+") do
+        if line:find("%.conf$") then jobs[#jobs + 1] = line end
+    end
+    return jobs
+end
+
+--- True while Duo has a console job turned off.
+function Duo:consoleJobsAreOff()
+    local out = ask("ls /etc/init/*.duo-off /etc/upstart/*.duo-off 2>/dev/null", true)
+    return out ~= nil and out ~= ""
+end
+
+--[[--
+Turns the console login off by moving its job aside, and back by moving it
+home again.
+
+Renamed rather than edited, so nothing has to be understood about what else
+is in the file, and so putting it back is exact. Upstart only reads
+`*.conf`, so a job called `console.conf.duo-off` is a job it does not have.
+--]]--
+function Duo:setConsoleJobs(wanted)
+    local moved = 0
+    if wanted then
+        local out = ask("ls /etc/init/*.duo-off /etc/upstart/*.duo-off 2>/dev/null", true)
+        for file in tostring(out or ""):gmatch("[^\n]+") do
+            local home = file:gsub("%.duo%-off$", "")
+            os.execute(("mv %s %s 2>/dev/null"):format(file, home))
+            local name = home:match("([^/]+)%.conf$")
+            if name then os.execute(("initctl start %s 2>/dev/null"):format(name)) end
+            moved = moved + 1
+        end
+        return moved
+    end
+    for _, file in ipairs(Duo:findConsoleJobs()) do
+        local name = file:match("([^/]+)%.conf$")
+        if name then os.execute(("initctl stop %s 2>/dev/null"):format(name)) end
+        os.execute(("mv %s %s.duo-off 2>/dev/null"):format(file, file))
+        moved = moved + 1
+    end
+    return moved
+end
+
+--[[--
 Turns the login prompt on this line off for good, and back on again.
 
 Killing it never wins: init has it in its respawn table, so it returns
@@ -493,90 +558,83 @@ function Duo:setLoginPrompt(wanted)
     local path = Core:get("serial_device")
     local backup = "/etc/inittab.duo-original"
     local device = path:gsub("^/dev/", "")
+    local jobs = Duo:findConsoleJobs()
 
     if wanted then
+        local put_back = Duo:setConsoleJobs(true)
         local original = slurp(backup)
-        if not original then
-            UIManager:show(InfoMessage:new{
-                text = T(_("There is no copy at %1 to put back."), backup) })
-            return
+        if original then
+            spill("/etc/inittab", original)
+            os.execute(("rm -f %s 2>/dev/null"):format(backup))
+            os.execute("kill -HUP 1 2>/dev/null")
         end
-        local ok, err = spill("/etc/inittab", original)
-        os.execute("kill -HUP 1 2>/dev/null")
         os.execute("mount -o remount,ro / 2>/dev/null")
         UIManager:show(InfoMessage:new{
-            text = ok and _("The startup file is back as it was.")
-                or T(_("Could not write /etc/inittab: %1"), tostring(err)) })
+            text = T(_("Put back: %1 startup job(s)%2.\n\nThe login prompt returns now or on the next boot."),
+                tostring(put_back), original and _(", and /etc/inittab") or "") })
         return
     end
 
+    --[[
+    The jobs first, because on these readers they are the answer and the
+    inittab lines are not. Process 1 is init.exe -- Amazon's upstart -- which
+    never reads /etc/inittab, so an earlier version commented out four getty
+    lines there, worked perfectly, and changed nothing at all.
+    ]]
+    local plan = {}
+    for _, file in ipairs(jobs) do plan[#plan + 1] = "  " .. file end
     local text = slurp("/etc/inittab")
-    if not text then
-        UIManager:show(InfoMessage:new{
-            text = _("There is no /etc/inittab on this device to edit. Use \"What starts the login prompt\" to see what does start it.") })
-        return
-    end
     local edited, hits = {}, 0
-    for line in text:gmatch("([^\n]*)\n?") do
-        if line ~= "" then
-            if line:sub(1, 1) ~= "#" and line:lower():find("getty", 1, true)
-                and line:find(device, 1, true) then
-                hits = hits + 1
-                edited[#edited + 1] = "#" .. line
-            else
-                edited[#edited + 1] = line
+    if text then
+        for line in text:gmatch("([^\n]*)\n?") do
+            if line ~= "" then
+                if line:sub(1, 1) ~= "#" and line:lower():find("getty", 1, true)
+                    and line:find(device, 1, true) then
+                    hits = hits + 1
+                    edited[#edited + 1] = "#" .. line
+                else
+                    edited[#edited + 1] = line
+                end
             end
         end
+        if hits > 0 then plan[#plan + 1] = T(_("  %1 line(s) of /etc/inittab"), tostring(hits)) end
     end
-    if hits == 0 then
+
+    if #plan == 0 then
         UIManager:show(InfoMessage:new{
-            text = T(_("No line in /etc/inittab mentions both a login prompt and %1, so there is nothing here to comment out.\n\nUse \"What starts the login prompt\" — it says what process 1 actually is, which decides whether this file is read at all."), device) })
+            text = T(_("Nothing left to turn off: no startup job mentions a login prompt, and no uncommented line of /etc/inittab mentions one on %1.\n\nIf one is still holding the line, \"What starts the login prompt\" will say what."), device) })
         return
     end
 
     UIManager:show(ConfirmBox:new{
-        text = T(_("Comment out %1 line(s) of /etc/inittab, so the login prompt on %2 does not come back?\n\nThe original is kept at %3."),
-            tostring(hits), path, backup),
+        text = T(_("Turn off the login prompt on %1?\n\nThis moves aside:\n%2\n\nA job is renamed rather than edited, so putting it back is exact. Do this on both devices."),
+            path, table.concat(plan, "\n")),
         ok_text = _("Turn it off"),
         ok_callback = function()
-            if not slurp(backup) then
-                local ok, err = spill(backup, text)
+            local moved = Duo:setConsoleJobs(false)
+            if hits > 0 then
+                if not slurp(backup) then spill(backup, text) end
+                local ok, err = spill("/etc/inittab", table.concat(edited, "\n") .. "\n")
                 if not ok then
                     UIManager:show(InfoMessage:new{
-                        text = T(_("Could not save a copy of /etc/inittab first, so nothing was changed: %1"), tostring(err)) })
+                        text = T(_("Moved %1 startup job(s), but could not write /etc/inittab: %2"),
+                            tostring(moved), tostring(err)) })
                     return
                 end
-            end
-            local ok, err = spill("/etc/inittab", table.concat(edited, "\n") .. "\n")
-            if not ok then
-                UIManager:show(InfoMessage:new{
-                    text = T(_("Could not write /etc/inittab: %1\n\nThe filesystem is probably read-only and would not remount."), tostring(err)) })
-                return
-            end
-            -- Written; now check it reads back as intended before believing it.
-            local after = slurp("/etc/inittab") or ""
-            local stillThere = false
-            for line in after:gmatch("[^\n]+") do
-                if line:sub(1, 1) ~= "#" and line:lower():find("getty", 1, true)
-                    and line:find(device, 1, true) then stillThere = true end
+                os.execute("kill -HUP 1 2>/dev/null")
             end
             os.execute("mount -o remount,ro / 2>/dev/null")
-            if stillThere then
-                UIManager:show(InfoMessage:new{
-                    text = _("The file was written but reads back unchanged, which usually means the write went somewhere other than the real /etc/inittab.") })
-                return
-            end
-            os.execute("kill -HUP 1 2>/dev/null")
             local pid = Duo:whatHoldsTheLine(path)
             if pid then os.execute(("kill %s 2>/dev/null"):format(pid)) end
             UIManager:scheduleIn(2, function()
                 local still = Duo:whatHoldsTheLine(path)
                 if not still then
                     UIManager:show(InfoMessage:new{
-                        text = T(_("%1 is free. The file is edited, so it stays free across a reboot.\n\nDo the same on the other device, then \"Call down the wire\" on both."), path) })
+                        text = T(_("%1 is free, and stays free across a reboot.\n\nDo the same on the other device, then \"Call down the wire\" on both."), path) })
                 else
                     UIManager:show(InfoMessage:new{
-                        text = T(_("The file is edited, but a login prompt is still there as %1.\n\nSo something other than /etc/inittab is starting it. \"What starts the login prompt\" says what process 1 is, which is the thing that decides."), still) })
+                        text = T(_("Moved %1 job(s), but %2 is still holding %3:\n\n  %4\n\nSomething else is starting it. \"What starts the login prompt\" is the place to look."),
+                            tostring(moved), still, path, Duo:nameOfProcess(still) or "?") })
                 end
             end)
         end,
@@ -3387,17 +3445,22 @@ On connecting, the leader's settings win. After that a change on either device m
                 },
                 {
                     text_func = function()
-                        local backup = "/etc/inittab.duo-original"
-                        local f = io.open(backup, "r")
+                        if Duo:consoleJobsAreOff() then
+                            return _("Put the login prompt back…")
+                        end
+                        local f = io.open("/etc/inittab.duo-original", "r")
                         if f then f:close() return _("Put the login prompt back…") end
                         return _("Turn off the login prompt…")
                     end,
-                    help_text = _("Killing the login prompt never wins: init has it in its respawn table and it returns under a new number. This comments out the one line of the reader's startup file that asks for it, keeps a copy of the original, and can put it back.\n\nDo it on both devices. It survives a reboot, which is the point."),
+                    help_text = _("Killing the login prompt never wins: whatever started it puts it back under a new number. On these readers that is a startup job, which this moves aside — renamed rather than edited, so putting it back is exact. Any inittab lines go too.\n\nDo it on both devices. It survives a reboot, which is the point."),
                     keep_menu_open = true,
                     callback = function()
-                        local f = io.open("/etc/inittab.duo-original", "r")
-                        local back = f ~= nil
-                        if f then f:close() end
+                        local back = Duo:consoleJobsAreOff()
+                        if not back then
+                            local f = io.open("/etc/inittab.duo-original", "r")
+                            back = f ~= nil
+                            if f then f:close() end
+                        end
                         Duo:setLoginPrompt(back)
                     end,
                     separator = true,
