@@ -454,6 +454,43 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("names what is holding the line before offering to stop it", function()
+        --[[
+        Confirmed on the readers this runs on: /dev/ttymxc0 is the debug
+        UART and also the console, so a login prompt holds it and reads the
+        bytes the other device sends before Duo can. The reported symptom is
+        that calling down the wire returns nothing at all, which looks
+        exactly like a soldering fault.
+
+        Named and asked about rather than simply killed, because this stops
+        a process on a device somebody is holding.
+        ]]
+        reset()
+        local asked
+        local was_show = device.UIManager.show
+        device.UIManager.show = function(self_ui, widget)
+            if widget and widget.text then asked = tostring(widget.text) end
+            return was_show(self_ui, widget)
+        end
+        -- On the module, because that is what freeTheLine calls through:
+        -- the plugin is rebuilt on every document open, so anything that
+        -- must outlive that lives on Duo rather than on an instance.
+        local was_hold = device.Duo.whatHoldsTheLine
+        local was_name = device.Duo.nameOfProcess
+        device.Duo.whatHoldsTheLine = function() return "9960" end
+        device.Duo.nameOfProcess = function() return "/sbin/getty ttymxc0" end
+
+        device.plugin:freeTheLine()
+
+        device.Duo.whatHoldsTheLine = was_hold
+        device.Duo.nameOfProcess = was_name
+        device.UIManager.show = was_show
+        T.assertTrue(asked ~= nil, "it stopped something without saying what")
+        T.assertMatch(asked, "9960")
+        T.assertMatch(asked, "getty")
+        reset()
+    end)
+
     T.it("refuses to call down a wire it cannot open", function()
         -- The failure people will actually hit: a device path that is a
         -- guess, on a reader where the guess is wrong.

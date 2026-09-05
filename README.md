@@ -423,7 +423,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-537 tests, with the interesting parts unmocked: two and three device
+538 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -462,6 +462,14 @@ Before it will carry anything, on each device: pick **Over a wire**, set
 **Device** to the right node, and pair as usual — one leader, one follower.
 The transport is not one of the settings the leader shares, since pushing a
 switch down a link would take that link away, so set it on both.
+
+On these readers `/dev/ttymxc0` is both the debug UART and the console, so
+two things are in the way of using it: a login prompt reading the bytes the
+other device sends, and the kernel writing its own messages down the same
+wire. **Duo → Debug → Free the line** stops both — it names what it is about
+to stop and asks first. A getty started by init comes straight back, and it
+says so if that happens; turning it off for good means the firmware's own
+startup, and it returns on every boot until then.
 
 **Duo → Debug** answers the rest without a keyboard. **What the wire looks
 like** lists the serial devices on the reader, says whether the one Duo is

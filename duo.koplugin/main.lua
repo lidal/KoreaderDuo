@@ -284,11 +284,11 @@ function Duo:showWireReport()
     end
     say("")
 
-    local holder = ask(("fuser %s"):format(path)) or ask("ps | grep -i [g]etty")
-    if holder then
+    local pid = Duo:whatHoldsTheLine(path)
+    if pid then
         say(_("Something else is holding the line:"))
-        say("  " .. holder)
-        say(_("A login prompt on this device will answer the other reader instead of Duo."))
+        say(("  %s  %s"):format(pid, Duo:nameOfProcess(pid) or "?"))
+        say(_("It reads the bytes the other reader sends before Duo can, and answers them with a login prompt. Use \"Free the line\" below."))
     else
         say(_("Nothing else appears to be holding the line."))
     end
@@ -303,6 +303,89 @@ function Duo:showWireReport()
     end
 
     UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+end
+
+--- The process holding a device open, if there is one.
+function Duo:whatHoldsTheLine(path)
+    local out = ask(("fuser %s"):format(path))
+    local pid = out and out:match("(%d+)")
+    if pid then return pid end
+    -- No fuser on this firmware, so ask the kernel directly: a process
+    -- holding it has the device among its open file descriptors.
+    out = ask(("for p in /proc/[0-9]*; do " ..
+        "if ls -l $p/fd 2>/dev/null | grep -q %s; then basename $p; fi; done"):format(path))
+    return out and out:match("(%d+)")
+end
+
+--- What a process is, for saying out loud before offering to stop it.
+function Duo:nameOfProcess(pid)
+    local out = ask(("tr '\\0' ' ' < /proc/%s/cmdline"):format(pid))
+    if out and out ~= "" then return out end
+    return ask(("readlink /proc/%s/exe"):format(pid))
+end
+
+--[[--
+Stops whatever is holding the serial line, and quiets the kernel on it.
+
+On these readers the debug UART is also the console, so two things are in
+the way of using it for anything else: a login prompt reading the bytes the
+other device sends, and the kernel writing its own messages down the same
+wire. Both have to go before a link can live there.
+
+Asked first, and the process named, because this kills something on a
+device somebody is holding -- and because a getty started by init comes
+straight back, which is worth finding out about here rather than halfway
+through a pairing.
+--]]--
+function Duo:freeTheLine()
+    local path = Core:get("serial_device")
+    local pid = Duo:whatHoldsTheLine(path)
+    if not pid then
+        Duo:quietTheKernel()
+        UIManager:show(InfoMessage:new{
+            text = T(_("Nothing was holding %1.\n\nThe kernel has been told to stop logging to it."), path),
+        })
+        return
+    end
+    local name = Duo:nameOfProcess(pid) or "?"
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Stop this, so Duo can use %1?\n\n  %2  %3\n\nIt is almost certainly the login prompt on the debug console. If init restarts it, this will say so."),
+            path, pid, name),
+        ok_text = _("Stop it"),
+        ok_callback = function()
+            os.execute(("kill %s 2>/dev/null"):format(pid))
+            Duo:quietTheKernel()
+            -- Given a moment to die, and to be restarted if it is going to be.
+            UIManager:scheduleIn(1.5, function()
+                local still = Duo:whatHoldsTheLine(path)
+                if not still then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("%1 is free, and the kernel has stopped logging to it.\n\nTry \"Call down the wire\" on both devices now."), path),
+                    })
+                elseif still == pid then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("%1 would not stop. It may need a harder signal, or it is not what is really holding %2."), pid, path),
+                    })
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("It came straight back as %1, so init is restarting it.\n\nThe line cannot be freed from here for good: the getty on the console has to be turned off in the firmware's own startup, and it will return on every boot until it is."), still),
+                    })
+                end
+            end)
+        end,
+    })
+end
+
+--[[--
+Stops the kernel writing to the console.
+
+Reversible and cheap: printk's first number is which messages reach the
+console, and one means emergencies only. Without this the kernel's own
+output goes down the same wire as Duo's messages and corrupts them --
+rarely, and unpredictably, which is the worst way for it to happen.
+--]]--
+function Duo:quietTheKernel()
+    os.execute("echo 1 4 1 7 > /proc/sys/kernel/printk 2>/dev/null")
 end
 
 --- How long to keep calling down the wire before giving up, in seconds.
@@ -3082,6 +3165,12 @@ On connecting, the leader's settings win. After that a change on either device m
                     help_text = _("Lists the serial devices on this reader, says whether the one Duo is set to opens, whether anything else is holding it, and whether the kernel logs to it. All reads; it changes nothing."),
                     keep_menu_open = true,
                     callback = function() Duo:showWireReport() end,
+                },
+                {
+                    text = _("Free the line…"),
+                    help_text = _("Stops whatever is holding the serial device — on these readers that is the login prompt on the debug console — and tells the kernel to stop logging to it. Both are in the way of using the line for anything else.\n\nIt names what it is about to stop and asks first, and it says so if init brings it straight back."),
+                    keep_menu_open = true,
+                    callback = function() Duo:freeTheLine() end,
                 },
                 {
                     text = _("Call down the wire…"),
