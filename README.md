@@ -423,7 +423,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-541 tests, with the interesting parts unmocked: two and three device
+546 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -458,10 +458,18 @@ there is room to spare — but send books with something else
 ([localsend](https://github.com/kaikozlov/localsend.koplugin) does it well),
 because a book down a serial line takes minutes.
 
-Before it will carry anything, on each device: pick **Over a wire**, set
-**Device** to the right node, and pair as usual — one leader, one follower.
-The transport is not one of the settings the leader shares, since pushing a
-switch down a link would take that link away, so set it on both.
+Before it will carry anything: set **Device** to the right node on each
+reader, then pick **Over a wire** on either one. Picking it moves both, the
+same way switching to a direct link does — the two are talking at the moment
+the question is asked, so it gets settled between them rather than left to
+be done twice in the right order. A device with nobody to ask still switches
+and says so; do the same over there. The node itself stays per-device, since
+one reader may reach the line through a different one.
+
+Once the pair is on a wire, **Connect** stops asking which network to use.
+There is no route to pick — the only question left is which side this device
+holds, and the leader's screen says the pairing code rather than an address
+that means nothing on a line.
 
 On these readers `/dev/ttymxc0` is both the debug UART and the console, so
 two things are in the way of using it: a login prompt reading the bytes the
@@ -481,10 +489,12 @@ misbehaves: it says what process 1 actually is, which decides whether
 **Duo → Debug** answers the rest without a keyboard. **What the wire looks
 like** lists the serial devices on the reader, says whether the one Duo is
 set to opens, whether a login prompt is holding it, and whether the kernel
-logs to it. **Call down the wire** writes this device's name down the line
-and listens for the other — run it on both, and it tells apart a wire that
-works, a TX shorted to its own RX, and nothing at all. A failed pairing
-tells you none of those.
+logs to it. **Call down the wire** writes a token drawn fresh for
+the run, and this device's name, down the line and listens for the other —
+run it on both, and it tells apart a wire that works, a device hearing its
+own bytes come back, and nothing at all. It is the token that separates the
+first two: two readers of the same model answer to the same name. A failed
+pairing tells you none of the three.
 
 Two things to know before wiring anything up. The device is a guess and says
 so: `/dev/ttymxc0` is the usual debug UART on these readers, and it is

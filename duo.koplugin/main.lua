@@ -749,26 +749,38 @@ function Duo:testTheWire()
     tick()
 end
 
-function Duo:setTransport(transport)
-    if Core:get("transport") == transport then return end
-    local role = Core.role
-    local was_active = Core:isActive()
-    if was_active then
-        Core:stop("switching link")
-    end
+--[[--
+Which kind of link Duo uses, as a plain setting.
+
+Nothing is started or stopped here: every caller either has just stopped
+Duo or is about to start it, and a setting that restarted things by itself
+would do it in the middle of both.
+--]]--
+function Duo:useTransport(transport)
     Core:set("transport", transport)
+end
+
+--[[--
+The menu's answer to "network or wire", asked of the pair rather than of
+this device.
+
+It used to be a local setting, and that was the whole of the fault: one
+reader moved to the wire, the other was never told, and the two sat holding
+different ideas of what the link between them was -- one showing a link it
+thought was up, the other still dialling an address across a network the
+first had left. Which route the two take is not something one of them can
+decide alone, so it goes through the same asking the direct link does.
+--]]--
+function Duo:chooseTransport(transport)
+    if Core:get("transport") == transport then return end
     if transport == Core.TRANSPORT_SERIAL
         and not require("duo/transport_serial").isAvailable() then
         UIManager:show(InfoMessage:new{
             text = _("This build of KOReader cannot open a serial device, so Duo will stay on the network."),
         })
-        Core:set("transport", Core.TRANSPORT_TCP)
         return
     end
-    if was_active then
-        Core:start(role)
-    end
-    self:refreshMenu()
+    self:switchTransportWith(transport == Core.TRANSPORT_SERIAL and "wire" or "wifi")
 end
 
 function Duo:showSerialDeviceDialog()
@@ -2140,7 +2152,7 @@ Alone if it has to be. A device with nobody to ask, or whose partner does
 not answer, still switches -- and says so, so that "nothing happened" is
 never the outcome.
 
-@string to  "direct" or "wifi"
+@string to  "direct", "wifi" or "wire"
 --]]--
 function Duo:switchTransportWith(to)
     if not Core:askPeerToSwitch(to) then
@@ -2176,7 +2188,7 @@ end
 --[[--
 The other device has either agreed to our request or made one of its own.
 
-@string to    "direct" or "wifi"
+@string to    "direct", "wifi" or "wire"
 @bool ours    true when this is the answer to a request from here
 --]]--
 function Duo:onPeerSwitch(to, ours)
@@ -2196,6 +2208,21 @@ be a cell before there is anything to join -- and whichever device the
 switch was asked on, one of the two is the joiner.
 --]]--
 function Duo:performSwitch(to)
+    if to == "wire" then
+        self:switchToWire()
+        return
+    end
+    --[[
+    Off the wire before anything is started over a network. Core:start reads
+    the transport to decide whether there is an address to dial at all, so a
+    device that starts first and changes the setting after starts on the wire
+    again -- and then reports itself connected over a line the other reader
+    has already let go of.
+    ]]
+    if Core:usesSerial() then
+        Core:stop("leaving the wire")
+        self:useTransport(Core.TRANSPORT_TCP)
+    end
     if to ~= "direct" then
         self:switchToWifi()
         return
@@ -2206,6 +2233,36 @@ function Duo:performSwitch(to)
         return
     end
     self:switchToDirectLink()
+end
+
+--[[--
+Moves the pair onto the wire, in the role they already have.
+
+The radio is not needed on a wire, but a cell Duo built is still Duo's to
+hand back: leaving it up strands the card on a network nothing else is on,
+and the reader would find no Wi-Fi the next time it wanted some.
+--]]--
+function Duo:switchToWire()
+    if not require("duo/transport_serial").isAvailable() then
+        UIManager:show(InfoMessage:new{
+            text = _("This build of KOReader cannot open a serial device, so Duo will stay on the network."),
+        })
+        return
+    end
+    local role = self:standingRole()
+    self:leaveDirectLink(function()
+        self:notOnADirectLink()
+        Core:stop("switching to the wire")
+        self:useTransport(Core.TRANSPORT_SERIAL)
+        if role then
+            Core:start(role)
+        else
+            -- Never paired, so there is no side to keep. One question, not
+            -- the route one as well: on a wire there is no route to pick.
+            self:showRoleDialog("wire")
+        end
+        self:refreshMenu()
+    end)
 end
 
 --- Moves the pair onto a link of their own, in the role they already have.
@@ -2584,6 +2641,17 @@ so the link is settled first and the role second, the same two taps
 whichever way you go.
 --]]--
 function Duo:showConnectDialog()
+    --[[
+    On a wire there is no route to pick. Asking "Wi-Fi or no router?" of two
+    readers joined by three soldered pads is asking about a network neither
+    of them is going to use, and both answers were wrong: one sent the pair
+    looking for each other over IP, the other started building a cell. The
+    only question left is which side this device holds.
+    ]]
+    if Core:usesSerial() then
+        self:showRoleDialog("wire")
+        return
+    end
     local dialog
     local buttons = {
         {{
@@ -2627,58 +2695,99 @@ end
 Step two: which of the two devices this one is.
 
 @string over  "network" for an ordinary network, "direct" for a link Duo
-              makes itself
+              makes itself, "wire" for a serial line
 @tparam[opt] string preamble  what to say above the question
 --]]--
 function Duo:showRoleDialog(over, preamble)
     local dialog
     local title = preamble
-        or _("Both devices on the same network.\n\nWhich one is this?")
-    dialog = ButtonDialog:new{
-        title = title,
-        buttons = {
-            {{
-                text = _("This device leads (left page)"),
-                callback = function()
-                    UIManager:close(dialog)
-                    if over == "direct" then
-                        self:runDirectLink("host")
-                    else
-                        self:leaveDirectLink(function()
-                            self:notOnADirectLink()
-                            self:startLeader()
-                        end)
-                    end
-                end,
-            }},
-            {{
-                text = _("This device follows (right page)"),
-                callback = function()
-                    UIManager:close(dialog)
-                    if over == "direct" then
-                        self:runDirectLink("join")
-                    else
-                        self:leaveDirectLink(function()
-                            self:notOnADirectLink()
-                            self:searchForLeader()
-                        end)
-                    end
-                end,
-            }},
-            {{
-                text = _("Back"),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:showConnectDialog()
-                end,
-            }},
-            {{
-                text = _("Cancel"),
-                callback = function() UIManager:close(dialog) end,
-            }},
-        },
+    if not title and over == "wire" then
+        title = T(_("Both devices joined by %1.\n\nWhich one is this?"),
+            Core:get("serial_device"))
+    end
+    title = title or _("Both devices on the same network.\n\nWhich one is this?")
+
+    local function pick(role)
+        UIManager:close(dialog)
+        if over == "wire" then
+            self:startOnTheWire(role)
+        elseif over == "direct" then
+            self:runDirectLink(role == Core.ROLE_LEADER and "host" or "join")
+        else
+            self:leaveDirectLink(function()
+                self:notOnADirectLink()
+                if role == Core.ROLE_LEADER then
+                    self:startLeader()
+                else
+                    self:searchForLeader()
+                end
+            end)
+        end
+    end
+
+    local buttons = {
+        {{
+            text = _("This device leads (left page)"),
+            callback = function() pick(Core.ROLE_LEADER) end,
+        }},
+        {{
+            text = _("This device follows (right page)"),
+            callback = function() pick(Core.ROLE_FOLLOWER) end,
+        }},
     }
+    -- No route was picked on a wire, so there is nothing behind this screen
+    -- to go back to.
+    if over ~= "wire" then
+        buttons[#buttons+1] = {{
+            text = _("Back"),
+            callback = function()
+                UIManager:close(dialog)
+                self:showConnectDialog()
+            end,
+        }}
+    end
+    buttons[#buttons+1] = {{
+        text = _("Cancel"),
+        callback = function() UIManager:close(dialog) end,
+    }}
+
+    dialog = ButtonDialog:new{ title = title, buttons = buttons }
     UIManager:show(dialog)
+end
+
+--[[--
+Starts Duo on the wire in the given role.
+
+There is nothing here that the network path spends its two screens on:
+no network to wait for, nobody to search for, no address to read out. Both
+devices open the same character device and the leader starts the handshake.
+
+What does survive is the pairing code. A wire is still checked -- anyone who
+can reach the line can talk on it -- so the leader says its code and a
+follower that has never been told one is asked for it before the line opens
+rather than after, which on a wire is the difference between pairing and a
+handshake that is refused over and over with nothing on screen to say why.
+--]]--
+function Duo:startOnTheWire(role)
+    if role == Core.ROLE_FOLLOWER and not Core:knowsPeerToken() then
+        self:promptForToken(function() self:startOnTheWire(role) end,
+            _("Type the code shown on the other device.\n\nOnly once: it is kept for next time."))
+        return
+    end
+    if not Core:start(role) then return end
+    if role == Core.ROLE_LEADER then
+        UIManager:show(InfoMessage:new{
+            text = T(_([[
+Duo leader is running, on %1.
+
+On the other device open Duo, tap Connect, and choose "This device follows". It asks for the code below the first time.
+
+Code: %2]]),
+                Core:get("serial_device"), Core:ensureToken()),
+            timeout = 60,
+        })
+    end
+    self:refreshMenu()
 end
 
 --[[--
@@ -3210,15 +3319,23 @@ function Duo:getMenuTable()
                 ]]
                 {
                     text = _("Over a network"),
-                    help_text = _("TCP, over Wi-Fi or over a direct link Duo builds itself."),
+                    help_text = _("TCP, over Wi-Fi or over a direct link Duo builds itself.\n\nPicking it moves both devices, while they can still hear each other. If the other one does not answer, do the same over there."),
                     checked_func = function() return not Core:usesSerial() end,
-                    callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
+                    keep_menu_open = true,
+                    callback = function(touchmenu_instance)
+                        self.menu_container = touchmenu_instance
+                        self:chooseTransport(Core.TRANSPORT_TCP)
+                    end,
                 },
                 {
                     text = _("Over a wire"),
-                    help_text = _("A serial line: two readers joined TX to RX with a common ground, or any character device. There is nothing to dial and nothing to reconnect — the line is there whenever both devices have power.\n\nSet the device below, and make sure nothing else is holding it: on most readers the debug UART is also the console, so a login prompt will be reading the same bytes."),
+                    help_text = _("A serial line: two readers joined TX to RX with a common ground, or any character device. There is nothing to dial and nothing to reconnect — the line is there whenever both devices have power.\n\nPicking it moves both devices, while they can still hear each other. If the other one does not answer, do the same over there.\n\nSet the device below, and make sure nothing else is holding it: on most readers the debug UART is also the console, so a login prompt will be reading the same bytes."),
                     checked_func = function() return Core:usesSerial() end,
-                    callback = function() self:setTransport(Core.TRANSPORT_SERIAL) end,
+                    keep_menu_open = true,
+                    callback = function(touchmenu_instance)
+                        self.menu_container = touchmenu_instance
+                        self:chooseTransport(Core.TRANSPORT_SERIAL)
+                    end,
                 },
                 {
                     text_func = function()
@@ -3235,7 +3352,9 @@ function Duo:getMenuTable()
                 {
                     text = _("Check the direct link now"),
                     help_text = _("Ask whether the link Duo built is still there, and rebuild it if not. The same check that runs by itself when the two have been apart for a while — this one just says what it found straight away."),
-                    enabled_func = function() return Duo:directLinkRole() ~= nil end,
+                    enabled_func = function()
+                        return not Core:usesSerial() and Duo:directLinkRole() ~= nil
+                    end,
                     keep_menu_open = true,
                     callback = function()
                         local found = self:reviveDirectLink()
@@ -3248,21 +3367,26 @@ function Duo:getMenuTable()
                 },
                 {
                     text = _("Switch to a direct link"),
+                    enabled_func = function()
+                        return not Core:usesSerial() and not Duo:onADirectLink()
+                    end,
                     help_text = _("Move the pair onto a Wi-Fi link of their own, keeping the sides they already have. For reading away from any network — on a train, in a garden — where there is nothing to connect to.\n\nDo it on both devices: the leader first, then the follower."),
-                    enabled_func = function() return not Duo:onADirectLink() end,
                     keep_menu_open = true,
                     callback = function() self:switchTransportWith("direct") end,
                 },
                 {
                     text = _("Switch to Wi-Fi"),
                     help_text = _("Hand the radio back to the system, wait for your usual network, and pair over that instead — keeping the sides the two already have.\n\nDo it on both devices."),
-                    enabled_func = function() return Duo:onADirectLink() end,
+                    enabled_func = function()
+                        return not Core:usesSerial() and Duo:onADirectLink()
+                    end,
                     keep_menu_open = true,
                     callback = function() self:switchTransportWith("wifi") end,
                 },
                 {
                     text = _("Set up a direct link (no router)…"),
                     help_text = _("The same thing from the top, choosing which device is which. Worth it the first time, or after changing sides."),
+                    enabled_func = function() return not Core:usesSerial() end,
                     keep_menu_open = true,
                     callback = function() self:showDirectRoleDialog() end,
                 },

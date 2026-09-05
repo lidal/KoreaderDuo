@@ -2409,6 +2409,84 @@ T.describe("leaving a direct link to pair over a network", function()
         reset()
     end)
 
+    T.it("takes the other device onto the wire too", function()
+        --[[
+        The fault this answers: picking the wire moved one reader and told
+        the other nothing. The left showed a link it believed was up while
+        the right went on dialling an address over a network the left had
+        already let go of -- two readers, two different ideas of what the
+        link between them was.
+        ]]
+        reset()
+        local sent, moved = nil, nil
+        local link = { send = function(_, kind, fields) sent = { kind, fields } end }
+        Core.hooks.switchTransport = function(to, ours) moved = { to, ours } end
+
+        Core:handleSwitch(link, { type = "SWITCH", to = "wire" })
+        T.assertEquals(sent[2].to, "wire", "the wire was not answered for")
+        T.assertEquals(sent[2].ack, 1)
+        T.assertEquals(moved[1], "wire")
+
+        Core.hooks.switchTransport = nil
+        reset()
+    end)
+
+    T.it("settles the transport before starting anything over it", function()
+        --[[
+        Core:start reads the transport to decide whether there is an address
+        to dial at all, so the order matters: a device that starts first and
+        changes the setting afterwards starts on the link it was leaving.
+        ]]
+        reset()
+        Core.settings.autostart_role = Core.ROLE_LEADER
+        local started = {}
+        local real_start = Core.start
+        Core.start = function(_, role)
+            started[#started+1] = { role = role, transport = Core.settings.transport }
+            return true
+        end
+
+        Core.settings.transport = Core.TRANSPORT_TCP
+        device.plugin:performSwitch("wire")
+        T.assertEquals(Core.settings.transport, Core.TRANSPORT_SERIAL)
+        T.assertEquals(#started, 1, "it never started on the wire")
+        T.assertEquals(started[1].role, Core.ROLE_LEADER, "it lost the side it held")
+        T.assertEquals(started[1].transport, Core.TRANSPORT_SERIAL,
+            "it started before the setting said wire")
+
+        -- And back the other way.
+        local left = false
+        local real_leave = device.plugin.leaveDirectLink
+        device.plugin.leaveDirectLink = function(_, on_done) left = true on_done() end
+        device.plugin:performSwitch("wifi")
+        T.assertTrue(left)
+        T.assertEquals(Core.settings.transport, Core.TRANSPORT_TCP,
+            "it went back to the network still holding the wire")
+        T.assertEquals(started[2].transport, Core.TRANSPORT_TCP,
+            "it started over the network while still set to the wire")
+
+        device.plugin.leaveDirectLink = real_leave
+        Core.start = real_start
+        Core.settings.transport = Core.TRANSPORT_TCP
+        device:drainMessages()
+        reset()
+    end)
+
+    T.it("does not ask the pair to move to a link it is already on", function()
+        reset()
+        local asked = false
+        local real_ask = Core.askPeerToSwitch
+        Core.askPeerToSwitch = function() asked = true return true end
+        Core.settings.transport = Core.TRANSPORT_TCP
+
+        device.plugin:chooseTransport(Core.TRANSPORT_TCP)
+        T.assertTrue(not asked, "it moved the pair onto the link it was on")
+
+        Core.askPeerToSwitch = real_ask
+        device.plugin:closeSwitchNotice()
+        reset()
+    end)
+
     T.it("lets the host make the cell before the joiner looks for it", function()
         --[[
         From a log, one second apart:
@@ -2824,6 +2902,63 @@ T.describe("pairing dialogs", function()
         T.assertMatch(shown, "leads")
         T.assertMatch(shown, "follows")
         T.assertMatch(shown, "Back", "a two-step choice has to be reversible")
+    end)
+
+    T.it("does not ask about a network when the two are on a wire", function()
+        --[[
+        On a wire there is no route to pick, and both answers to the route
+        question were wrong: one sent the pair looking for each other over
+        IP, the other started building a cell. What is left to ask is which
+        side this device holds.
+        ]]
+        reset()
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core.settings.serial_device = "/dev/ttymxc0"
+        device.plugin:showConnectDialog()
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertTrue(not shown:find("Wi%-Fi network"),
+            "it offered a network to two readers joined by a wire")
+        T.assertMatch(shown, "Which one is this")
+        T.assertMatch(shown, "/dev/ttymxc0", "it never said what they are joined by")
+        T.assertTrue(not shown:find("Back"),
+            "there is nothing behind a screen that was not asked for")
+
+        Core.settings.transport = Core.TRANSPORT_TCP
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("asks a wire follower for the code before opening the line", function()
+        --[[
+        A wire is still checked, and a follower that has never been told the
+        leader's code is refused over and over with nothing on screen to say
+        why. Asked before the line opens, not after.
+        ]]
+        reset()
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core.settings.token = ""
+        Core.settings.token_source = ""
+        local started = 0
+        local real_start = Core.start
+        Core.start = function() started = started + 1 return true end
+
+        device.plugin:startOnTheWire(Core.ROLE_FOLLOWER)
+        T.assertEquals(started, 0, "it opened the line with a code nobody has heard of")
+        T.assertTrue(device:answerDialog("K7F2QX", "OK"), "no code was asked for")
+        T.assertEquals(started, 1, "it did not go on once it had the code")
+        T.assertEquals(Core.settings.token, "K7F2QX")
+
+        -- The leader says the code rather than an address that does not exist.
+        device:drainMessages()
+        device.plugin:startOnTheWire(Core.ROLE_LEADER)
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "K7F2QX")
+        T.assertMatch(shown, "/dev/ttymxc0")
+
+        Core.start = real_start
+        Core.settings.transport = Core.TRANSPORT_TCP
+        device:clearScreen()
+        reset()
     end)
 
     T.it("shows the code and address after starting as leader", function()

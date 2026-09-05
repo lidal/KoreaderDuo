@@ -2666,7 +2666,7 @@ right order -- and getting it wrong leaves one reader on a cell nobody else
 is on. The devices are talking to each other at the moment the question is
 asked, which is exactly the moment to settle it between them.
 
-@string to  "direct" or "wifi"
+@string to  "direct", "wifi" or "wire"
 @treturn boolean  whether there was anybody to ask
 --]]--
 --- Tells the other device which second the benchmark begins on.
@@ -2695,7 +2695,7 @@ touching it is what ends the conversation the reply has to cross.
 --]]--
 function Core:handleSwitch(link, msg)
     local to = msg.to
-    if to ~= "direct" and to ~= "wifi" then return end
+    if to ~= "direct" and to ~= "wifi" and to ~= "wire" then return end
     if not self.hooks or not self.hooks.switchTransport then return end
     if Protocol.bool(msg, "ack") then
         -- The other device has heard and is moving. So can this one.
@@ -5162,6 +5162,9 @@ function Core:getStatusText()
     if self:isLeader() then
         local ready = self:getReadyLinks()
         if #ready == 0 then
+            if self:usesSerial() then
+                return ("Leader · calling down %s"):format(self:get("serial_device"))
+            end
             local address = NetUtil.getLocalIP()
             return ("Leader · waiting on %s:%d"):format(address or "this device", self:get("port"))
         end
@@ -5186,6 +5189,9 @@ function Core:getStatusText()
         local seconds = math.max(0, math.ceil(self.reconnect_at - Util.now()))
         return ("Follower · retrying in %ds%s"):format(seconds,
             self.last_error and (" (" .. self.last_error .. ")") or "")
+    end
+    if self:usesSerial() then
+        return ("Follower · listening on %s…"):format(self:get("serial_device"))
     end
     return ("Follower · connecting to %s…"):format(self:get("peer_host"))
 end
