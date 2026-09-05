@@ -16,23 +16,55 @@ local Controller = require("spec/harness/controller")
 local SerialTransport = require("duo/transport_serial")
 
 local LOG_DIR = os.getenv("DUO_LOG_DIR") or "/tmp"
-local PTY_A = LOG_DIR .. "/duo-pty-a"
-local PTY_B = LOG_DIR .. "/duo-pty-b"
+--- Named for this run, so two of them cannot fight over one pair of ends.
+local RUN = tostring(os.time()) .. "-" .. tostring(math.random(100000, 999999))
+local PTY_A = LOG_DIR .. "/duo-pty-a-" .. RUN
+local PTY_B = LOG_DIR .. "/duo-pty-b-" .. RUN
 
 --------------------------------------------------------------------------
 -- A stand-in for a bound RFCOMM channel
 --------------------------------------------------------------------------
+
+--- True once something written on one end can be read from the other.
+local function carriesAByte()
+    local a = SerialTransport.open(PTY_A, { skip_stty = true })
+    if not a then return false end
+    local b = SerialTransport.open(PTY_B, { skip_stty = true })
+    if not b then a:close() return false end
+    a:send("\n")
+    a:flush()
+    local carried = false
+    local deadline = socket.gettime() + 1
+    while socket.gettime() < deadline do
+        if (b:receive() or "") ~= "" then carried = true break end
+        socket.sleep(0.02)
+    end
+    a:close()
+    b:close()
+    return carried
+end
 
 local function startPtyPair()
     os.remove(PTY_A)
     os.remove(PTY_B)
     os.execute(("socat -d -d pty,raw,echo=0,link=%s pty,raw,echo=0,link=%s >%s/duo-socat.log 2>&1 &")
         :format(PTY_A, PTY_B, LOG_DIR))
+    --[[
+    Waited for by carrying a byte, not by sleeping.
+
+    The symlinks appear before socat has finished wiring the two ends
+    together, so this used to sleep two tenths of a second and hope. Under
+    the full suite that was sometimes not enough and this file failed on its
+    first test while passing every time it was run alone -- which is the
+    least useful kind of failure there is.
+
+    A pair that has moved a byte is a pair that is ready. Nothing else
+    proves it, and the check costs less than the sleep it replaces.
+    ]]
     local deadline = socket.gettime() + 10
     while socket.gettime() < deadline do
         if SerialTransport.exists(PTY_A) and SerialTransport.exists(PTY_B) then
-            socket.sleep(0.2) -- let socat finish wiring the two ends together
-            return true
+            if carriesAByte() then return true end
         end
         socket.sleep(0.05)
     end
@@ -40,7 +72,8 @@ local function startPtyPair()
 end
 
 local function stopPtyPair()
-    os.execute("pkill -f 'socat -d -d pty' 2>/dev/null")
+    -- By this run's own ends, so a suite running beside this one keeps its.
+    os.execute(("pkill -f 'link=%s' 2>/dev/null"):format(PTY_A))
     os.remove(PTY_A)
     os.remove(PTY_B)
 end

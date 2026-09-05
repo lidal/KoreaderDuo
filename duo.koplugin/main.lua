@@ -2675,8 +2675,45 @@ function Duo:getMenuTable()
             },
         },
         {
-            text = _("Link"),
+            text_func = function()
+                if Core:usesSerial() then
+                    return T(_("Link: a wire (%1)"), Core:get("serial_device"))
+                end
+                return _("Link")
+            end,
             sub_item_table = {
+                --[[
+                First, and in this submenu rather than a second one further
+                down called "Link: a network". Two entries with Link in the
+                name is one too many: somebody who has just soldered a cable
+                between two readers opens Link, does not find a wire in it,
+                and concludes the option was removed. It was not; it was
+                twenty lines lower under a name that read like a status.
+                ]]
+                {
+                    text = _("Over a network"),
+                    help_text = _("TCP, over Wi-Fi or over a direct link Duo builds itself."),
+                    checked_func = function() return not Core:usesSerial() end,
+                    callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
+                },
+                {
+                    text = _("Over a wire"),
+                    help_text = _("A serial line: two readers joined TX to RX with a common ground, or any character device. There is nothing to dial and nothing to reconnect — the line is there whenever both devices have power.\n\nSet the device below, and make sure nothing else is holding it: on most readers the debug UART is also the console, so a login prompt will be reading the same bytes."),
+                    checked_func = function() return Core:usesSerial() end,
+                    callback = function() self:setTransport(Core.TRANSPORT_SERIAL) end,
+                },
+                {
+                    text_func = function()
+                        return T(_("Device: %1"), Core:get("serial_device"))
+                    end,
+                    enabled_func = function() return Core:usesSerial() end,
+                    keep_menu_open = true,
+                    callback = function(touchmenu_instance)
+                        self.menu_container = touchmenu_instance
+                        self:showSerialDeviceDialog()
+                    end,
+                    separator = true,
+                },
                 {
                     text = _("Check the direct link now"),
                     help_text = _("Ask whether the link Duo built is still there, and rebuild it if not. The same check that runs by itself when the two have been apart for a while — this one just says what it found straight away."),
@@ -2780,40 +2817,6 @@ On connecting, the leader's settings win. After that a change on either device m
                 Core:set("sync_frontlight", not Core:get("sync_frontlight"))
                 if Core:get("sync_frontlight") then Core:pushFrontlight("switched on") end
             end,
-        },
-        {
-            text_func = function()
-                if Core:usesSerial() then
-                    return T(_("Link: a wire (%1)"), Core:get("serial_device"))
-                end
-                return _("Link: a network")
-            end,
-            help_text = _("A network link is TCP over Wi-Fi, or over a direct link Duo builds itself. A wire is a character device — two readers joined TX to RX with a common ground, or any serial port.\n\nOn a wire there is nothing to dial and nothing to reconnect: the line is simply there whenever both devices have power."),
-            sub_item_table = {
-                {
-                    text = _("Over a network"),
-                    checked_func = function() return not Core:usesSerial() end,
-                    callback = function() self:setTransport(Core.TRANSPORT_TCP) end,
-                },
-                {
-                    text = _("Over a wire"),
-                    help_text = _("A serial line. Set the device below, and make sure nothing else is holding it — on most readers the debug UART is also the console, so a getty will be reading the same bytes."),
-                    checked_func = function() return Core:usesSerial() end,
-                    callback = function() self:setTransport(Core.TRANSPORT_SERIAL) end,
-                    separator = true,
-                },
-                {
-                    text_func = function()
-                        return T(_("Device: %1"), Core:get("serial_device"))
-                    end,
-                    enabled_func = function() return Core:usesSerial() end,
-                    keep_menu_open = true,
-                    callback = function(touchmenu_instance)
-                        self.menu_container = touchmenu_instance
-                        self:showSerialDeviceDialog()
-                    end,
-                },
-            },
         },
         {
             text = _("Reconnect the plain way"),

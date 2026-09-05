@@ -458,6 +458,11 @@ there is room to spare — but send books with something else
 ([localsend](https://github.com/kaikozlov/localsend.koplugin) does it well),
 because a book down a serial line takes minutes.
 
+Before it will carry anything, on each device: pick **Over a wire**, set
+**Device** to the right node, and pair as usual — one leader, one follower.
+The transport is not one of the settings the leader shares, since pushing a
+switch down a link would take that link away, so set it on both.
+
 Two things to know before wiring anything up. The device is a guess and says
 so: `/dev/ttymxc0` is the usual debug UART on these readers, and it is
 usually also the console, so a getty may be reading the same bytes and
