@@ -376,6 +376,94 @@ function Duo:freeTheLine()
     })
 end
 
+--- Where the reader is told to keep a login prompt on this line, if it says.
+function Duo:findTheGettySource(path)
+    local device = path:gsub("^/dev/", "")
+    local hit = ask(("grep -n -i 'getty' /etc/inittab 2>/dev/null | grep %s"):format(device))
+    if hit then return "/etc/inittab", hit end
+    hit = ask(("grep -l -i 'getty.*%s' /etc/init/*.conf /etc/upstart/*.conf 2>/dev/null"):format(device))
+    if hit then return hit, nil end
+    return nil, nil
+end
+
+--[[--
+Turns the login prompt on this line off for good, and back on again.
+
+Killing it never wins: init has it in its respawn table, so it returns
+under a new pid before the next check. From a reader:
+
+    7159  getty -L 115200 /dev/ttymxc0
+    ... stopped ...
+    7908  getty -L 115200 /dev/ttymxc0
+
+The entry itself has to go. That means editing the file init reads and
+telling init to read it again, which is a change to the device's own
+startup rather than to Duo -- so it keeps a copy of the original first, it
+only ever comments a line rather than deleting one, and there is a menu
+item that puts it back.
+
+The root filesystem is usually mounted read-only, and is remounted for as
+long as this takes and no longer.
+--]]--
+function Duo:setLoginPrompt(wanted)
+    local path = Core:get("serial_device")
+    local file, line = Duo:findTheGettySource(path)
+    if not file then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Nothing in /etc/inittab or the startup jobs mentions a login prompt on %1, so there is nothing here to turn off.\n\nIf one keeps coming back anyway, it is being started somewhere this does not know to look."), path),
+        })
+        return
+    end
+    if file ~= "/etc/inittab" then
+        UIManager:show(InfoMessage:new{
+            text = T(_("The login prompt on %1 is started by:\n\n  %2\n\nThat is a startup job rather than an inittab line, and Duo will not edit it — turning it off wants a look at what else is in the file."), path, file),
+        })
+        return
+    end
+
+    local device = path:gsub("^/dev/", "")
+    local backup = "/etc/inittab.duo-original"
+    UIManager:show(ConfirmBox:new{
+        text = wanted
+            and T(_("Put the login prompt on %1 back?\n\nThis restores the reader's original startup file."), path)
+            or T(_("Turn off the login prompt on %1?\n\nThis comments out one line of the reader's startup file:\n\n  %2\n\nThe original is kept, and \"Put the login prompt back\" undoes it. Do this on both devices."),
+                path, tostring(line)),
+        ok_text = wanted and _("Put it back") or _("Turn it off"),
+        ok_callback = function()
+            os.execute("mount -o remount,rw / 2>/dev/null")
+            if wanted then
+                os.execute(("[ -f %s ] && cp %s /etc/inittab"):format(backup, backup))
+            else
+                -- Copied once, so a second run cannot back up its own edit.
+                os.execute(("[ -f %s ] || cp /etc/inittab %s"):format(backup, backup))
+                os.execute(("sed -i '/^[^#].*getty.*%s/s|^|#|' /etc/inittab"):format(device))
+            end
+            -- Init re-reads the file on a hangup, and stops respawning what
+            -- is no longer in it.
+            os.execute("kill -HUP 1 2>/dev/null")
+            os.execute("mount -o remount,ro / 2>/dev/null")
+            local pid = Duo:whatHoldsTheLine(path)
+            if pid and not wanted then os.execute(("kill %s 2>/dev/null"):format(pid)) end
+            UIManager:scheduleIn(1.5, function()
+                local still = Duo:whatHoldsTheLine(path)
+                if wanted then
+                    UIManager:show(InfoMessage:new{
+                        text = _("The startup file is back as it was. The login prompt returns on the next boot, or now if init has already noticed."),
+                    })
+                elseif still then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("It is still there as %1.\n\nThe line may be worded differently than expected, or started somewhere other than /etc/inittab. The original file is at %2."), still, backup),
+                    })
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("%1 is free, and stays free across a reboot.\n\nDo the same on the other device, then \"Call down the wire\" on both."), path),
+                    })
+                end
+            end)
+        end,
+    })
+end
+
 --[[--
 Stops the kernel writing to the console.
 
@@ -3171,6 +3259,23 @@ On connecting, the leader's settings win. After that a change on either device m
                     help_text = _("Stops whatever is holding the serial device — on these readers that is the login prompt on the debug console — and tells the kernel to stop logging to it. Both are in the way of using the line for anything else.\n\nIt names what it is about to stop and asks first, and it says so if init brings it straight back."),
                     keep_menu_open = true,
                     callback = function() Duo:freeTheLine() end,
+                },
+                {
+                    text_func = function()
+                        local backup = "/etc/inittab.duo-original"
+                        local f = io.open(backup, "r")
+                        if f then f:close() return _("Put the login prompt back…") end
+                        return _("Turn off the login prompt…")
+                    end,
+                    help_text = _("Killing the login prompt never wins: init has it in its respawn table and it returns under a new number. This comments out the one line of the reader's startup file that asks for it, keeps a copy of the original, and can put it back.\n\nDo it on both devices. It survives a reboot, which is the point."),
+                    keep_menu_open = true,
+                    callback = function()
+                        local f = io.open("/etc/inittab.duo-original", "r")
+                        local back = f ~= nil
+                        if f then f:close() end
+                        Duo:setLoginPrompt(back)
+                    end,
+                    separator = true,
                 },
                 {
                     text = _("Call down the wire…"),

@@ -491,6 +491,61 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("will not edit a startup file it does not understand", function()
+        --[[
+        Killing the login prompt never wins -- init has it in its respawn
+        table, and from a reader:
+
+            7159  getty -L 115200 /dev/ttymxc0
+            ... stopped ...
+            7908  getty -L 115200 /dev/ttymxc0
+
+        So the entry itself has to go, which is a change to the device's own
+        startup rather than to Duo. It only does that to an inittab line it
+        can see. Anything else it names and leaves alone: turning off a
+        startup job wants a look at what else is in the file, and this is
+        somebody's reader.
+        ]]
+        reset()
+        local said
+        local was_show = device.UIManager.show
+        device.UIManager.show = function(self_ui, widget)
+            if widget and widget.text then said = tostring(widget.text) end
+            return was_show(self_ui, widget)
+        end
+        local was_find = device.Duo.findTheGettySource
+        device.Duo.findTheGettySource = function()
+            return "/etc/init/console-getty.conf", nil
+        end
+
+        device.plugin:setLoginPrompt(false)
+
+        device.Duo.findTheGettySource = was_find
+        device.UIManager.show = was_show
+        T.assertMatch(said or "", "console%-getty%.conf")
+        T.assertMatch(said or "", "will not edit")
+        reset()
+    end)
+
+    T.it("says so plainly when nothing asks for a login prompt at all", function()
+        reset()
+        local said
+        local was_show = device.UIManager.show
+        device.UIManager.show = function(self_ui, widget)
+            if widget and widget.text then said = tostring(widget.text) end
+            return was_show(self_ui, widget)
+        end
+        local was_find = device.Duo.findTheGettySource
+        device.Duo.findTheGettySource = function() return nil, nil end
+
+        device.plugin:setLoginPrompt(false)
+
+        device.Duo.findTheGettySource = was_find
+        device.UIManager.show = was_show
+        T.assertMatch(said or "", "nothing here to turn off")
+        reset()
+    end)
+
     T.it("refuses to call down a wire it cannot open", function()
         -- The failure people will actually hit: a device path that is a
         -- guess, on a reader where the guess is wrong.
