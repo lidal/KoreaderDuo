@@ -17,6 +17,9 @@ local function reset()
     Core.settings.mode = "spread"
     Core.settings.reverse = false
     Core.settings.follower_can_turn = true
+    -- A side is remembered once it has been picked, and a test that picked
+    -- one would otherwise stop every later test from being asked.
+    Core.settings.side = ""
     device:drainMessages()
 end
 
@@ -2877,6 +2880,48 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("which page this device holds", function()
+    T.it("acts on a side changed while the two are connected", function()
+        -- Somebody who has just said this is the right-hand page and watches
+        -- it go on showing the left one has been told the setting does
+        -- nothing.
+        reset()
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core.role = Core.ROLE_LEADER
+        local taken = nil
+        device.plugin.takeSide = function(_, role, over) taken = { role, over } end
+
+        device.plugin:chooseSide(Core.ROLE_FOLLOWER)
+        T.assertEquals(Core:getSide(), Core.ROLE_FOLLOWER)
+        T.assertEquals(taken[1], Core.ROLE_FOLLOWER, "it filed the change for later")
+        T.assertEquals(taken[2], "wire", "it did not take the route the pair is on")
+
+        -- Picking the side it already holds moves nothing.
+        taken = nil
+        Core.role = Core.ROLE_FOLLOWER
+        device.plugin:chooseSide(Core.ROLE_FOLLOWER)
+        T.assertNil(taken, "it restarted the pair for no change at all")
+
+        device.plugin.takeSide = nil
+        Core.settings.transport = Core.TRANSPORT_TCP
+        reset()
+    end)
+
+    T.it("is what a start with nothing else to go on falls back to", function()
+        reset()
+        Core.settings.autostart_role = ""
+        Core:setSide(Core.ROLE_FOLLOWER)
+        T.assertEquals(device.plugin:standingRole(), Core.ROLE_FOLLOWER)
+
+        -- And what the user said beats what merely happened last time.
+        Core.settings.autostart_role = Core.ROLE_LEADER
+        T.assertEquals(device.plugin:standingRole(), Core.ROLE_FOLLOWER)
+
+        Core.settings.autostart_role = "off"
+        reset()
+    end)
+end)
+
 T.describe("pairing dialogs", function()
     T.it("asks how the two should reach each other, before who is who", function()
         --[[
@@ -2923,6 +2968,79 @@ T.describe("pairing dialogs", function()
         T.assertTrue(not shown:find("Back"),
             "there is nothing behind a screen that was not asked for")
 
+        Core.settings.transport = Core.TRANSPORT_TCP
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("remembers the side, so it is asked once and not every time", function()
+        --[[
+        Which page a device holds does not change: the reader on the left is
+        on the left tomorrow. Being walked through the question on every
+        connect is the sort of friction that makes a pair not worth
+        switching on.
+        ]]
+        reset()
+        Core.settings.transport = Core.TRANSPORT_TCP
+        local went = {}
+        local real_leave = device.plugin.leaveDirectLink
+        device.plugin.leaveDirectLink = function(_, on_done) on_done() end
+        device.plugin.startLeader = function() went[#went+1] = "leader" end
+        device.plugin.searchForLeader = function() went[#went+1] = "follower" end
+
+        device.plugin:showRoleDialog("network")
+        T.assertTrue(device:pressButton("This device leads (left page)"))
+        T.assertEquals(Core:getSide(), Core.ROLE_LEADER, "the answer was thrown away")
+        T.assertEquals(#went, 1)
+
+        -- Asked again, and it does not ask.
+        device:clearScreen()
+        device:drainMessages()
+        device.plugin:showRoleDialog("network")
+        T.assertEquals(#went, 2, "it went nowhere")
+        T.assertTrue(not table.concat(device:drainMessages(), "\n"):find("Which one is this"),
+            "it asked a question it already had the answer to")
+
+        device.plugin.startLeader = nil
+        device.plugin.searchForLeader = nil
+        device.plugin.leaveDirectLink = real_leave
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("still asks when setting up a direct link from the top", function()
+        -- The one entry whose whole purpose is choosing which device is
+        -- which, and which carries the probe's findings besides.
+        reset()
+        Core:setSide(Core.ROLE_LEADER)
+        device.plugin:showRoleDialog("direct", "Something the probe found.\n\nWhich one is this?")
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "Which one is this")
+        T.assertMatch(shown, "Something the probe found")
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("does not ask anything at all on a wire once it knows its side", function()
+        --[[
+        The two are joined by a piece of copper. There is no route to pick
+        and, once this device knows which page it holds, no question left:
+        connecting is opening the line.
+        ]]
+        reset()
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core:setSide(Core.ROLE_FOLLOWER)
+        Core.settings.token = "K7F2QX"
+        Core.settings.token_source = "peer"
+        local started = nil
+        local real_start = Core.start
+        Core.start = function(_, role) started = role return true end
+
+        device.plugin:showConnectDialog()
+        T.assertEquals(started, Core.ROLE_FOLLOWER, "it did not open the line")
+        T.assertEquals(#device:drainMessages(), 0, "it put a question on screen")
+
+        Core.start = real_start
         Core.settings.transport = Core.TRANSPORT_TCP
         device:clearScreen()
         reset()

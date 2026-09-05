@@ -403,6 +403,15 @@ local DEFAULTS = {
     -- have the same one.
     book_dir = "",
     device_name = "",
+    --[[
+    Which page of the spread this device holds, kept rather than asked.
+
+    Empty means "ask". Not one of the shared settings and never can be: the
+    whole point of it is that the two devices disagree about it, and a
+    leader pushing its own side across would make both of them the left
+    page.
+    ]]
+    side = "",
     autostart = false,
     autostart_role = "off",
 }
@@ -440,6 +449,8 @@ local function migrate(settings)
     end
     local role = RENAMED_ROLES[settings.autostart_role]
     if role then settings.autostart_role = role end
+    local side = RENAMED_ROLES[settings.side]
+    if side then settings.side = side end
     --[[
     Where the code came from was not recorded before, and a device that has
     already been paired for months should not be asked for it again just
@@ -719,6 +730,27 @@ function Core:forgetToken()
     self.settings.token_source = ""
     self:save()
     self:changed()
+end
+
+--[[--
+Which page of the spread this device holds, or nil when it has never said.
+
+Asked once and kept, because it does not change: the reader on the left is
+on the left tomorrow too. Everything that has to pick a role consults this
+before it puts the question on screen, and the question is what writes it.
+
+@treturn ?string Core.ROLE_LEADER, Core.ROLE_FOLLOWER, or nil
+--]]--
+function Core:getSide()
+    local side = self:get("side")
+    if side == Core.ROLE_LEADER or side == Core.ROLE_FOLLOWER then return side end
+    return nil
+end
+
+--- Remembers which page this device holds. Anything else means "ask".
+function Core:setSide(side)
+    if side ~= Core.ROLE_LEADER and side ~= Core.ROLE_FOLLOWER then side = "" end
+    self:set("side", side)
 end
 
 function Core:getDeviceName()

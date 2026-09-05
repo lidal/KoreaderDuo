@@ -54,6 +54,15 @@ the pair should reach each other, and which device this one is.
 2. **This device leads (left page)** on one, **This device follows (right
    page)** on the other.
 
+The second answer is kept. Which reader is the leader does not change from
+one day to the next, so it is asked once and connecting stops asking after
+that — **Duo → This device** shows what it settled on and changes it, and
+changing it while the two are connected moves this device to the new side
+rather than waiting for the next time. Set the two to opposite sides; it is
+not one of the settings the leader shares, for the obvious reason. Pick
+**Ask each time** to get the question back. Which *page* each device shows
+is separate, under Layout.
+
 The leader shows a pairing code. The follower searches and lists what it
 finds, so there is normally no address to type. Over a direct link there is
 nothing to pick: the leader is at a fixed address and the follower goes
@@ -290,12 +299,14 @@ is the live connection: role, peer, and the pages on show.
 
 | Setting | What it does |
 | --- | --- |
+| **This device** | Whether this reader leads or follows, kept so connecting stops asking. |
 | **Layout → Two-page spread** | Leader shows N, follower N+1. A turn moves by two. |
 | **Layout → Mirror the same page** | Both show the same page. |
 | **Layout → This device holds the right-hand page** | Swaps the sides. |
 | **Match typography** | Both devices lay the book out alike. On. |
 | **Match the frontlight** | Same brightness and warmth. On. |
 | **Keep the Wi-Fi awake** | Stop the radio dozing while Duo is running. On. |
+| **Link → Over a network / Over a wire** | Which kind of link. Picking one moves both devices. |
 | **Link → Switch to a direct link / Switch to Wi-Fi** | Move both devices between the two, keeping their sides. |
 | **Share the book list too** | Spread the file browser as well. On. |
 | **Lock one, lock both** | Sleeping either sleeps the other. On. |
@@ -304,7 +315,7 @@ is the live connection: role, peer, and the pages on show.
 | **Page turns from the other device** | Off makes the follower a display only. |
 | **Follow the leader's book** | Open here when the leader opens there. |
 | **Send the book if the other device lacks it** | Hand the file over the link. On. |
-| **Start Duo when KOReader starts** | Reconnect on launch in the last role. |
+| **Start Duo when KOReader starts** | Reconnect on launch in the last role. A wire always does. |
 | **Write a log file**, **Log everything** | See *Reporting something that went wrong*. Both off. |
 | **Pairing code** | Shared secret. Empty means any device may connect. |
 | **Device name**, **Port** | 9970 by default; UDP 9971 for the search. |
@@ -423,7 +434,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-546 tests, with the interesting parts unmocked: two and three device
+551 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -466,10 +477,21 @@ be done twice in the right order. A device with nobody to ask still switches
 and says so; do the same over there. The node itself stays per-device, since
 one reader may reach the line through a different one.
 
-Once the pair is on a wire, **Connect** stops asking which network to use.
-There is no route to pick — the only question left is which side this device
-holds, and the leader's screen says the pairing code rather than an address
-that means nothing on a line.
+**On a wire there is no connecting.** Two readers joined by copper have no
+route to pick and, once each knows whether it leads or follows, no question
+left to answer: the menu entry reads **Start Duo on the wire** and that is
+the whole of it. It starts itself when KOReader does, too, without the
+autostart setting — that setting exists because bringing Duo up on Wi-Fi
+means bringing the radio up and holding it awake, and a character device
+costs none of that. Stopping Duo by hand is still respected.
+
+What survives from pairing is the code, once. Both devices have to be
+holding the same one or the handshake refuses, which is what stops a stray
+getty or an unrelated serial device from being taken for a partner. A pair
+that has ever been paired already agrees; a follower that has not is asked
+before the line opens rather than being refused over and over with nothing on
+screen to say why. The leader's screen shows the code and the device node
+instead of an address, which means nothing on a line.
 
 On these readers `/dev/ttymxc0` is both the debug UART and the console, so
 two things are in the way of using it: a login prompt reading the bytes the

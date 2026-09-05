@@ -135,7 +135,20 @@ function Duo:init()
     if not Duo.autostart_done then
         Duo.autostart_done = true
         local role = Core:get("autostart_role")
-        if Core:get("autostart") and role and role ~= Core.ROLE_OFF then
+        -- A device that has picked a side but never started has nothing
+        -- here yet, and the side it picked is the answer.
+        if role == nil or role == "" then role = Core:getSide() end
+        --[[
+        A wire starts itself. This setting exists because bringing Duo up on
+        Wi-Fi means bringing the radio up and holding it awake, which is a
+        real cost to somebody using one reader today; opening a character
+        device costs nothing, and there is nothing that might not be there to
+        connect to -- the line is either wired or it is not. A deliberate
+        stop still counts: that leaves ROLE_OFF behind, and this does not
+        argue with it.
+        ]]
+        local wanted = Core:get("autostart") or Core:usesSerial()
+        if wanted and role and role ~= Core.ROLE_OFF then
             UIManager:nextTick(function() Core:start(role) end)
         end
     end
@@ -2113,11 +2126,76 @@ to switch and should be sent through the ordinary screens.
 function Duo:standingRole()
     if Core:isLeader() then return Core.ROLE_LEADER end
     if Core:isFollower() then return Core.ROLE_FOLLOWER end
+    -- What the user said, before what merely happened last time.
+    local chosen = Core:getSide()
+    if chosen then return chosen end
     local stored = Core:get("autostart_role")
     if stored == Core.ROLE_LEADER or stored == Core.ROLE_FOLLOWER then
         return stored
     end
     return nil
+end
+
+--[[--
+How the two are reaching each other at the moment: "wire", "direct" or
+"network".
+
+The three paths through pairing differ in everything but the question they
+ask, so anything that has to redo one of them needs to know which it is in.
+--]]--
+function Duo:currentRoute()
+    if Core:usesSerial() then return "wire" end
+    if self:onADirectLink() then return "direct" end
+    return "network"
+end
+
+--[[--
+Takes a side, remembers it, and starts on it.
+
+Remembering is the point. Which page a device holds does not change -- the
+reader on the left is on the left tomorrow -- and being walked through the
+question on every connect is the sort of friction that makes a pair not
+worth switching on.
+
+@string role   Core.ROLE_LEADER or Core.ROLE_FOLLOWER
+@string over   "wire", "direct" or "network"
+--]]--
+function Duo:takeSide(role, over)
+    Core:setSide(role)
+    if over == "wire" then
+        self:startOnTheWire(role)
+        return
+    end
+    if over == "direct" then
+        self:runDirectLink(role == Core.ROLE_LEADER and "host" or "join")
+        return
+    end
+    self:leaveDirectLink(function()
+        self:notOnADirectLink()
+        if role == Core.ROLE_LEADER then
+            self:startLeader()
+        else
+            self:searchForLeader()
+        end
+    end)
+end
+
+--[[--
+Changes which page this device holds, from the menu.
+
+A side chosen while the two are connected is acted on rather than filed for
+later: somebody who has just said this is the right-hand page and watches it
+go on showing the left one has been told the setting does nothing.
+--]]--
+function Duo:chooseSide(role)
+    local was = Core:getSide()
+    Core:setSide(role)
+    self:refreshMenu()
+    if not role or role == was then return end
+    if not Core:isActive() then return end
+    if Core.role == role then return end
+    Core:stop("changing sides")
+    self:takeSide(role, self:currentRoute())
 end
 
 --[[--
@@ -2642,13 +2720,18 @@ whichever way you go.
 --]]--
 function Duo:showConnectDialog()
     --[[
-    On a wire there is no route to pick. Asking "Wi-Fi or no router?" of two
-    readers joined by three soldered pads is asking about a network neither
-    of them is going to use, and both answers were wrong: one sent the pair
-    looking for each other over IP, the other started building a cell. The
-    only question left is which side this device holds.
+    On a wire there is nothing to connect. The two are joined by a piece of
+    copper: there is no route to pick -- asking "Wi-Fi or no router?" of two
+    readers wired together is asking about a network neither will use -- and
+    once the device knows which page it holds there is no question left at
+    all. It opens the line and the two talk.
     ]]
     if Core:usesSerial() then
+        local side = Core:getSide()
+        if side then
+            self:startOnTheWire(side)
+            return
+        end
         self:showRoleDialog("wire")
         return
     end
@@ -2699,6 +2782,19 @@ Step two: which of the two devices this one is.
 @tparam[opt] string preamble  what to say above the question
 --]]--
 function Duo:showRoleDialog(over, preamble)
+    --[[
+    Asked once, then never again. A preamble is the exception: it only ever
+    comes from "Set up a direct link from the top", whose whole purpose is to
+    choose which device is which, and which carries the probe's findings that
+    there would be nowhere else to show.
+    ]]
+    if not preamble then
+        local side = Core:getSide()
+        if side then
+            self:takeSide(side, over)
+            return
+        end
+    end
     local dialog
     local title = preamble
     if not title and over == "wire" then
@@ -2706,23 +2802,13 @@ function Duo:showRoleDialog(over, preamble)
             Core:get("serial_device"))
     end
     title = title or _("Both devices on the same network.\n\nWhich one is this?")
+    if not preamble then
+        title = title .. _("\n\nKept, so this is asked once. Duo → This device changes it.")
+    end
 
     local function pick(role)
         UIManager:close(dialog)
-        if over == "wire" then
-            self:startOnTheWire(role)
-        elseif over == "direct" then
-            self:runDirectLink(role == Core.ROLE_LEADER and "host" or "join")
-        else
-            self:leaveDirectLink(function()
-                self:notOnADirectLink()
-                if role == Core.ROLE_LEADER then
-                    self:startLeader()
-                else
-                    self:searchForLeader()
-                end
-            end)
-        end
+        self:takeSide(role, over)
     end
 
     local buttons = {
@@ -3247,7 +3333,16 @@ function Duo:getMenuTable()
         },
         {
             text_func = function()
-                return Core:isActive() and _("Stop Duo") or _("Connect the two devices…")
+                if Core:isActive() then return _("Stop Duo") end
+                --[[
+                No ellipsis on a wire, because nothing is going to be asked.
+                The two are joined by copper and this device knows which page
+                it holds, so the whole of connecting is opening the line.
+                ]]
+                if Core:usesSerial() and Core:getSide() then
+                    return _("Start Duo on the wire")
+                end
+                return _("Connect the two devices…")
             end,
             keep_menu_open = true,
             callback = function(touchmenu_instance)
@@ -3260,6 +3355,35 @@ function Duo:getMenuTable()
                 end
                 self:refreshMenu()
             end,
+        },
+        {
+            text_func = function()
+                local side = Core:getSide()
+                if side == Core.ROLE_LEADER then
+                    return _("This device: leads")
+                elseif side == Core.ROLE_FOLLOWER then
+                    return _("This device: follows")
+                end
+                return _("This device: asked each time")
+            end,
+            help_text = _("Which side of the pair this reader is, kept rather than asked.\n\nThe leader decides where the pair is in the book and holds the left page; the follower shows the page after it. Which is which does not change from one day to the next, so setting it here means connecting stops asking — and on a wire, where there is no network to choose either, that leaves nothing to ask at all.\n\nSet the two devices to opposite sides. It is not one of the settings the leader shares, for the obvious reason: the whole point is that the two disagree about it.\n\nTo swap which page each device shows without changing who leads, use Layout → This device holds the right-hand page."),
+            sub_item_table = {
+                {
+                    text = _("Leads — the left page"),
+                    checked_func = function() return Core:getSide() == Core.ROLE_LEADER end,
+                    callback = function() self:chooseSide(Core.ROLE_LEADER) end,
+                },
+                {
+                    text = _("Follows — the right page"),
+                    checked_func = function() return Core:getSide() == Core.ROLE_FOLLOWER end,
+                    callback = function() self:chooseSide(Core.ROLE_FOLLOWER) end,
+                },
+                {
+                    text = _("Ask each time"),
+                    checked_func = function() return Core:getSide() == nil end,
+                    callback = function() self:chooseSide(nil) end,
+                },
+            },
         },
         {
             text = _("Resync now"),
@@ -3548,7 +3672,12 @@ On connecting, the leader's settings win. After that a change on either device m
         },
         {
             text = _("Start Duo when KOReader starts"),
-            checked_func = function() return Core:get("autostart") end,
+            help_text = _("Off by default, because starting Duo on Wi-Fi means bringing the radio up and holding it awake — a real cost on a day you are reading with one device.\n\nA wire costs none of that and always starts itself, so this says nothing there. Stopping Duo by hand is still respected either way: it stays stopped until you start it again."),
+            -- Always on over a wire, and the box should not claim otherwise.
+            checked_func = function()
+                return Core:get("autostart") or Core:usesSerial()
+            end,
+            enabled_func = function() return not Core:usesSerial() end,
             callback = function() Core:set("autostart", not Core:get("autostart")) end,
             separator = true,
         },
