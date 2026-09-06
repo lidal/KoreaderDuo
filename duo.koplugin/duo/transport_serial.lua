@@ -49,6 +49,10 @@ local O_RDWR     = 0x0002
 local O_NOCTTY   = 0x0100
 local O_NONBLOCK = 0x0800
 local EAGAIN     = 11
+local ENOENT     = 2
+local EIO        = 5
+local EBUSY      = 16
+local EACCES     = 13
 
 local READ_SIZE = 4096
 local MAX_OUT_BUFFER = 64 * 1024
@@ -58,16 +62,50 @@ function SerialTransport.isAvailable()
     return has_ffi and has_bit and ffi ~= nil and bit ~= nil
 end
 
---- True when `path` exists and can be opened.
+--[[--
+What an errno means on this line, rather than what number it was.
+
+"errno 5" on a reader's screen is a number to go and search for; what it
+means here is one of three or four specific things somebody can act on. EIO
+is the one this line produces most, and it does not mean the hardware has
+failed -- it means the tty was hung up, which is what happens when a login
+prompt on the same device is stopped or restarted underneath an open
+descriptor.
+--]]--
+function SerialTransport.why(errno)
+    if errno == ENOENT then return "there is no such device" end
+    if errno == EIO then
+        return "errno 5: the line was hung up, which usually means a login prompt on this device was stopped or restarted underneath it"
+    end
+    if errno == EBUSY then return "errno 16: something else has the line open" end
+    if errno == EACCES then return "errno 13: not allowed to open it" end
+    return ("errno %d"):format(errno)
+end
+
+--[[--
+True when `path` exists and can be opened.
+
+Never with `io.open`, which is a *blocking* open, and a blocking open on a
+serial line is a way to stop the reader dead. A tty whose CLOCAL flag is
+clear makes open() wait for carrier -- and three soldered wires carry TX, RX
+and ground, so there is no carrier and it waits for ever. What that looks
+like is not an error: it is a reader that never finishes starting, and a
+diagnostic screen that never appears, which is precisely how it turned up.
+
+O_NONBLOCK is the whole of the fix. It makes open() return whatever state
+the line is in, which is all this ever needed to know.
+--]]--
 function SerialTransport.exists(path)
     if not path or path == "" then return false end
-    local handle = io.open(path, "r")
-    if handle then
-        handle:close()
-        return true
+    if not SerialTransport.isAvailable() then return false end
+    local fd = ffi.C.open(path, bit.bor(O_RDWR, O_NOCTTY, O_NONBLOCK))
+    if fd < 0 then
+        -- Present but write-only, or held exclusively, still counts as
+        -- present. Only "no such file" says it is not there.
+        return ffi.errno() ~= ENOENT
     end
-    -- Write-only or exclusive devices still count as present.
-    return io.open(path, "a") ~= nil
+    ffi.C.close(fd)
+    return true
 end
 
 local Stream = {}
@@ -96,29 +134,32 @@ function SerialTransport.open(path, options)
     newlines, which would corrupt the protocol and feed every message
     straight back to its sender. Raw mode is not optional.
 
-    Software flow control is, and it goes back on after `raw`, which clears
-    it. Three soldered pads carry no RTS and no CTS, so without this there
-    is no flow control at all: the far end's line-discipline buffer is four
-    kilobytes, a reader polls at worst every fifty milliseconds, and an
-    e-ink full refresh stops it for a third of a second -- which at line
-    rate is more than the buffer holds. Duo's own traffic is eighty bytes a
-    second and nowhere near it; a book is exactly it.
+    `clocal` and `-crtscts` are what make three wires work. Both describe
+    signals that are not connected: CLOCAL clear means the line waits for
+    carrier, which on TX, RX and ground never comes -- so a blocking open
+    hangs for ever and a hangup can arrive out of nowhere. CRTSCTS means the
+    kernel will not transmit until CTS is asserted, which on those same
+    three wires it never is, so bytes queue and never leave. Neither can be
+    left to whatever the console happened to set.
 
-    Safe here for a reason rather than by luck: every value on this wire is
-    percent-encoded down to letters, digits and `._-`, and the frame around
-    them is spaces, `=` and a newline. The two flow-control bytes cannot
-    occur, so nothing is lost to the kernel eating them. A driver that will
-    not do software flow control simply ignores this, which is where it was
-    already.
+    Software flow control is deliberately *not* on by default. It is the
+    right answer for a line of one's own and the wrong one for this line: on
+    these readers the wire is also the system console, so a single stray
+    XOFF -- one 0x13 out of a framing error at the wrong speed, which is
+    exactly what setting a wire up produces -- stops the port until an XON
+    that may never come. Everything that writes to the console then blocks,
+    the reader included. That is not a transfer running slowly, it is two
+    devices wedged, and it is what happened. See wire_flow_control.
     ]]
     if not options.skip_stty then
-        os.execute(("stty -F %s raw -echo ixon ixoff %s 2>/dev/null")
-            :format(path, tostring(options.baud or 115200)))
+        local flow = options.flow_control and "ixon ixoff" or "-ixon -ixoff"
+        os.execute(("stty -F %s raw -echo clocal -crtscts %s %s 2>/dev/null")
+            :format(path, flow, tostring(options.baud or 115200)))
     end
 
     local fd = ffi.C.open(path, bit.bor(O_RDWR, O_NOCTTY, O_NONBLOCK))
     if fd < 0 then
-        return nil, ("could not open %s (errno %d)"):format(path, ffi.errno())
+        return nil, ("could not open %s: %s"):format(path, SerialTransport.why(ffi.errno()))
     end
 
     local stream = setmetatable({
@@ -181,7 +222,7 @@ function Stream:flush()
     if ffi.errno() == EAGAIN then
         return true -- the line is busy; the rest goes out on a later poll
     end
-    return false, ("write failed (errno %d)"):format(ffi.errno())
+    return false, ("write failed: " .. SerialTransport.why(ffi.errno()))
 end
 
 function Stream:receive()
@@ -197,7 +238,7 @@ function Stream:receive()
     if ffi.errno() == EAGAIN then
         return "" -- nothing to read right now, which is the normal case
     end
-    return nil, ("read failed (errno %d)"):format(ffi.errno())
+    return nil, ("read failed: " .. SerialTransport.why(ffi.errno()))
 end
 
 function Stream:close()

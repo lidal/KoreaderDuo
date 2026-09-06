@@ -308,6 +308,7 @@ is the live connection: role, peer, and the pages on show.
 | **Keep the Wi-Fi awake** | Stop the radio dozing while Duo is running. On. |
 | **Link → Over a network / Over a wire** | Which kind of link. Picking one moves both devices. |
 | **Link → Device**, **Link → Speed** | Which character device, and how fast. Per device: set both to match. |
+| **Link → Let the line ask the other end to wait** | XON/XOFF. Off — unsafe on a line that is also the console. |
 | **Link → Switch to a direct link / Switch to Wi-Fi** | Move both devices between the two, keeping their sides. |
 | **Share the book list too** | Spread the file browser as well. On. |
 | **Lock one, lock both** | Sleeping either sleeps the other. On. |
@@ -435,7 +436,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-561 tests, with the interesting parts unmocked: two and three device
+563 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -487,12 +488,22 @@ about 80 bytes a second and fits at any of them. Books still travel better
 with something else ([localsend](https://github.com/kaikozlov/localsend.koplugin)
 does it well).
 
-Three soldered pads carry no RTS or CTS, so Duo turns on software flow
-control (XON/XOFF) instead. It is safe here rather than by luck: every value
-on the wire is percent-encoded down to letters, digits and `._-`, so the two
-flow-control bytes cannot occur in the data. Without it a book transfer
-overruns the far end every time an e-ink refresh stops its loop for longer
-than its buffer holds.
+Duo sets `clocal` and `-crtscts` on the line, and both matter with three
+wires. CLOCAL clear means the line waits for a carrier that TX, RX and
+ground do not carry, so a blocking open never returns — which is what a
+reader that never finishes starting looks like. CRTSCTS means the kernel
+will not transmit until CTS is asserted, which on those same three wires it
+never is.
+
+**Link → Let the line ask the other end to wait** is software flow control
+(XON/XOFF), and it is **off**. Without it there is no flow control at all,
+so a book transfer overruns the far end every time an e-ink refresh stops
+its loop for longer than its buffer holds. With it, on *this* line, one
+stray XOFF — a single byte out of a framing error at the wrong speed, which
+is exactly what setting a wire up produces — stops the port until an XON
+that may never come, and everything that writes to the console blocks behind
+it, the reader included. Turn it on only for a line that is not this
+device's console.
 
 Before it will carry anything: set **Device** to the right node on each
 reader, then pick **Over a wire** on either one. Picking it moves both, the

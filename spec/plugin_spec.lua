@@ -598,6 +598,44 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("backs off a line that will not open, rather than hammering it", function()
+        --[[
+        A line that will not open is not a peer that has not answered yet.
+        Retrying it every second is a fork, an exec and an open every second
+        for as long as the device is wrong or held -- felt on a reader, and
+        it buries the one message that would explain it under a thousand
+        identical ones. Whatever is in the way needs a person.
+        ]]
+        reset()
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core.settings.serial_device = "/dev/there-is-no-such-thing"
+        Core.role = Core.ROLE_LEADER
+        Core.wire_open_failures = 0
+        local now = require("duo/util").now()
+
+        local waits = {}
+        for _ = 1, 6 do
+            Core:openSerialLink()
+            waits[#waits + 1] = math.floor((Core.reconnect_at or now) - now + 0.5)
+        end
+        T.assertEquals(waits[1], 1, "the first try should come back quickly")
+        T.assertTrue(waits[6] > waits[2], "it never backed off at all")
+        T.assertTrue(waits[6] <= Core.WIRE_OPEN_BACKOFF, "it backed off past the ceiling")
+        -- And it says so once, not once per try.
+        T.assertMatch(table.concat(device:drainMessages(), "\n"), "cannot open")
+
+        -- A start that works clears the score.
+        Core.wire_open_failures = 4
+        Core:stop("test done")
+        T.assertEquals(Core.wire_open_failures, 0,
+            "a fresh start inherited the last one's bad luck")
+
+        Core.settings.serial_device = nil
+        Core.settings.transport = Core.TRANSPORT_TCP
+        device:clearScreen()
+        reset()
+    end)
+
     T.it("blames the speed when bytes come back that make no sense", function()
         --[[
         The one fault this test can otherwise not see. Two ends at different

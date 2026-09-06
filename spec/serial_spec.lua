@@ -163,14 +163,16 @@ T.describe("serial transport", function()
         a:close(); b:close()
     end)
 
-    T.it("configures the line it opens, flow control and all", function()
+    T.it("configures the line it opens, and does not wait for carrier", function()
         --[[
         Every other test in this file opens with skip_stty, because a
         pseudo-terminal needs no setting up -- which means the stty a real
         device actually gets was never run here at all. It is not a small
-        thing to leave untested: raw mode is what stops a tty echoing every
-        message straight back to its sender, and the flow control is the
-        only flow control there is on three soldered pads.
+        thing to leave untested. Raw mode is what stops a tty echoing every
+        message back to its sender, and `clocal` is what stops the line
+        waiting for a carrier that three soldered wires do not carry: the
+        reader that never finished starting was an open blocking on exactly
+        that.
         ]]
         local a = assert(SerialTransport.open(PTY_A, { baud = 115200 }))
         local b = assert(SerialTransport.open(PTY_B, { baud = 115200 }))
@@ -185,14 +187,47 @@ T.describe("serial transport", function()
         T.assertEquals(received, "still carries bytes\n")
         a:close(); b:close()
 
-        -- And the settings landed, which stty is the authority on: it
-        -- prints a name for a flag that is on and -name for one that is off.
-        local pipe = assert(io.popen(("stty -F %s -a 2>&1"):format(PTY_A)))
-        local flags = pipe:read("*a") or ""
-        pipe:close()
-        T.assertTrue(not flags:find("%-ixon"), "the line has no flow control on it")
-        T.assertTrue(not flags:find("%-ixoff"), "the line will not ask the far end to wait")
+        -- stty is the authority on what landed: it prints a name for a flag
+        -- that is on, and -name for one that is off.
+        local function flagsOn(path)
+            local pipe = assert(io.popen(("stty -F %s -a 2>&1"):format(path)))
+            local out = pipe:read("*a") or ""
+            pipe:close()
+            return out
+        end
+        local flags = flagsOn(PTY_A)
+        T.assertTrue(not flags:find("%-clocal"),
+            "the line still waits for a carrier three wires do not carry")
+        T.assertMatch(flags, "%-crtscts", "it expects an RTS and a CTS that are not wired")
         T.assertMatch(flags, "%-echo", "the line echoes what it is sent")
+        -- Off unless asked for: on these readers this line is the console,
+        -- and one stray XOFF on a console stops everything that writes to it.
+        T.assertMatch(flags, "%-ixon", "flow control was on without being asked for")
+        T.assertMatch(flags, "%-ixoff", "flow control was on without being asked for")
+
+        -- And on when it is asked for.
+        local c = assert(SerialTransport.open(PTY_A, { baud = 115200, flow_control = true }))
+        flags = flagsOn(PTY_A)
+        c:close()
+        T.assertTrue(not flags:find("%-ixon"), "asking for flow control did nothing")
+        T.assertTrue(not flags:find("%-ixoff"), "asking for flow control did nothing")
+        -- Put it back, so nothing after this runs with it on.
+        SerialTransport.open(PTY_A, { baud = 115200 }):close()
+    end)
+
+    T.it("does not block on a device it cannot get a carrier from", function()
+        --[[
+        The fault that looked like a reader refusing to start. Checking
+        whether a device is there used to be a blocking open, and a blocking
+        open on a tty with no carrier never returns. It has to answer
+        whatever state the line is in.
+        ]]
+        local started = socket.gettime()
+        T.assertTrue(SerialTransport.exists(PTY_A))
+        T.assertTrue(not SerialTransport.exists("/dev/definitely-not-here"))
+        T.assertTrue(not SerialTransport.exists(""))
+        T.assertTrue(socket.gettime() - started < 1,
+            "checking whether a device is there blocked")
     end)
 
     T.it("reports a device that is not there", function()

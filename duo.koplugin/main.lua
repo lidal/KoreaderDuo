@@ -149,7 +149,16 @@ function Duo:init()
         ]]
         local wanted = Core:get("autostart") or Core:usesSerial()
         if wanted and role and role ~= Core.ROLE_OFF then
-            UIManager:nextTick(function() Core:start(role) end)
+            -- Behind a pcall, because this is the one call on the reader's
+            -- startup path that touches hardware nobody has checked yet.
+            -- A wire that cannot be opened is a thing to report, never a
+            -- reason for KOReader not to finish starting.
+            UIManager:nextTick(function()
+                local ok, failure = pcall(function() Core:start(role) end)
+                if not ok then
+                    Core:log("starting on its own failed:", tostring(failure))
+                end
+            end)
         end
     end
 end
@@ -287,7 +296,10 @@ function Duo:showWireReport()
     elseif not SerialTransport.exists(path) then
         say(T(_("%1 is not there. Pick one from the list above."), path))
     else
-        local stream, err = SerialTransport.open(path, { baud = Core:get("serial_baud") })
+        local stream, err = SerialTransport.open(path, {
+            baud = Core:get("serial_baud"),
+            flow_control = Core:get("wire_flow_control"),
+        })
         if stream then
             stream:close()
             say(T(_("%1 opens."), path))
@@ -728,7 +740,10 @@ function Duo:testTheWire()
         })
         return
     end
-    local stream, err = SerialTransport.open(path, { baud = baud })
+    local stream, err = SerialTransport.open(path, {
+        baud = baud,
+        flow_control = Core:get("wire_flow_control"),
+    })
     if not stream then
         UIManager:show(InfoMessage:new{
             text = T(_("Could not open %1.\n%2"), path, tostring(err)),
@@ -3662,6 +3677,20 @@ function Duo:getMenuTable()
                     callback = function(touchmenu_instance)
                         self.menu_container = touchmenu_instance
                         self:showSpeedDialog()
+                    end,
+                },
+                {
+                    text = _("Let the line ask the other end to wait"),
+                    help_text = _("Software flow control (XON/XOFF). Off, and only worth turning on for a line that is NOT this device's console.\n\nThree soldered pads carry no RTS or CTS, so without it there is no flow control at all and a book transfer overruns the other reader every time an e-ink refresh stops its loop. Duo's own traffic is nowhere near that; a book is exactly it.\n\nThe catch is what the line also is. On these readers the debug UART is the system console, and one stray XOFF — a single byte out of a framing error at the wrong speed — stops that port until an XON that may never come. Everything that writes to the console then blocks, the reader included."),
+                    checked_func = function() return Core:get("wire_flow_control") end,
+                    enabled_func = function() return Core:usesSerial() end,
+                    callback = function()
+                        Core:set("wire_flow_control", not Core:get("wire_flow_control"))
+                        if Core:isActive() and Core:usesSerial() then
+                            local role = Core.role
+                            Core:stop("changing flow control")
+                            Core:start(role)
+                        end
                     end,
                     separator = true,
                 },

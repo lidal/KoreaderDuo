@@ -302,6 +302,23 @@ local DEFAULTS = {
     ]]
     serial_device = "/dev/ttymxc0",
     serial_baud = 115200,
+    --[[
+    Software flow control on the wire. Off, and the reason is not caution.
+
+    It is the right answer for a line of one's own: three soldered pads
+    carry no RTS or CTS, so without it a book transfer overruns the far end
+    every time an e-ink refresh stops its loop for longer than its buffer
+    holds. It is the wrong answer for this line, because on these readers
+    the wire is also the system console. One stray XOFF -- a single 0x13 out
+    of a framing error at the wrong speed, which is what setting a wire up
+    produces -- stops the port until an XON that may never come, and
+    everything that writes to the console blocks behind it, the reader
+    included.
+
+    So it is offered, and it is off, and the menu says which line it is safe
+    on: one that is not this device's console.
+    ]]
+    wire_flow_control = false,
     keep_radio_awake = true,
     --[[
     Reconnect the plain way: try again in a second, and keep trying.
@@ -1202,13 +1219,18 @@ function Core:start(role, options)
         self.role = role
         self.settings.autostart_role = role
         self:save()
-        if not self:openSerialLink() then
-            self:alert(("Could not open %s.\n%s\n\nCheck the device exists and nothing else is holding it:\n  ls -l %s"):format(
-                self:get("serial_device"), tostring(self.last_error),
-                self:get("serial_device")))
-            self:stop("serial device unavailable")
-            return false
-        end
+        --[[
+        A first open that fails is not a start that failed.
+
+        The line is held for a moment whenever a login prompt on it is
+        restarted, and the cable may simply not be in yet. Both resolve
+        themselves while the reader is being used. Stopping here meant a
+        device that missed on the first try never tried again and put a
+        modal on the screen to say so -- which on a wire that starts itself
+        is a modal on every boot. openSerialLink keeps trying, backs off
+        while it does, and speaks up once it is clear somebody is needed.
+        ]]
+        self:openSerialLink()
         self.last_activity = Util.now()
         self:updateAwake()
         self:changed()
@@ -1321,6 +1343,9 @@ function Core:stop(reason, goodbye)
         self.connector = nil
     end
     self.reconnect_at = nil
+    -- A fresh start deserves a prompt first try at the line, whatever the
+    -- last episode spent working out about it.
+    self.wire_open_failures = 0
     -- Stopping is a decision, and it outranks a sleep this device has not
     -- finished waking from.
     self.paused_role = nil
@@ -1757,15 +1782,52 @@ Brings up the serial link.
 There is no dialling on a serial line: both devices open the same channel
 and the leader starts talking. Whoever gets there first waits for the other.
 --]]--
+--[[--
+How many times to fail to open the line before saying so out loud.
+
+Three, because the first one or two are ordinary -- a login prompt being
+restarted hangs the tty up for a moment, and the next try succeeds.
+--]]--
+Core.WIRE_OPEN_COMPLAINT = 3
+
+--- The longest to wait between tries at a line that will not open, seconds.
+Core.WIRE_OPEN_BACKOFF = 30
+
 function Core:openSerialLink()
     self.reconnect_at = nil
     local path = self:get("serial_device")
-    local stream, err = SerialTransport.open(path, { baud = self:get("serial_baud") })
+    local stream, err = SerialTransport.open(path, {
+        baud = self:get("serial_baud"),
+        flow_control = self:get("wire_flow_control"),
+    })
     if not stream then
         self.last_error = err
-        self:scheduleReconnect()
+        --[[
+        Backed off, and plainly rather than by the reconnect rule.
+
+        A line that will not open is not a peer that has not answered yet.
+        Retrying it every second means a fork, an exec and an open every
+        second for as long as the device is wrong or held -- which on a
+        reader is felt, and which buries the one message that would explain
+        it under a thousand identical ones. Whatever is in the way needs a
+        person, so this waits like something that expects to keep waiting.
+        ]]
+        self.wire_open_failures = (self.wire_open_failures or 0) + 1
+        local wait = math.min(2 ^ math.min(self.wire_open_failures - 1, 5),
+            Core.WIRE_OPEN_BACKOFF)
+        self.reconnect_at = Util.now() + wait
+        if self.wire_open_failures == Core.WIRE_OPEN_COMPLAINT then
+            self:log("cannot open", path, "-", tostring(err))
+            self:alert(("Duo cannot open %s.\n\n%s\n\nIt will keep trying every %d seconds. Duo → Debug → What the wire looks like says what is in the way."):format(
+                path, tostring(err), Core.WIRE_OPEN_BACKOFF))
+        end
+        self:changed()
         return false
     end
+    if (self.wire_open_failures or 0) > 0 then
+        self:log("opened", path, "after", self.wire_open_failures, "failed tries")
+    end
+    self.wire_open_failures = 0
     self:adoptStream(stream, self:isLeader())
     self:changed()
     return true
