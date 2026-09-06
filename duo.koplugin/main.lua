@@ -421,13 +421,33 @@ end
 --- Writes a whole file, remounting the root read-write if it has to.
 local function spill(path, text)
     local handle = io.open(path, "w")
+    local opened_it_up = false
     if not handle then
         os.execute("mount -o remount,rw / 2>/dev/null")
+        opened_it_up = true
         handle = io.open(path, "w")
-        if not handle then return false, "could not open it for writing" end
+        if not handle then
+            os.execute("mount -o remount,ro / 2>/dev/null")
+            return false, "could not open it for writing"
+        end
     end
     local ok, err = handle:write(text)
     handle:close()
+    --[[
+    Put back on the way out, on every path out.
+
+    A reader's root filesystem is mounted read-only for a reason, and it is
+    this one: these devices lose power without warning -- a flat battery, a
+    long press, somebody taking the back off -- and a journalled filesystem
+    that was writable at that moment can come back damaged. Leaving it open
+    after one write means every unclean power-off from then until the next
+    reboot is a chance at a reader that will not start, hours or days after
+    the write that opened it. The window is meant to be one file long.
+    ]]
+    if opened_it_up then
+        os.execute("sync 2>/dev/null")
+        os.execute("mount -o remount,ro / 2>/dev/null")
+    end
     if not ok then return false, tostring(err) end
     return true
 end
@@ -580,25 +600,48 @@ Renamed rather than edited, so nothing has to be understood about what else
 is in the file, and so putting it back is exact. Upstart only reads
 `*.conf`, so a job called `console.conf.duo-off` is a job it does not have.
 --]]--
+--[[--
+Runs something that needs to write to the root filesystem, and shuts it
+again afterwards.
+
+Moving a job file needed a writable root and never asked for one, so the
+same menu entry did nothing at all on a reader whose root was read-only and
+moved four files on one where something else had already opened it. A
+button whose effect depends on what happened before it is a button whose
+effect turns up on a later boot than the tap, which is the hardest kind of
+fault to connect to its cause.
+--]]--
+local function writable(work)
+    os.execute("mount -o remount,rw / 2>/dev/null")
+    local ok, failure = pcall(work)
+    os.execute("sync 2>/dev/null")
+    os.execute("mount -o remount,ro / 2>/dev/null")
+    if not ok then error(failure, 0) end
+end
+
 function Duo:setConsoleJobs(wanted)
     local moved = 0
     if wanted then
         local out = ask("ls /etc/init/*.duo-off /etc/upstart/*.duo-off 2>/dev/null", true)
-        for file in tostring(out or ""):gmatch("[^\n]+") do
-            local home = file:gsub("%.duo%-off$", "")
-            os.execute(("mv %s %s 2>/dev/null"):format(file, home))
-            local name = home:match("([^/]+)%.conf$")
-            if name then os.execute(("initctl start %s 2>/dev/null"):format(name)) end
-            moved = moved + 1
-        end
+        writable(function()
+            for file in tostring(out or ""):gmatch("[^\n]+") do
+                local home = file:gsub("%.duo%-off$", "")
+                os.execute(("mv %s %s 2>/dev/null"):format(file, home))
+                local name = home:match("([^/]+)%.conf$")
+                if name then os.execute(("initctl start %s 2>/dev/null"):format(name)) end
+                moved = moved + 1
+            end
+        end)
         return moved
     end
-    for _, file in ipairs(Duo:findConsoleJobs()) do
-        local name = file:match("([^/]+)%.conf$")
-        if name then os.execute(("initctl stop %s 2>/dev/null"):format(name)) end
-        os.execute(("mv %s %s.duo-off 2>/dev/null"):format(file, file))
-        moved = moved + 1
-    end
+    writable(function()
+        for _, file in ipairs(Duo:findConsoleJobs()) do
+            local name = file:match("([^/]+)%.conf$")
+            if name then os.execute(("initctl stop %s 2>/dev/null"):format(name)) end
+            os.execute(("mv %s %s.duo-off 2>/dev/null"):format(file, file))
+            moved = moved + 1
+        end
+    end)
     return moved
 end
 
