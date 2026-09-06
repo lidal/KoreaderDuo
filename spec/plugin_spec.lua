@@ -598,6 +598,60 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("stands Duo's own link down before testing the line", function()
+        --[[
+        Two descriptors on one tty do not each get a copy of it: the kernel
+        hands every byte to exactly one of them. A test running beside a
+        live link splits the conversation with it, which looks from the
+        outside like one reader hearing the other perfectly and the other
+        hearing nothing -- a broken wire, and it is nothing of the kind.
+        ]]
+        reset()
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core.role = Core.ROLE_LEADER
+        local stopped, restarted = nil, nil
+        local real_stop, real_start = Core.stop, Core.start
+        Core.stop = function(_, why) stopped = why Core.role = Core.ROLE_OFF end
+        Core.start = function(_, role) restarted = role return true end
+
+        local real = package.loaded["duo/transport_serial"]
+        package.loaded["duo/transport_serial"] = {
+            isAvailable = function() return true end,
+            open = function()
+                return {
+                    send = function() return true end,
+                    flush = function() return true end,
+                    close = function() end,
+                    pending = function() return 0 end,
+                    receive = function() return "" end,
+                }
+            end,
+        }
+        local was = device.Duo.WIRE_TEST
+        device.Duo.WIRE_TEST = 0
+
+        device.plugin:testTheWire()
+        T.assertMatch(tostring(stopped), "testing the wire",
+            "it tested the line with its own link still reading it")
+        device.UIManager:pump()
+        T.assertEquals(restarted, Core.ROLE_LEADER,
+            "it left Duo stopped after the test")
+
+        -- And the verdict names the receiving side, which is the half the
+        -- other device's success does not test.
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "RX pad")
+        T.assertMatch(shown, "only listening does not")
+
+        device.Duo.WIRE_TEST = was
+        package.loaded["duo/transport_serial"] = real
+        Core.stop, Core.start = real_stop, real_start
+        Core.settings.transport = Core.TRANSPORT_TCP
+        Core.role = Core.ROLE_OFF
+        device:clearScreen()
+        reset()
+    end)
+
     T.it("backs off a line that will not open, rather than hammering it", function()
         --[[
         A line that will not open is not a peer that has not answered yet.

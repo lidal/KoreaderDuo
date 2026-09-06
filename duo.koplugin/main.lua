@@ -740,11 +740,47 @@ function Duo:testTheWire()
         })
         return
     end
+
+    --[[
+    Duo's own link is stood down first, and this is not politeness.
+
+    Two descriptors open on one tty do not each get a copy of the line: the
+    kernel hands every byte to exactly one of them, so a test running beside
+    a live link splits the conversation with it and each sees roughly half.
+    Worse, opening reads the line dry to clear stale traffic, which takes
+    whatever the link had not got to yet.
+
+    What that looks like is the test on one device hearing the other
+    perfectly while the other hears nothing at all -- which reads as a
+    broken wire and is nothing of the kind. It became likely the moment a
+    wire started itself, because then there is always a link to fight with.
+    ]]
+    local resume_role = (Core:isActive() and Core:usesSerial()) and Core.role or nil
+    if resume_role then Core:stop("testing the wire") end
+
+    --[[
+    And whatever else holds the line is worth naming before the test rather
+    than after it, because it produces exactly the same result and a
+    different fix. A login prompt reads the bytes the other reader sends
+    before Duo can -- so this device's sending still works perfectly, and
+    its listening hears nothing.
+    ]]
+    local holder = Duo:whatHoldsTheLine(path)
+
+    local function putDuoBack()
+        if not resume_role then return end
+        local role = resume_role
+        resume_role = nil
+        -- On the next turn, so the line is closed before it is opened again.
+        UIManager:nextTick(function() pcall(function() Core:start(role) end) end)
+    end
+
     local stream, err = SerialTransport.open(path, {
         baud = baud,
         flow_control = Core:get("wire_flow_control"),
     })
     if not stream then
+        putDuoBack()
         UIManager:show(InfoMessage:new{
             text = T(_("Could not open %1.\n%2"), path, tostring(err)),
         })
@@ -762,12 +798,18 @@ function Duo:testTheWire()
         message = InfoMessage:new{ text = text, timeout = timeout or (Duo.WIRE_TEST + 4) }
         UIManager:show(message)
     end
-    say(T(_("Calling down %1 at %2 baud…\nRun this on the other device too."),
-        path, tostring(baud)))
+    if holder then
+        say(T(_("Warning: %1 is holding %2 on this device.\nCalling anyway — it will very likely hear nothing."),
+            Duo:nameOfProcess(holder) or ("process " .. holder), path))
+    else
+        say(T(_("Calling down %1 at %2 baud…\nRun this on the other device too."),
+            path, tostring(baud)))
+    end
 
     local function finish(text)
         pcall(function() stream:close() end)
         pcall(function() UIManager:close(message) end)
+        putDuoBack()
         UIManager:show(InfoMessage:new{ text = text })
     end
 
@@ -877,8 +919,10 @@ function Duo:testTheWire()
     -- Phase one: is anybody there
     --------------------------------------------------------------------
     local deadline = os.time() + Duo.WIRE_TEST
+    local calls = 0
     local function call()
         local ok = pcall(function()
+            calls = calls + 1
             stream:send(marker .. "\n")
             stream:flush()
             readMore()
@@ -908,7 +952,30 @@ function Duo:testTheWire()
                     tostring(bytes_in), path, tostring(baud)))
                 return
             end
-            finish(T(_("Nothing came back down %1.\n\nCheck the wiring is crossed (TX to RX), that the grounds are joined, and that nothing else is holding the line."), path))
+            --[[
+            The one result whose meaning depends on what the *other* device
+            said, and the commonest real outcome: one reader hears the other
+            perfectly and is not heard back. Nothing is wrong with this
+            device's sending -- the other one proves that -- so everything
+            worth checking is on the receiving side, and there are exactly
+            three things it can be.
+            ]]
+            local lines = {
+                T(_("Nothing came back down %1."), path),
+                T(_("This device sent %1 lines and heard nothing."), tostring(calls)),
+                "",
+                _("If the OTHER device heard this one, then sending works and only listening does not. Check, in this order:"),
+                "",
+            }
+            if holder then
+                lines[#lines+1] = T(_("1. %1 is holding the line on THIS device (%2). It reads the bytes the other reader sends before Duo can. Debug → Turn off the login prompt, then try again. This is almost certainly it."),
+                    Duo:nameOfProcess(holder) or "another process", holder)
+            else
+                lines[#lines+1] = _("1. Nothing else appears to be holding the line here, so it is not that.")
+            end
+            lines[#lines+1] = _("2. The wire into THIS device's RX pad — that is the one carrying what the other reader sends, and it is the only joint the other device's success does not test.")
+            lines[#lines+1] = T(_("3. The speed, if it differs from the other device. This one is at %1 baud."), tostring(baud))
+            finish(table.concat(lines, "\n"))
             return
         end
         UIManager:scheduleIn(0.4, call)

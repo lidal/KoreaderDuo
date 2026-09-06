@@ -436,7 +436,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-563 tests, with the interesting parts unmocked: two and three device
+564 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -566,6 +566,21 @@ bytes it changed. Either means the speed is above what this wiring carries,
 which is the one thing no amount of reading about baud rates will tell you.
 
 A failed pairing tells you none of it.
+
+It stands Duo's own link down while it runs, and puts it back afterwards.
+Two descriptors open on one tty do not each get a copy of the line — the
+kernel hands every byte to exactly one of them — so a test running beside a
+live link splits the conversation with it. What that looks like is one
+reader hearing the other perfectly and the other hearing nothing, which
+reads as a broken wire and is not.
+
+**If one device hears the other and not the other way round**, sending works
+on both and only one side's listening does not, so everything worth checking
+is on the deaf device's receiving side. In order: a login prompt on *that*
+device reading the bytes before Duo can (much the commonest, and the test
+now says so before it starts rather than after it fails); the wire into that
+device's RX pad, which is the one joint the working direction does not test;
+and the speed, if the two differ.
 
 Two things to know before wiring anything up. The device is a guess and says
 so: `/dev/ttymxc0` is the usual debug UART on these readers, and it is
