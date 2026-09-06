@@ -264,6 +264,19 @@ local function ask(command, quiet)
 end
 
 --[[--
+What is known about how this part of Duo can go wrong.
+
+In the plugin as well as the README, because a warning that only exists in
+a file on a website does not reach the person whose thumb is over the
+button. This screen is the first thing in the menu that button is in.
+--]]--
+function Duo:showDebugWarning()
+    UIManager:show(InfoMessage:new{
+        text = T(_("Duo → Debug is unfinished.\n\n%1"), Duo.DEBUG_WARNING),
+    })
+end
+
+--[[--
 Says what the wire looks like from here, without anybody typing.
 
 Everything in it is a command somebody would otherwise have to enter on a
@@ -728,9 +741,9 @@ function Duo:setLoginPrompt(wanted)
     end
 
     UIManager:show(ConfirmBox:new{
-        text = T(_("Turn off the login prompt on %1?\n\nThis moves aside:\n%2\n\nA job is renamed rather than edited, so putting it back is exact. Do this on both devices."),
+        text = T(_("Turn off the login prompt on %1?\n\nThis moves aside:\n%2\n\nA job is renamed rather than edited, so putting it back is exact, and the same menu entry puts it back.\n\nBut this writes to the device's own startup and survives a reboot, and a reader that will not start cannot be fixed from its own menus. Two stopped booting during the session that built this. Do not go on unless the debug UART is wired and you can interrupt the bootloader over it, because that is the only way back.\n\nDo it on both devices."),
             path, table.concat(plan, "\n")),
-        ok_text = _("Turn it off"),
+        ok_text = _("I have a way back in"),
         ok_callback = function()
             local moved = Duo:setConsoleJobs(false)
             if hits > 0 then
@@ -773,6 +786,16 @@ rarely, and unpredictably, which is the worst way for it to happen.
 function Duo:quietTheKernel()
     os.execute("echo 1 4 1 7 > /proc/sys/kernel/printk 2>/dev/null")
 end
+
+--[[--
+What is known about how the wire and the Debug menu can go wrong.
+
+One string, because it is said in three places -- the warning screen, the
+confirmation before the one entry that writes to the device, and the log --
+and three copies of a warning are three chances for them to disagree about
+what the danger is.
+--]]--
+Duo.DEBUG_WARNING = _("Two readers stopped booting during the session that built this, from a cause that has not been established. Two faults have been found and fixed since — a search for the login prompt wide enough to move parts of the device's own boot sequence, and a root filesystem left writable after a write — and being fixed is not the same as being safe: neither has been proved on hardware that then went on booting.\n\nNothing here is covered by the tests in the way the rest of Duo is. They exercise the framing, the handshake and the state machine over a pseudo-terminal; none of them touches a real serial port, a real startup job or a real reboot.\n\nDo not run any of it on a reader you mind about, and do not run it without a way back in — which on these devices means the debug UART and a bootloader prompt.")
 
 --- How long to keep calling down the wire before giving up, in seconds.
 Duo.WIRE_TEST = 12
@@ -3810,8 +3833,8 @@ function Duo:getMenuTable()
                     end,
                 },
                 {
-                    text = _("Over a wire"),
-                    help_text = _("A serial line: two readers joined TX to RX with a common ground, or any character device. There is nothing to dial and nothing to reconnect — the line is there whenever both devices have power.\n\nPicking it moves both devices, while they can still hear each other. If the other one does not answer, do the same over there.\n\nSet the device below, and make sure nothing else is holding it: on most readers the debug UART is also the console, so a login prompt will be reading the same bytes."),
+                    text = _("Over a wire (unfinished)"),
+                    help_text = _("UNFINISHED. Two readers stopped booting during the session that built this, from a cause not yet established. Duo → Debug → Read this first says what is known.\n\nA serial line: two readers joined TX to RX with a common ground, or any character device. There is nothing to dial and nothing to reconnect — the line is there whenever both devices have power.\n\nPicking it moves both devices, while they can still hear each other. If the other one does not answer, do the same over there.\n\nSet the device below, and make sure nothing else is holding it: on most readers the debug UART is also the console, so a login prompt will be reading the same bytes."),
                     checked_func = function() return Core:usesSerial() end,
                     keep_menu_open = true,
                     callback = function(touchmenu_instance)
@@ -4075,24 +4098,31 @@ On connecting, the leader's settings win. After that a change on either device m
             end,
         },
         {
-            text = _("Debug"),
-            help_text = _("The things somebody would otherwise type on a reader's on-screen keyboard, which is a punishment rather than a diagnostic step."),
+            text = _("Debug (unfinished)"),
+            help_text = _("The things somebody would otherwise type on a reader's on-screen keyboard, which is a punishment rather than a diagnostic step.\n\nUNFINISHED, and two readers stopped booting during the session that built it. Read the first entry before touching any of the rest."),
             sub_item_table = {
                 {
+                    text = _("Read this first…"),
+                    help_text = _("What is known about how this can go wrong, and what to do if it has."),
+                    keep_menu_open = true,
+                    callback = function() Duo:showDebugWarning() end,
+                    separator = true,
+                },
+                {
                     text = _("What the wire looks like…"),
-                    help_text = _("Lists the serial devices on this reader, says whether the one Duo is set to opens, whether anything else is holding it, and whether the kernel logs to it. All reads; it changes nothing."),
+                    help_text = _("Lists the serial devices on this reader, says whether the one Duo is set to opens, whether anything else is holding it, and whether the kernel logs to it.\n\nSafe: it only reads. Nothing on this screen changes the device."),
                     keep_menu_open = true,
                     callback = function() Duo:showWireReport() end,
                 },
                 {
-                    text = _("Free the line…"),
-                    help_text = _("Stops whatever is holding the serial device — on these readers that is the login prompt on the debug console — and tells the kernel to stop logging to it. Both are in the way of using the line for anything else.\n\nIt names what it is about to stop and asks first, and it says so if init brings it straight back."),
+                    text = _("Free the line, until the next reboot…"),
+                    help_text = _("Stops whatever is holding the serial device — on these readers that is the login prompt on the debug console — and tells the kernel to stop logging to it. Both are in the way of using the line for anything else.\n\nIt names what it is about to stop and asks first, and it says so if init brings it straight back.\n\nNothing it does survives a reboot: no file is written and no startup job is touched. Of the two entries here that change anything, this is the one that forgets."),
                     keep_menu_open = true,
                     callback = function() Duo:freeTheLine() end,
                 },
                 {
                     text = _("What starts the login prompt…"),
-                    help_text = _("Says what process 1 on this device actually is, which lines of /etc/inittab mention a login prompt on this line, and whether any startup job does. The first of those decides whether the second matters: a reader whose process 1 is upstart is not reading inittab, however many getty lines are in it."),
+                    help_text = _("Says what process 1 on this device actually is, which lines of /etc/inittab mention a login prompt on this line, and whether any startup job does. The first of those decides whether the second matters: a reader whose process 1 is upstart is not reading inittab, however many getty lines are in it.\n\nSafe: it only reads. Run it before the entry below, which acts on exactly what this one finds."),
                     keep_menu_open = true,
                     callback = function() Duo:showLoginPromptReport() end,
                 },
@@ -4103,9 +4133,9 @@ On connecting, the leader's settings win. After that a change on either device m
                         end
                         local f = io.open("/etc/inittab.duo-original", "r")
                         if f then f:close() return _("Put the login prompt back…") end
-                        return _("Turn off the login prompt…")
+                        return _("Turn off the login prompt (changes startup)…")
                     end,
-                    help_text = _("Killing the login prompt never wins: whatever started it puts it back under a new number. On these readers that is a startup job, which this moves aside — renamed rather than edited, so putting it back is exact. Any inittab lines go too.\n\nDo it on both devices. It survives a reboot, which is the point."),
+                    help_text = _("THE ONE THAT CHANGES THE DEVICE. Everything else on this screen either reads, or forgets at the next reboot. This moves a file in the device's own startup, and a device that will not start cannot be fixed from its own menus.\n\nKilling the login prompt never wins: whatever started it puts it back under a new number. On these readers that is a startup job, which this moves aside — renamed rather than edited, so putting it back is exact.\n\nSurviving a reboot is the point of it and the risk of it. Have the debug UART wired and a bootloader you can interrupt before you use this, because that is the only way back if the reader stops booting."),
                     keep_menu_open = true,
                     callback = function()
                         local back = Duo:consoleJobsAreOff()

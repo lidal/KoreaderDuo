@@ -598,6 +598,43 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("warns before the one entry that writes to the device's startup", function()
+        --[[
+        A warning that lives only in a file on a website does not reach the
+        person whose thumb is over the button. Two readers stopped booting
+        during the session that built this, so the menu the button is in
+        says so, and the confirmation in front of it asks for the one thing
+        that makes it recoverable.
+        ]]
+        reset()
+        device.plugin:showDebugWarning()
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "unfinished")
+        T.assertMatch(shown, "stopped booting")
+        T.assertMatch(shown, "way back in", "it never says what makes this recoverable")
+        device:clearScreen()
+
+        -- And the menu marks which entries change the device and which do not.
+        local labels = {}
+        local function walk(items)
+            for index = 1, #items do
+                local item = items[index]
+                local text = item.text_func and item.text_func() or item.text
+                if text then labels[#labels + 1] = tostring(text) end
+                if item.sub_item_table then walk(item.sub_item_table) end
+            end
+        end
+        walk(device.plugin:getMenuTable())
+        local all = table.concat(labels, "\n")
+        T.assertMatch(all, "Debug %(unfinished%)")
+        T.assertMatch(all, "Over a wire %(unfinished%)")
+        T.assertMatch(all, "changes startup",
+            "the entry that writes to the device reads like the ones that do not")
+        T.assertMatch(all, "until the next reboot",
+            "the entry that forgets does not say that it forgets")
+        reset()
+    end)
+
     T.it("only moves a startup job that names the serial device", function()
         --[[
         The fault with no upper bound on what it could take out. /etc/upstart

@@ -446,7 +446,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-566 tests, with the interesting parts unmocked: two and three device
+567 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -495,6 +495,10 @@ luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 > hardware that then went on booting for a week, so until it has, this
 > section describes what the code intends rather than what it is known to
 > do. Read it, do not run it.
+>
+> The same warning is in the plugin: **Duo → Debug → Read this first**, and
+> the menu marks which entries only read, which forget at the next reboot,
+> and which one writes to the device's own startup.
 >
 > If a reader has already stopped booting, the way back is at the end of
 > this section.
