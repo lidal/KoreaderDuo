@@ -11,6 +11,16 @@ single tap moves both.
 **Mirror mode** shows the same page on both. A third device joins as slot 2
 and shows the page after the follower's.
 
+> [!WARNING]
+> **Do not use "Over a wire" or anything under Debug.** Both are unfinished,
+> and two readers stopped booting during the session that built them. The
+> cause is not yet established, so treat the whole area as unsafe rather
+> than as a thing with one known bad button in it. See
+> [Over a wire](#over-a-wire).
+>
+> Everything else — Wi-Fi, the router-free direct link, the spread, book and
+> settings syncing — is unaffected and is what the plugin is for.
+
 ## Installing
 
 Copy `duo.koplugin` into KOReader's `plugins` directory on **both** devices
@@ -456,6 +466,39 @@ luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 
 ## Over a wire
 
+> [!CAUTION]
+> **Work in progress. Do not use this on a reader you mind about.**
+>
+> Two Paperwhite 3s stopped booting during the session that built this —
+> frontlight on, screen frozen, no progress, and no recovery from a battery
+> pull. The cause has not been established. What is known is that this part
+> of Duo does things the rest does not: it opens the device's debug UART,
+> moves startup jobs aside, and writes to the root filesystem. Any of that
+> can leave a reader that will not start, and none of it has been through
+> enough hands to be trusted yet.
+>
+> Two specific faults have been found and fixed since, and either could have
+> done it:
+>
+> * Finding the login prompt matched any startup job mentioning `getty` or
+>   `/bin/login` anywhere in it. On a reader whose whole boot sequence lives
+>   in `/etc/upstart`, that could move aside jobs other jobs wait on — and a
+>   job that never starts is a boot that never finishes.
+> * Writing to a system file remounted the root filesystem read-write and
+>   did not always put it back. A reader's root is read-only precisely
+>   because these devices lose power without warning, and a journalled
+>   filesystem that was writable at that moment can come back damaged. That
+>   fault is cumulative and probabilistic: it does nothing at all until one
+>   day it does.
+>
+> Being fixed is not the same as being safe. Nothing here has been proved on
+> hardware that then went on booting for a week, so until it has, this
+> section describes what the code intends rather than what it is known to
+> do. Read it, do not run it.
+>
+> If a reader has already stopped booting, the way back is at the end of
+> this section.
+
 **Duo → Link → Over a wire** talks down a character device instead of a
 network: the two readers' debug UARTs, TX to RX with a common ground. On a
 matched pair no level shifting is needed, since both sides are the same.
@@ -540,9 +583,26 @@ prompt** moves that job aside — renamed rather than edited, so putting it
 back is exact. The same menu entry puts everything back. Do it on both
 devices.
 
-**If a reader will not boot after this**, that is what to undo, and it can
-be undone. Every job Duo moved is still beside its old name with `.duo-off`
-on the end, so from any shell:
+### If a reader will not boot
+
+Charge it first, on a wall charger, for several hours. A frontlight left on
+flattens the battery, and a deeply discharged reader looks exactly like a
+broken one: light on, screen frozen on whatever it last drew — e-ink holds
+its last frame with no power at all, so a stuck image says nothing about
+whether anything is running. Then hold power for 40 seconds and release.
+There are no button combinations on a Paperwhite; duration is the only
+control there is.
+
+Then use the UART, which is the only step here that produces information
+rather than hope. 115200 8N1, power on, and watch: nothing at all means the
+trouble is not software; U-Boot and then a stall means read what it says
+last; `fsck` or mount errors mean the filesystem rather than the jobs.
+Check the logic level before connecting a USB serial adapter — two
+identical readers can be wired to each other *because* they are identical,
+and a generic adapter is usually not.
+
+**Whatever Duo moved aside, it can put back.** Every job it moved is still
+sitting beside its old name with `.duo-off` on the end, so from any shell:
 
 ```sh
 mount -o remount,rw /
@@ -550,6 +610,10 @@ for f in /etc/init/*.duo-off /etc/upstart/*.duo-off; do mv "$f" "${f%.duo-off}";
 [ -f /etc/inittab.duo-original ] && mv /etc/inittab.duo-original /etc/inittab
 mount -o remount,ro /
 ```
+
+`ls /etc/init/*.duo-off /etc/upstart/*.duo-off` first: if it lists only a
+console job, or nothing at all, then the moved jobs are not what stopped it
+and the filesystem is the thing to look at instead.
 
 Getting a shell on a reader that will not boot means the same UART this
 whole section is about — the wire is the way back in. Interrupt the
@@ -702,6 +766,15 @@ topic, which is set in GitHub's repository settings rather than here.
   probes several and gives up gracefully, but a build that keeps it
   somewhere else costs the library spread with no warning beyond the
   listings not lining up.
+- **Everything in "Over a wire" and under Debug.** Two readers stopped
+  booting during the session that built it, from a cause not yet
+  established. Two faults have been found and fixed since — a job search
+  wide enough to move parts of the device's own boot sequence, and a root
+  filesystem left writable after a write — and neither has been proved on
+  hardware that then went on booting. The suite exercises the framing, the
+  handshake and the state machine over a pseudo-terminal; nothing in it
+  touches a real UART, a real startup job, or a real reboot. Do not run
+  this on a reader you mind about.
 
 ## Layout
 
