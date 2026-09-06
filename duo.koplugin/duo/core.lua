@@ -1826,8 +1826,20 @@ function Core:noticeFrozenLoop(now)
     survive it: the leader repeats its challenge every second, so a fresh
     dial is answered as fast as a forgiven one, and it does not depend on
     the connection having lived through the suspend.
+
+    A wire is the case that reasoning does not cover, and it is the exact
+    opposite: the connection did live through the suspend, because there was
+    never a connection -- only a line, which is still there, and a
+    descriptor, which is still open. The silence really was nobody's fault.
+    Charging it means the first poll after every wake finds a peer six
+    seconds overdue and starts the session again for nothing.
+
+    And the case forgiving would hide -- the other reader having restarted
+    while this one slept -- is not hidden at all, because that reader comes
+    back calling down the line, and hearing it is what starts a new session.
+    The evidence arrives instead of being inferred from silence.
     ]]
-    if gap < Core.SLEPT_THROUGH then
+    if gap < Core.SLEPT_THROUGH or self:usesSerial() then
         for _, link in ipairs(self.links) do
             if link.forgive then link:forgive(gap, last) end
         end
@@ -2103,12 +2115,19 @@ function Core:adoptStream(stream, is_leader)
     link = Link.new{
         stream = stream,
         is_leader = is_leader,
+        -- A channel, not a connection, and the link behaves differently on
+        -- almost every fault because of it.
+        on_a_wire = self:usesSerial(),
         token = self:get("token"),
         name = self:getDeviceName(),
         slot = is_leader and self:nextFreeSlot() or 1,
         on_message = function(_, msg) self:handleMessage(link, msg) end,
         on_ready = function() self:onLinkReady(link) end,
         on_close = function(_, reason) self:onLinkClosed(link, reason) end,
+        -- A wire's link steps back rather than closing. Everything above it
+        -- should hear about that the same way it hears about a close, minus
+        -- the part that goes looking for a new connection.
+        on_unready = function(_, why) self:onLinkUnready(link, why) end,
         -- Who this device is, so the other end can tell a reconnection from
         -- a second reader arriving.
         id = self.instance_id,
@@ -2322,6 +2341,30 @@ function Core:onLinkClosed(link, reason)
         and not self:hasLiveLink() then
         self:scheduleReconnect()
     end
+    self:changed()
+end
+
+--[[--
+A wire's link has stepped back to handshaking rather than closing.
+
+Everything that made sense for a closed connection and still makes sense
+here: the transfer in flight is over, the drop is worth mentioning if it
+lasts, and the pair is not connected until the handshake finishes. What is
+deliberately missing is the rest of onLinkClosed -- there is no reconnect to
+schedule, because the channel was never lost and the link object is the same
+one. That absence is the whole point of the wire.
+--]]--
+function Core:onLinkUnready(link, why)
+    self:log("the link stepped back:", why, "-",
+        link and link.report and link:report() or "")
+    self:abandonBookRequest(why or "the other end went quiet")
+    if self:isActive() and not self.stopping then
+        self.drop_reason = why or "disconnected"
+        self.announce_drop_at = Util.now() + Core.QUIET_DROP
+    end
+    -- Said again when it comes back, since from where the user sits the two
+    -- did stop talking for a moment.
+    self.told_connected_to = nil
     self:changed()
 end
 
@@ -5237,6 +5280,35 @@ end
 -- the other device; the role is remembered for the wake-up.
 function Core:suspend()
     if not self:isActive() then return end
+    --[[
+    A wire is not put down for a sleep, because a sleep does not take it
+    away.
+
+    On a network the sockets do not survive: the interface goes, the
+    addresses go, and closing deliberately at least lets the other device
+    hear about it rather than time out. None of that is true of a character
+    device. The descriptor is still open on the way back, the line is still
+    there, the other end is still on it -- and the session key, the slot and
+    the identity are all still good. Tearing it down bought nothing and cost
+    the whole wake: close the stream, open the same device again, run a
+    fresh handshake, and that was the eight seconds.
+
+    So a wire announces the sleep and then does nothing at all. The clocks
+    move on the way back, which noticeFrozenLoop already handles, and the
+    first poll after the wake finds a link that never went anywhere. If the
+    other reader restarted in the meantime it will be calling down the line,
+    and hearing that call is what starts a new session -- one round trip,
+    not a reopen.
+    ]]
+    if self:usesSerial() then
+        if self:get("sleep_together") and not self.sleeping_for_peer then
+            self:announceSleep()
+        end
+        self:log("this device went to sleep; the wire is left as it is")
+        self.sleeps_noticed = (self.sleeps_noticed or 0) + 1
+        self:setAwake(false)
+        return
+    end
     local role = self.role
     -- Before the sockets go: the other device should be locking too, and
     -- there is no way to tell it once the link is gone. Not when this

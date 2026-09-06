@@ -183,6 +183,32 @@ Link.HANDSHAKE_TIMEOUT = 10
 --- Seconds between repeated challenges while nobody has answered.
 Link.CHALLENGE_INTERVAL = 1
 
+--[[--
+Seconds between calls down a wire that has nobody paired on it yet.
+
+Only the leader used to say anything before the handshake, so a follower
+whose leader was asleep sat mute: the leader woke, believed the link it had
+before the sleep was still up, sent signed heartbeats the restarted follower
+could not read, and only gave up on them six seconds later. A single line
+from whichever end is not paired closes that gap -- the other end hears it
+and offers a session at once.
+
+Thirty bytes a second out of eleven and a half thousand, and only while the
+two are not talking.
+--]]--
+Link.CALL_INTERVAL = 1
+
+--[[--
+The least time between renegotiations, in seconds.
+
+A call down the wire demotes a link that believes itself up, which is
+exactly right when the other end really has restarted and exactly a
+livelock if anything can produce those calls faster than a handshake
+completes. One every few seconds is far more room than a handshake over a
+wire needs, and it bounds the damage from a line that is noisy or hostile.
+--]]--
+Link.RENEGOTIATE_EVERY = 3
+
 --- Computes the proof of knowing `token` for a given nonce.
 function Link.proof(nonce, token)
     return Sha256.hex(tostring(nonce) .. ":" .. Util.normalizeToken(token))
@@ -258,7 +284,11 @@ local QUIET_IN_TRACE = {
 }
 
 --[[--
-The messages that belong to the handshake, and to nothing after it.
+The messages the handshake is made of, and which mean nothing outside it.
+
+Read both ways. Arriving after the handshake they are late and ignored;
+arriving during one, on a wire, anything that is *not* one of them is early
+and ignored just the same.
 
 One arriving on a link that is already up is a duplicate of something
 already answered, and the commonest one is ordinary: the leader repeats its
@@ -272,7 +302,7 @@ that second hello carries no tag, and treating an untagged message as a
 forgery hung up on a perfectly good pairing every single time the first
 challenge was slow. Which, over Wi-Fi, was every time.
 --]]--
-local AFTER_THE_HANDSHAKE_IS_STALE = {
+local HANDSHAKE_MESSAGES = {
     [Protocol.CHALLENGE] = true,
     [Protocol.HELLO] = true,
     [Protocol.WELCOME] = true,
@@ -301,6 +331,21 @@ function Link.new(options)
     local link = setmetatable({
         stream = options.stream,
         is_leader = options.is_leader and true or false,
+        --[[
+        Whether this is a channel or a connection, which is the difference
+        that matters most in here.
+
+        A TCP connection has a lifecycle both ends observe, because the
+        transport tells them: silence means the peer is gone, a byte that
+        does not parse means the stream is desynced, and either is a reason
+        to hang up and start again. A wire has no lifecycle at all. It is
+        there whenever both devices have power, silence means the other
+        reader is busy or asleep, and a byte that does not parse is a kernel
+        message on a line that is also somebody's console. Nothing about
+        either is worth closing a wire over, and there would be nothing to
+        reopen if it were.
+        ]]
+        on_a_wire = options.on_a_wire and true or false,
         token = options.token or "",
         name = options.name or "KOReader",
         slot = options.slot or 1,
@@ -338,6 +383,9 @@ function Link.new(options)
 end
 
 function Link:sendChallenge()
+    -- Timed on its own clock rather than on last_tx: a wire's call goes out
+    -- between challenges and would otherwise look like one.
+    self.challenged_at = Util.now()
     self:sendMessage(Protocol.CHALLENGE, {
         nonce = self.nonce,
         proto = Protocol.VERSION,
@@ -462,6 +510,18 @@ end
 --------------------------------------------------------------------------
 
 function Link:handleHandshake(msg)
+    --[[
+    On a wire the two ends can disagree for a moment about whether there is
+    a session: the one that restarted is handshaking while the other is
+    still signing heartbeats at it. Those land here, and they are stale
+    rather than wrong -- the other end starts again as soon as it hears this
+    one calling. Refusing them would close a wire, which is the one thing
+    that never helps and the one thing there is no way back from quickly.
+    ]]
+    if self.on_a_wire and not HANDSHAKE_MESSAGES[msg.type] then
+        if self.trace then self.trace("ignoring an early", msg.type) end
+        return
+    end
     if self.is_leader then
         if msg.type ~= Protocol.HELLO then
             self:close("unexpected " .. msg.type)
@@ -541,6 +601,50 @@ function Link:handleHandshake(msg)
     end
 end
 
+--[[--
+Puts a wire's link back to handshaking without closing anything.
+
+The one thing that genuinely invalidates a session on a wire is the other
+reader having restarted: it comes back with a new session key, so its
+messages fail the tag and it cannot read ours. On a network that resolves
+itself, because a restarted peer arrives on a new socket and the old one
+dies. On a wire there is no new socket. The same channel carries the new
+conversation, so the old one has to step aside on this end too -- and
+closing is the wrong way to do it, since there is no fd worth reopening and
+closing is what makes a sleep cost seconds.
+
+So the link drops back to the state it started in, keeps its stream, and
+offers a session again. Everything above it sees exactly what it would see
+if the two had briefly stopped talking, which is what has happened.
+
+@string why  for the log
+@treturn boolean  whether it actually stepped back
+--]]--
+function Link:renegotiate(why)
+    if self.state ~= "ready" then return false end
+    local now = Util.now()
+    if self.renegotiated_at and now - self.renegotiated_at < Link.RENEGOTIATE_EVERY then
+        return false
+    end
+    if self.trace then self.trace("starting again:", why) end
+    self.renegotiated_at = now
+    self.state = "handshake"
+    self.session_key = nil
+    self.heard_from_peer = false
+    self.challenge_nonce = nil
+    self.challenged_at = nil
+    self.called_at = nil
+    self.grace_until = nil
+    self.created_at = now
+    self.last_rx = now
+    if self.is_leader then
+        self.nonce = Util.randomHex(8)
+        self:sendChallenge()
+    end
+    if self.on_unready then self.on_unready(self, why) end
+    return true
+end
+
 function Link:becomeReady()
     if self.trace then
         self.trace("ready", ("handshake took %.2fs"):format(Util.now() - self.created_at))
@@ -568,8 +672,19 @@ function Link:poll()
             return
         end
         if #data > 0 then
-            self.last_rx = Util.now()
-            self.heard_from_peer = true
+            --[[
+            Bytes are evidence the peer is there only where nothing else can
+            put bytes on the line. On a wire that is also a console, the
+            kernel can -- and counting its chatter as the other reader
+            answering would keep a link that nobody is on the far end of
+            looking perfectly healthy, and stop the leader repeating a
+            challenge nobody heard. On a wire it takes a message that
+            decodes, which is checked below.
+            ]]
+            if not self.on_a_wire then
+                self.last_rx = Util.now()
+                self.heard_from_peer = true
+            end
             self.bytes_in = self.bytes_in + #data
             self.reader:feed(data)
         end
@@ -581,7 +696,25 @@ function Link:poll()
         local msg, decode_err = self.reader:next()
         if not msg then
             if decode_err then
-                self:close("bad message: " .. decode_err)
+                --[[
+                On a connection this is the end of it: either the stream has
+                desynced or somebody is injecting, and neither gets better
+                by reading on. On a wire it is Tuesday. The line is shared
+                with a console on these readers, so a kernel message, a
+                getty banner or half a line left over from before the other
+                end started are all expected -- and newline framing recovers
+                from every one of them by itself, since the damage stops at
+                the next newline. Skipping it is the whole repair.
+                ]]
+                if not self.on_a_wire then
+                    self:close("bad message: " .. decode_err)
+                    break
+                end
+                self.noise = (self.noise or 0) + 1
+                if self.trace then self.trace("noise:", decode_err) end
+                handled = handled + 1
+                if Util.now() >= deadline then break end
+                goto keep_reading
             end
             break
         end
@@ -599,6 +732,7 @@ function Link:poll()
         end
         self:dispatch(msg)
         if now >= deadline then break end
+        ::keep_reading::
     end
 
     if self.state == "closed" then return end
@@ -633,12 +767,42 @@ function Link:verify(msg)
     return claimed == Sha256.hmac(self.session_key, body):sub(1, Link.TAG_LENGTH)
 end
 
+--[[--
+Answers a call from the other end of the wire.
+
+A call is only ever sent by an end that is *not* paired, which makes it the
+one message whose meaning does not depend on what this end believes. Heard
+while handshaking, it says there is somebody there to answer, so the leader
+stops waiting out its retry and offers a session now. Heard on a link this
+end thinks is up, it says the other reader has restarted -- it cannot read
+what we sign and we cannot read what it does -- and the session steps back
+so a new one can be made.
+
+Unsigned, and it has to be: an end that has just restarted has no key yet.
+It carries no authority either. The most it can do is cost a handshake,
+which is what RENEGOTIATE_EVERY bounds.
+--]]--
+function Link:heardACall(msg)
+    self.peer_name = msg.name or self.peer_name
+    if self.state ~= "ready" then
+        -- Answered on the next turn of the loop rather than from in here,
+        -- so one path decides when challenges go out.
+        if self.is_leader then self.challenged_at = nil end
+        return
+    end
+    self:renegotiate("the other end started again")
+end
+
 function Link:dispatch(msg)
+    if msg.type == Protocol.HERE then
+        self:heardACall(msg)
+        return
+    end
     if self.state == "handshake" then
         self:handleHandshake(msg)
         return
     end
-    if AFTER_THE_HANDSHAKE_IS_STALE[msg.type] then
+    if HANDSHAKE_MESSAGES[msg.type] then
         if self.trace then self.trace("ignoring a late", msg.type) end
         return
     end
@@ -684,10 +848,23 @@ end
 function Link:checkTimers()
     local now = Util.now()
     if self.state == "handshake" then
-        if now - self.created_at > Link.HANDSHAKE_TIMEOUT then
+        --[[
+        A handshake that overruns means the dial found something that is not
+        a Duo leader, and there is a socket to give up on. On a wire it
+        means the other reader is off, asleep or busy, there is nothing to
+        give up on, and giving up would only mean opening the same device
+        again to ask the same question. So a wire keeps calling.
+        ]]
+        if now - self.created_at > Link.HANDSHAKE_TIMEOUT and not self.on_a_wire then
             self:close("handshake timed out")
-        elseif self.is_leader and not self.heard_from_peer
-                and now - self.last_tx >= Link.CHALLENGE_INTERVAL then
+            return
+        end
+        if self.on_a_wire and now - (self.called_at or 0) >= Link.CALL_INTERVAL then
+            self.called_at = now
+            self:sendMessage(Protocol.HERE, { name = self.name, id = self.id })
+        end
+        if self.is_leader and not self.heard_from_peer
+                and now - (self.challenged_at or 0) >= Link.CHALLENGE_INTERVAL then
             -- Nobody has said anything back yet, so keep calling: a lost
             -- challenge should cost a second rather than the connection.
             self:sendChallenge()
@@ -696,7 +873,20 @@ function Link:checkTimers()
     end
     if now - self.last_rx > Link.PEER_TIMEOUT
             and now > (self.grace_until or 0) then
-        self:close("peer stopped responding")
+        --[[
+        On a connection, silence is evidence: TCP would have delivered, so
+        nothing arriving means nothing is there. On a wire it is evidence of
+        nothing at all -- the other reader is opening a large book, or
+        asleep, or switched off -- and the wire is still there either way.
+        Nothing is closed for it; the session steps back and is offered
+        again, which costs a round trip when the peer comes back rather than
+        a reopen and a fresh handshake.
+        ]]
+        if self.on_a_wire then
+            self:renegotiate("the other end has gone quiet")
+        else
+            self:close("peer stopped responding")
+        end
         return
     end
     if now - self.last_tx >= Link.PING_INTERVAL then

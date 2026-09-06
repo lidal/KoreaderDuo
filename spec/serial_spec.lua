@@ -243,6 +243,147 @@ T.describe("two devices over a serial link", function()
         controller:assertEventually(follower, "D:getPage()", 15)
     end)
 
+    T.it("is left exactly as it was by a sleep", function()
+        --[[
+        The whole reason to want a wire. On a network a suspend takes the
+        sockets with it, so Duo closes them deliberately and rebuilds on the
+        way back -- and rebuilding was the eight seconds. A character device
+        survives a suspend: the descriptor is still open, the line is still
+        there, the session key and the slot are still good. There is nothing
+        to rebuild and nothing to reopen.
+        ]]
+        connectOverSerial()
+        local before = controller:call(leader, "Core:getReadyLinks()[1].created_at")
+
+        controller:call(leader, "Core:suspend()")
+        T.assertEquals(controller:call(leader, "Core.role"), "leader",
+            "the wire was put down for a sleep")
+        T.assertEquals(controller:call(leader, "#Core.links"), "1",
+            "the link was closed for a sleep")
+        T.assertEquals(controller:call(leader, "Core:isConnected()"), "true")
+
+        controller:call(leader, "Core:resume()")
+        T.assertEquals(controller:call(leader, "Core:isConnected()"), "true",
+            "it had to find the other device again after a sleep")
+        T.assertEquals(controller:call(leader, "Core:getReadyLinks()[1].created_at"), before,
+            "the session was made again for a sleep that took nothing away")
+
+        -- And it is still a working pair, not merely a link-shaped object.
+        controller:call(leader, "D:jumpToPage(30)")
+        controller:assertEventually(follower, "D:getPage()", 31,
+            "the pair stopped working across a sleep")
+    end)
+
+    T.it("does not let a long sleep look like a peer that went away", function()
+        --[[
+        The clocks move while the loop is stopped, and on a network a link
+        whose silence is forgiven looks healthy when it is in fact dead --
+        which is why a sleep is normally charged to the peer. A wire is the
+        opposite case: nothing went away, so charging it means every wake
+        starts the session again for nothing.
+        ]]
+        connectOverSerial()
+        local before = controller:call(leader, "Core:getReadyLinks()[1].created_at")
+        -- A wake with an hour of frozen loop behind it.
+        controller:call(leader, "Core.last_poll_at = require('duo/util').now() - 3600")
+        controller:call(leader, "Core:pollOnce()")
+
+        T.assertEquals(controller:call(leader, "Core:isConnected()"), "true",
+            "an hour of not running was charged to the other device")
+        T.assertEquals(controller:call(leader, "Core:getReadyLinks()[1].created_at"), before,
+            "it started the session again after a sleep that changed nothing")
+    end)
+
+    T.it("steps back instead of closing when the other end goes quiet", function()
+        --[[
+        Silence on a connection is evidence: TCP would have delivered. On a
+        wire it is evidence of nothing -- the other reader is opening a
+        large book, or asleep -- and the line is still there either way. So
+        the session steps back and is offered again over the same stream,
+        which costs a round trip rather than a reopen.
+        ]]
+        connectOverSerial()
+        controller:call(leader, "Core:getReadyLinks()[1]:renegotiate('test')")
+        T.assertEquals(controller:call(leader, "#Core.links"), "1",
+            "it closed the wire rather than stepping back")
+        T.assertEquals(controller:call(leader, "Core.reconnect_at == nil"), "true",
+            "it went looking for a connection it never lost")
+        controller:assertEventually(leader, "Core:isConnected()", true,
+            "it never offered the other end a new session")
+    end)
+
+    T.it("hears a reader that restarted, rather than waiting out its silence", function()
+        --[[
+        A restarted peer arrives on a new socket over TCP, and the old one
+        dies with it. On a wire the same channel carries the new
+        conversation, so nothing tells this end that anything happened: it
+        goes on signing heartbeats with a key the other end threw away. The
+        call the unpaired end makes down the line is what says so.
+        ]]
+        connectOverSerial()
+        -- The follower restarts. The leader still believes the old session.
+        controller:call(follower, "Core:stop('restarting')")
+        controller:call(follower, "Core:start('follower')")
+        controller:assertEventually(leader, "Core:isConnected()", true,
+            "the leader never noticed the other reader had started again")
+        controller:assertEventually(follower, "Core:isConnected()", true)
+        T.assertEquals(controller:call(leader, "#Core.links"), "1",
+            "the leader piled up a second link on one line")
+    end)
+
+    T.it("reads through noise from whatever else is on the line", function()
+        --[[
+        On these readers the wire is the debug UART, which is also the
+        console. A kernel message or a login prompt lands in the middle of
+        the conversation, and one line that does not parse used to end the
+        link -- on a transport where ending it is the one thing that helps
+        least and the one thing there is no quick way back from.
+
+        Written with a plain file handle rather than a third transport
+        stream: opening one reads the line to clear it, which would take the
+        bytes under the reader this test is about.
+        ]]
+        connectOverSerial()
+        local function shout(text)
+            local pipe = assert(io.open(PTY_A, "wb"))
+            pipe:write(text)
+            pipe:close()
+        end
+        -- What a console really puts on a line: whole lines, newline ended.
+        shout("[ 1234.567890] usb 1-1: USB disconnect, device number 4\n")
+        shout("\nKindle login: \n")
+        socket.sleep(0.3)
+
+        T.assertEquals(controller:call(follower, "Core:isConnected()"), "true",
+            "a kernel message on the console ended the link")
+        controller:call(leader, "D:jumpToPage(40)")
+        controller:assertEventually(follower, "D:getPage()", 41,
+            "the pair stopped talking after noise on the line")
+    end)
+
+    T.it("loses the message a half-written line lands in, and no more", function()
+        --[[
+        The honest limit of newline framing, stated rather than hoped for.
+        Noise cut off mid-line has no newline to end it, so it runs into
+        whatever the other reader says next and takes that one message with
+        it. What it must not do is take the line: the damage stops at the
+        newline after it, and everything from there is read as usual.
+        ]]
+        connectOverSerial()
+        local pipe = assert(io.open(PTY_A, "wb"))
+        pipe:write("\0\255 half a line, cut off with no newline")
+        pipe:close()
+        socket.sleep(0.3)
+
+        T.assertEquals(controller:call(follower, "Core:isConnected()"), "true",
+            "an unterminated line ended the link")
+        -- Whatever the next message was is gone. The one after it is not.
+        controller:call(leader, "D:jumpToPage(50)")
+        controller:call(leader, "D:jumpToPage(60)")
+        controller:assertEventually(follower, "D:getPage()", 61,
+            "the line never recovered from an unterminated one")
+    end)
+
     T.it("turns away a device with the wrong pairing code", function()
         controller:call(leader, "Core:stop('reset')")
         controller:call(follower, "Core:stop('reset')")

@@ -33,6 +33,7 @@ Protocol.CHALLENGE = "CHALLENGE" -- leader -> peer, on accept: nonce for the tok
 Protocol.HELLO     = "HELLO"     -- peer -> leader: identity + proof of the shared token
 Protocol.WELCOME   = "WELCOME"   -- leader -> peer: accepted, here is my own proof + your slot
 Protocol.DENY      = "DENY"      -- leader -> peer: rejected (bad token, wrong version, full)
+Protocol.HERE      = "HERE"      -- either way, on a wire: somebody is on this end
 Protocol.PING      = "PING"
 Protocol.PONG      = "PONG"
 Protocol.STATE     = "STATE"     -- leader -> peer: the page this peer must display
