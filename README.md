@@ -436,7 +436,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-564 tests, with the interesting parts unmocked: two and three device
+566 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -537,8 +537,32 @@ stop and asks first. But it comes straight back under a new number, because
 something restarts it: on these readers that is `/etc/upstart/console.conf`,
 run by `init.exe`, which never reads `/etc/inittab`. **Turn off the login
 prompt** moves that job aside — renamed rather than edited, so putting it
-back is exact — and comments out any inittab lines too. The same menu entry
-puts everything back. Do it on both devices.
+back is exact. The same menu entry puts everything back. Do it on both
+devices.
+
+**If a reader will not boot after this**, that is what to undo, and it can
+be undone. Every job Duo moved is still beside its old name with `.duo-off`
+on the end, so from any shell:
+
+```sh
+mount -o remount,rw /
+for f in /etc/init/*.duo-off /etc/upstart/*.duo-off; do mv "$f" "${f%.duo-off}"; done
+[ -f /etc/inittab.duo-original ] && mv /etc/inittab.duo-original /etc/inittab
+mount -o remount,ro /
+```
+
+Getting a shell on a reader that will not boot means the same UART this
+whole section is about — the wire is the way back in. Interrupt the
+bootloader over it and boot with `init=/bin/sh`. Note that a matched pair
+of readers can be wired directly to each other because both sides are the
+same; a USB serial adapter is usually **not** the same, so check the logic
+level before connecting one.
+
+Duo only ever moves a job that names the configured device *and* starts a
+login on it. An earlier version matched any job mentioning a login prompt
+anywhere, which on a reader whose whole boot sequence lives in
+`/etc/upstart` could take out jobs that other jobs wait on — and a job that
+never starts is a boot that never finishes.
 
 **What starts the login prompt** is the one to run first if any of this
 misbehaves: it says what process 1 actually is, which decides whether

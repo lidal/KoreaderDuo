@@ -514,12 +514,56 @@ Returned as a list of paths, because both names may be real and both would
 have to go.
 --]]--
 function Duo:findConsoleJobs()
+    --[[
+    A job has to name *this device* to be one of these, and merely
+    mentioning a login prompt is not enough.
+
+    It used to be enough, and that was a mistake with no upper bound on
+    what it could take out. /etc/upstart on these readers holds the whole
+    of the manufacturer's boot sequence, and matching any file that says
+    "getty" or "/bin/login" anywhere in it moves aside jobs that have
+    nothing to do with a serial line -- including ones other jobs wait on,
+    which then never start. What that looks like is a reader that powers
+    on, lights its frontlight and never finishes booting.
+
+    The line Duo wants is a getty on a named tty, so both halves are
+    required: the file has to name the device, and it has to be starting a
+    login on it. Nothing else is touched, however it is worded.
+    ]]
+    local device = tostring(Core:get("serial_device") or ""):gsub("^/dev/", "")
+    if device == "" then return {} end
     local jobs = {}
-    local out = ask("grep -l -i 'getty\\|/bin/login' /etc/init/*.conf /etc/upstart/*.conf 2>/dev/null", true)
+    local out = ask(("grep -l -F %s /etc/init/*.conf /etc/upstart/*.conf 2>/dev/null")
+        :format(device), true)
     for line in tostring(out or ""):gmatch("[^\n]+") do
-        if line:find("%.conf$") then jobs[#jobs + 1] = line end
+        if line:find("%.conf$") then
+            local body = slurp(line)
+            local lowered = tostring(body or ""):lower()
+            if lowered:find("getty", 1, true) or lowered:find("/bin/login", 1, true) then
+                jobs[#jobs + 1] = line
+            end
+        end
     end
     return jobs
+end
+
+--[[--
+Whether process 1 on this reader is one that reads /etc/inittab.
+
+init.exe is the manufacturer's upstart and does not; busybox init and
+sysvinit do. Asked rather than assumed, because the answer decides whether
+Duo edits a file at the root of the device's own startup -- and on the
+reader this was written for, the honest answer is that it should not.
+--]]--
+function Duo:initReadsInittab()
+    local one = ask("cat /proc/1/comm 2>/dev/null", true)
+        or ask("readlink /proc/1/exe 2>/dev/null", true) or ""
+    one = tostring(one):lower()
+    if one:find("init.exe", 1, true) or one:find("upstart", 1, true) then
+        return false
+    end
+    if one:find("systemd", 1, true) then return false end
+    return true
 end
 
 --- True while Duo has a console job turned off.
@@ -608,7 +652,16 @@ function Duo:setLoginPrompt(wanted)
     ]]
     local plan = {}
     for _, file in ipairs(jobs) do plan[#plan + 1] = "  " .. file end
-    local text = slurp("/etc/inittab")
+    --[[
+    And /etc/inittab only where something reads it.
+
+    On these readers process 1 is init.exe -- the manufacturer's upstart --
+    which never reads that file, so editing it achieves nothing whatever and
+    the SIGHUP that follows goes to a process that has its own ideas about
+    what to do with one. Doing nothing at all is strictly better than doing
+    something with no upside to weigh against it.
+    ]]
+    local text = Duo:initReadsInittab() and slurp("/etc/inittab") or nil
     local edited, hits = {}, 0
     if text then
         for line in text:gmatch("([^\n]*)\n?") do

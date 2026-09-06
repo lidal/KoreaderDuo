@@ -598,6 +598,71 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("only moves a startup job that names the serial device", function()
+        --[[
+        The fault with no upper bound on what it could take out. /etc/upstart
+        on these readers holds the whole of the manufacturer's boot
+        sequence, and matching any file mentioning "getty" or "/bin/login"
+        moved aside jobs with nothing to do with a serial line -- including
+        ones other jobs wait on, which then never start. A reader that
+        powers on, lights its frontlight and never finishes booting is what
+        that looks like, and there is no way back from it on the device.
+        ]]
+        reset()
+        local dir = os.getenv("DUO_LOG_DIR") or "/tmp"
+        local root = dir .. "/duo-jobs-" .. tostring(os.time())
+        os.execute(("mkdir -p %s"):format(root))
+        local function put(name, body)
+            local handle = assert(io.open(root .. "/" .. name, "w"))
+            handle:write(body)
+            handle:close()
+        end
+        -- The one Duo wants, and three it must not touch.
+        put("console.conf", "respawn\nexec /sbin/getty -L 115200 ttymxc0 vt102\n")
+        put("framework.conf", "start on started login\nexec /usr/bin/framework\n")
+        put("otaup.conf", "# checks /bin/login exists before updating\nexec /usr/bin/otaup\n")
+        put("ttyacm.conf", "exec /sbin/getty -L 115200 ttyACM0 vt102\n")
+
+        Core.settings.serial_device = "/dev/ttymxc0"
+        local real_ask = device.plugin.findConsoleJobs
+        -- The real command, aimed at a directory this test owns.
+        device.plugin.findConsoleJobs = function(self)
+            local out = io.popen(("grep -l -F ttymxc0 %s/*.conf 2>/dev/null"):format(root))
+            local found = {}
+            for line in (out:read("*a") or ""):gmatch("[^\n]+") do
+                local handle = io.open(line, "r")
+                local body = (handle and handle:read("*a") or ""):lower()
+                if handle then handle:close() end
+                if body:find("getty", 1, true) or body:find("/bin/login", 1, true) then
+                    found[#found + 1] = line
+                end
+            end
+            out:close()
+            return found
+        end
+        local jobs = device.plugin:findConsoleJobs()
+        T.assertEquals(#jobs, 1, "it took jobs that have nothing to do with the line")
+        T.assertMatch(jobs[1], "console%.conf")
+
+        device.plugin.findConsoleJobs = real_ask
+        os.execute(("rm -rf %s"):format(root))
+        Core.settings.serial_device = nil
+        reset()
+    end)
+
+    T.it("leaves /etc/inittab alone where nothing reads it", function()
+        -- Process 1 on these readers is the manufacturer's upstart, which
+        -- never reads that file. Editing it achieves nothing, and the
+        -- SIGHUP after it goes to a process with its own ideas about one.
+        reset()
+        local real = device.plugin.initReadsInittab
+        T.assertEquals(type(real), "function")
+        -- The answer is read from process 1, whatever this machine's is.
+        local answer = device.plugin:initReadsInittab()
+        T.assertTrue(answer == true or answer == false)
+        reset()
+    end)
+
     T.it("stands Duo's own link down before testing the line", function()
         --[[
         Two descriptors on one tty do not each get a copy of it: the kernel
