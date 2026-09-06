@@ -91,11 +91,28 @@ function SerialTransport.open(path, options)
         return nil, "no serial device configured"
     end
 
-    -- A tty in its default mode echoes what it receives and rewrites
-    -- newlines, which would corrupt the protocol and feed every message
-    -- straight back to its sender. Raw mode is not optional.
+    --[[
+    A tty in its default mode echoes what it receives and rewrites
+    newlines, which would corrupt the protocol and feed every message
+    straight back to its sender. Raw mode is not optional.
+
+    Software flow control is, and it goes back on after `raw`, which clears
+    it. Three soldered pads carry no RTS and no CTS, so without this there
+    is no flow control at all: the far end's line-discipline buffer is four
+    kilobytes, a reader polls at worst every fifty milliseconds, and an
+    e-ink full refresh stops it for a third of a second -- which at line
+    rate is more than the buffer holds. Duo's own traffic is eighty bytes a
+    second and nowhere near it; a book is exactly it.
+
+    Safe here for a reason rather than by luck: every value on this wire is
+    percent-encoded down to letters, digits and `._-`, and the frame around
+    them is spaces, `=` and a newline. The two flow-control bytes cannot
+    occur, so nothing is lost to the kernel eating them. A driver that will
+    not do software flow control simply ignores this, which is where it was
+    already.
+    ]]
     if not options.skip_stty then
-        os.execute(("stty -F %s raw -echo %s 2>/dev/null")
+        os.execute(("stty -F %s raw -echo ixon ixoff %s 2>/dev/null")
             :format(path, tostring(options.baud or 115200)))
     end
 

@@ -597,6 +597,90 @@ T.describe("the debug menu", function()
         Core.settings.serial_device = nil
         reset()
     end)
+
+    T.it("blames the speed when bytes come back that make no sense", function()
+        --[[
+        The one fault this test can otherwise not see. Two ends at different
+        rates frame every byte wrongly, so the line looks broken and is not
+        -- and nothing else on the reader will ever say so.
+        ]]
+        reset()
+        local real = package.loaded["duo/transport_serial"]
+        package.loaded["duo/transport_serial"] = {
+            isAvailable = function() return true end,
+            open = function()
+                return {
+                    send = function() return true end,
+                    flush = function() return true end,
+                    close = function() end,
+                    pending = function() return 0 end,
+                    receive = function() return "\239\187 nothing here is a duo line\n" end,
+                }
+            end,
+        }
+        local was = device.Duo.WIRE_TEST
+        device.Duo.WIRE_TEST = 0            -- give up on the first turn
+        Core.settings.serial_baud = 460800
+
+        device.plugin:testTheWire()
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "not at the same speed")
+        T.assertMatch(shown, "460800", "it did not say what this end is set to")
+
+        device.Duo.WIRE_TEST = was
+        package.loaded["duo/transport_serial"] = real
+        Core.settings.serial_baud = 115200
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("offers the speeds and changes to the one picked", function()
+        --[[
+        Not agreed over the line, because it cannot be: the two ends have to
+        match before either can say anything. So it is a setting, on both,
+        and the measurement is what tells you whether the cable took it.
+        ]]
+        reset()
+        Core.settings.serial_baud = 115200
+        device.plugin:showSpeedDialog()
+        local shown = table.concat(device:drainMessages(), "\n")
+        T.assertMatch(shown, "460800", "a rate the chip will do was not offered")
+        T.assertMatch(shown, "cannot be agreed over the line")
+        T.assertTrue(device:pressButton("921600 baud"), "no such speed")
+        T.assertEquals(Core:get("serial_baud"), 921600)
+
+        Core.settings.serial_baud = 115200
+        device:clearScreen()
+        reset()
+    end)
+
+    T.it("reopens the line when the speed changes under a running pair", function()
+        -- The rate is set on the device as it is opened, so a line already
+        -- open is still running at the old one.
+        reset()
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core.settings.serial_baud = 115200
+        Core.role = Core.ROLE_LEADER
+        local restarted = nil
+        local real_start, real_stop = Core.start, Core.stop
+        Core.stop = function() end
+        Core.start = function(_, role) restarted = role return true end
+
+        device.plugin:setSpeed(230400)
+        T.assertEquals(Core:get("serial_baud"), 230400)
+        T.assertEquals(restarted, Core.ROLE_LEADER, "it left the line at the old speed")
+
+        -- And picking the speed it is already at moves nothing.
+        restarted = nil
+        device.plugin:setSpeed(230400)
+        T.assertNil(restarted, "it restarted the pair for no change")
+
+        Core.start, Core.stop = real_start, real_stop
+        Core.settings.serial_baud = 115200
+        Core.settings.transport = Core.TRANSPORT_TCP
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
 end)
 
 T.describe("reconnecting the plain way", function()

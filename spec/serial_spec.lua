@@ -163,6 +163,38 @@ T.describe("serial transport", function()
         a:close(); b:close()
     end)
 
+    T.it("configures the line it opens, flow control and all", function()
+        --[[
+        Every other test in this file opens with skip_stty, because a
+        pseudo-terminal needs no setting up -- which means the stty a real
+        device actually gets was never run here at all. It is not a small
+        thing to leave untested: raw mode is what stops a tty echoing every
+        message straight back to its sender, and the flow control is the
+        only flow control there is on three soldered pads.
+        ]]
+        local a = assert(SerialTransport.open(PTY_A, { baud = 115200 }))
+        local b = assert(SerialTransport.open(PTY_B, { baud = 115200 }))
+
+        T.assertTrue(a:send("still carries bytes\n"))
+        local received = ""
+        local deadline = socket.gettime() + 3
+        while socket.gettime() < deadline and not received:find("\n") do
+            received = received .. (b:receive() or "")
+            socket.sleep(0.01)
+        end
+        T.assertEquals(received, "still carries bytes\n")
+        a:close(); b:close()
+
+        -- And the settings landed, which stty is the authority on: it
+        -- prints a name for a flag that is on and -name for one that is off.
+        local pipe = assert(io.popen(("stty -F %s -a 2>&1"):format(PTY_A)))
+        local flags = pipe:read("*a") or ""
+        pipe:close()
+        T.assertTrue(not flags:find("%-ixon"), "the line has no flow control on it")
+        T.assertTrue(not flags:find("%-ixoff"), "the line will not ask the far end to wait")
+        T.assertMatch(flags, "%-echo", "the line echoes what it is sent")
+    end)
+
     T.it("reports a device that is not there", function()
         local stream, err = SerialTransport.open("/dev/definitely-not-here")
         T.assertNil(stream)

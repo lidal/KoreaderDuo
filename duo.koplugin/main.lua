@@ -670,35 +670,65 @@ end
 Duo.WIRE_TEST = 12
 
 --[[--
-Calls down the wire and listens for the other reader calling back.
+How long to flood the wire once the other end has answered, in seconds.
 
-Run it on both devices within a few seconds of each other. Each writes a
-line holding a token drawn fresh for this run, followed by its own name,
-and reads back whatever arrives. The token is what tells the three cases
-apart: two readers of the same model answer to the same name, so hearing
-"KindlePaperWhite3" says nothing about which end it came from.
+Long enough to be a measurement rather than a sample -- two seconds at the
+slowest offered rate is twenty thousand bytes and three hundred lines -- and
+short enough that nobody puts the reader down while it runs.
+--]]--
+Duo.WIRE_FLOOD = 2
+
+--- Roughly how much to keep queued for the line while flooding, in bytes.
+Duo.WIRE_QUEUE = 8192
+
+--- The speeds offered. 115200 is what the console runs the UART at.
+Duo.WIRE_SPEEDS = { 9600, 115200, 230400, 460800, 921600 }
+
+--[[--
+Calls down the wire, and then measures what it will actually carry.
+
+Run it on both devices within a few seconds of each other. It answers three
+questions in order, and each one is only worth asking once the one before it
+has an answer.
+
+*Is anything there?* Each end writes a line holding a token drawn fresh for
+this run, followed by its own name, and reads back whatever arrives. The
+token is what tells the cases apart: two readers of the same model answer to
+the same name, so hearing "KindlePaperWhite3" says nothing about which end
+it came from.
 
   * somebody else's token -- the wire works, both directions
-  * this run's own token  -- what this device sends is coming straight
-    back, so either TX and RX are shorted together rather than crossed to
-    the other reader, or something on the line is echoing
+  * this run's own token  -- what this device sends is coming straight back,
+    so either TX and RX are shorted together rather than crossed to the
+    other reader, or something on the line is echoing
+  * bytes but no sense    -- the two ends are not at the same speed
   * nothing at all        -- no wire, wrong device, or something else
     holding the line
 
-Duo does not need to be running for it, and this deliberately does not use
-the protocol: a handshake that fails tells you nothing about which of those
-three you have.
+*How fast?* Both ends then send numbered lines as hard as the line will take
+them for a couple of seconds, and count the bytes that arrive. That is the
+throughput of this cable at this speed, in this room, rather than the number
+on the setting.
+
+*How clean?* The numbers say what was lost. A gap in them is bytes the line
+dropped; a line that will not parse is bytes it changed. Either means the
+speed is above what this wiring will carry, which is the one thing no amount
+of reading about baud rates will tell you.
+
+Duo does not need to be running for any of it, and it deliberately does not
+use the protocol: a handshake that fails tells you none of the above.
 --]]--
 function Duo:testTheWire()
     local SerialTransport = require("duo/transport_serial")
     local path = Core:get("serial_device")
+    local baud = Core:get("serial_baud")
     if not SerialTransport.isAvailable() then
         UIManager:show(InfoMessage:new{
             text = _("This build of KOReader cannot open a serial device."),
         })
         return
     end
-    local stream, err = SerialTransport.open(path, { baud = Core:get("serial_baud") })
+    local stream, err = SerialTransport.open(path, { baud = baud })
     if not stream then
         UIManager:show(InfoMessage:new{
             text = T(_("Could not open %1.\n%2"), path, tostring(err)),
@@ -710,12 +740,15 @@ function Duo:testTheWire()
     local me = tostring(Core:getDeviceName() or ""):gsub("[%s\r\n]+", "-")
     if me == "" then me = "unnamed" end
     local marker = "DUOWIRE " .. mine .. " " .. me
-    local buffer, deadline = "", os.time() + Duo.WIRE_TEST
-    local message = InfoMessage:new{
-        text = T(_("Calling down %1…\nRun this on the other device too."), path),
-        timeout = Duo.WIRE_TEST + 4,
-    }
-    UIManager:show(message)
+    local buffer, bytes_in = "", 0
+    local message
+    local function say(text, timeout)
+        if message then pcall(function() UIManager:close(message) end) end
+        message = InfoMessage:new{ text = text, timeout = timeout or (Duo.WIRE_TEST + 4) }
+        UIManager:show(message)
+    end
+    say(T(_("Calling down %1 at %2 baud…\nRun this on the other device too."),
+        path, tostring(baud)))
 
     local function finish(text)
         pcall(function() stream:close() end)
@@ -723,8 +756,17 @@ function Duo:testTheWire()
         UIManager:show(InfoMessage:new{ text = text })
     end
 
-    -- The first call heard from a token that is not this run's own is the
-    -- other reader; anything else is this device hearing itself.
+    local function readMore()
+        local ok, data = pcall(function() return stream:receive() end)
+        if not ok or data == nil then return false end
+        bytes_in = bytes_in + #data
+        buffer = buffer .. data
+        return true
+    end
+
+    --------------------------------------------------------------------
+    -- What came back
+    --------------------------------------------------------------------
     local function whatCameBack()
         local echoed = false
         for token, name in buffer:gmatch("DUOWIRE (%x+) ([^\r\n]+)") do
@@ -734,11 +776,97 @@ function Duo:testTheWire()
         return nil, echoed
     end
 
-    local function tick()
+    --------------------------------------------------------------------
+    -- Phase two: how much this cable will actually carry
+    --------------------------------------------------------------------
+    local function measure(heard)
+        local padding = ("D"):rep(48)
+        local sent, seq, flood_in = 0, 0, 0
+        local good, bad, highest = 0, 0, 0
+        local started = os.time()
+        local carry = ""
+        buffer = ""
+
+        local function count(chunk)
+            carry = carry .. chunk
+            while true do
+                local stop = carry:find("\n", 1, true)
+                if not stop then break end
+                local line = carry:sub(1, stop - 1):gsub("\r$", "")
+                carry = carry:sub(stop + 1)
+                if #line > 0 then
+                    local n = tonumber(line:match("^DUOFLOOD (%d+) "))
+                    if n then
+                        good = good + 1
+                        if n > highest then highest = n end
+                    else
+                        bad = bad + 1
+                    end
+                end
+            end
+        end
+
+        local function report()
+            local seconds = math.max(1, os.time() - started)
+            local rate = flood_in / seconds / 1024
+            local lines = { T(_("The wire works. Heard %1."), heard), "" }
+            lines[#lines+1] = T(_("%1 baud · %2 KB/s"),
+                tostring(baud), string.format("%.1f", rate))
+            local missing = math.max(0, highest - good)
+            lines[#lines+1] = T(_("%1 lines · %2 lost · %3 mangled"),
+                tostring(good), tostring(missing), tostring(bad))
+            if missing > 0 or bad > 0 then
+                lines[#lines+1] = ""
+                lines[#lines+1] = _("Bytes are going missing or arriving changed, which means this wiring will not carry this speed. Drop to the next one down, on both devices, and run this again.")
+            elseif good == 0 then
+                lines[#lines+1] = ""
+                lines[#lines+1] = _("Nothing came through to measure. The other device answered but stopped before the second half — run them closer together.")
+            end
+            finish(table.concat(lines, "\n"))
+        end
+
+        local function tick()
+            local ok = pcall(function()
+                while stream:pending() < Duo.WIRE_QUEUE do
+                    seq = seq + 1
+                    if not stream:send(("DUOFLOOD %d %s\n"):format(seq, padding)) then
+                        seq = seq - 1
+                        break
+                    end
+                    sent = sent + 1
+                end
+                stream:flush()
+                local before = bytes_in
+                readMore()
+                flood_in = flood_in + (bytes_in - before)
+                count(buffer)
+                buffer = ""
+            end)
+            if not ok then
+                finish(T(_("The line stopped answering while measuring %1."), path))
+                return
+            end
+            if os.time() - started >= Duo.WIRE_FLOOD then
+                report()
+                return
+            end
+            UIManager:scheduleIn(0.05, tick)
+        end
+
+        say(T(_("Heard %1. Measuring the line…"), heard), Duo.WIRE_FLOOD + 4)
+        UIManager:forceRePaint()
+        tick()
+    end
+
+    --------------------------------------------------------------------
+    -- Phase one: is anybody there
+    --------------------------------------------------------------------
+    local deadline = os.time() + Duo.WIRE_TEST
+    local function call()
         local ok = pcall(function()
             stream:send(marker .. "\n")
             stream:flush()
-            buffer = buffer .. (stream:receive() or "")
+            readMore()
         end)
         if not ok then
             finish(T(_("The line stopped answering while testing %1."), path))
@@ -746,7 +874,7 @@ function Duo:testTheWire()
         end
         local heard, echoed = whatCameBack()
         if heard then
-            finish(T(_("The wire works. Heard %1."), heard))
+            measure(heard)
             return
         end
         if echoed then
@@ -754,12 +882,64 @@ function Duo:testTheWire()
             return
         end
         if os.time() >= deadline then
+            --[[
+            Bytes with no sense in them is its own answer, and the commonest
+            cause of it is the one thing this test can otherwise not see: the
+            two ends running at different speeds. Every byte is then framed
+            wrongly, which looks exactly like a broken cable and is not.
+            ]]
+            if bytes_in > 0 then
+                finish(T(_("%1 bytes came back down %2, and none of them made sense.\n\nThe two ends are almost certainly not at the same speed. Check Link → Speed on both devices; this one is at %3 baud."),
+                    tostring(bytes_in), path, tostring(baud)))
+                return
+            end
             finish(T(_("Nothing came back down %1.\n\nCheck the wiring is crossed (TX to RX), that the grounds are joined, and that nothing else is holding the line."), path))
             return
         end
-        UIManager:scheduleIn(0.4, tick)
+        UIManager:scheduleIn(0.4, call)
     end
-    tick()
+    call()
+end
+
+function Duo:showSpeedDialog()
+    local dialog
+    local buttons = {}
+    -- Not `for _, speed`: `_` is gettext in this file, and a loop variable
+    -- of that name shadows it for everything inside the loop.
+    for index = 1, #Duo.WIRE_SPEEDS do
+        local speed = Duo.WIRE_SPEEDS[index]
+        buttons[#buttons+1] = {{
+            text = (Core:get("serial_baud") == speed)
+                and T(_("%1 baud  ✓"), tostring(speed))
+                or T(_("%1 baud"), tostring(speed)),
+            callback = function()
+                UIManager:close(dialog)
+                self:setSpeed(speed)
+            end,
+        }}
+    end
+    buttons[#buttons+1] = {{
+        text = _("Cancel"),
+        callback = function() UIManager:close(dialog) end,
+    }}
+    dialog = ButtonDialog:new{
+        title = _("How fast to run the wire.\n\nIt cannot be agreed over the line — the two ends have to match before either can say anything — so set the same speed on both, then run \"Call down the wire\" to see what this cable really carries.\n\n115200 is what the console runs the UART at and is the safe answer. Higher is worth trying: it is the difference between minutes and seconds on a book. Unshielded test-pad wiring may not take it, and the test will say so."),
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+end
+
+--- Changes the speed, and reopens the line on it if Duo is using one.
+function Duo:setSpeed(speed)
+    if Core:get("serial_baud") == speed then return end
+    Core:set("serial_baud", speed)
+    self:refreshMenu()
+    if not (Core:isActive() and Core:usesSerial()) then return end
+    -- The rate is set on the device when it is opened, so a line already
+    -- open is still running at the old one.
+    local role = Core.role
+    Core:stop("changing speed")
+    Core:start(role)
 end
 
 --[[--
@@ -3470,6 +3650,18 @@ function Duo:getMenuTable()
                     callback = function(touchmenu_instance)
                         self.menu_container = touchmenu_instance
                         self:showSerialDeviceDialog()
+                    end,
+                },
+                {
+                    text_func = function()
+                        return T(_("Speed: %1 baud"), tostring(Core:get("serial_baud")))
+                    end,
+                    help_text = _("How fast to run the wire. 115200 is what the console runs the UART at and is the safe answer; the chip will go eight times that, which on a book is the difference between minutes and seconds.\n\nIt cannot be agreed over the line — the two ends have to match before either can say anything — so set the same speed on both. \"Call down the wire\" then measures what this cable really carries and says whether bytes are going missing, which is the only way to know whether the wiring will take it."),
+                    enabled_func = function() return Core:usesSerial() end,
+                    keep_menu_open = true,
+                    callback = function(touchmenu_instance)
+                        self.menu_container = touchmenu_instance
+                        self:showSpeedDialog()
                     end,
                     separator = true,
                 },

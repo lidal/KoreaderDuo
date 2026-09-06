@@ -307,6 +307,7 @@ is the live connection: role, peer, and the pages on show.
 | **Match the frontlight** | Same brightness and warmth. On. |
 | **Keep the Wi-Fi awake** | Stop the radio dozing while Duo is running. On. |
 | **Link → Over a network / Over a wire** | Which kind of link. Picking one moves both devices. |
+| **Link → Device**, **Link → Speed** | Which character device, and how fast. Per device: set both to match. |
 | **Link → Switch to a direct link / Switch to Wi-Fi** | Move both devices between the two, keeping their sides. |
 | **Share the book list too** | Spread the file browser as well. On. |
 | **Lock one, lock both** | Sleeping either sleeps the other. On. |
@@ -434,7 +435,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-551 tests, with the interesting parts unmocked: two and three device
+561 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -464,10 +465,34 @@ links that die at eight seconds — is a radio fault. A line is simply there
 whenever both devices have power, so the leader starts the handshake and the
 follower answers whenever it wakes.
 
-115200 baud is 11.5 KB/s. Duo's own traffic is about 80 bytes a second, so
-there is room to spare — but send books with something else
-([localsend](https://github.com/kaikozlov/localsend.koplugin) does it well),
-because a book down a serial line takes minutes.
+**A wire is a channel, not a connection**, and Duo treats it as one. A
+connection has a lifecycle both ends observe because the transport tells
+them; a wire has none. So a sleep does not put it down — the descriptor is
+still open on the way back, the line is still there, and the session key and
+slot are still good, which is why waking on a wire costs a poll rather than
+a reopen and a handshake. Silence steps the session back over the same
+stream instead of closing it, because on a wire silence means the other
+reader is busy or asleep and proves nothing. A line that does not parse is
+skipped, because on these readers the wire is also somebody's console. And
+whichever end is not paired calls down the line once a second: that is what
+catches a reader that restarted, which arrives on the same channel rather
+than a new socket and would otherwise be signed at with a key it threw away.
+
+**Speed.** **Link → Speed** offers 9600 to 921600. 115200 is what the
+console runs the UART at and is the safe answer; the chip will do eight
+times that, which on a book is the difference between minutes and seconds.
+It cannot be agreed over the line — the two ends have to match before either
+can say anything — so set it on both, then measure. Duo's own traffic is
+about 80 bytes a second and fits at any of them. Books still travel better
+with something else ([localsend](https://github.com/kaikozlov/localsend.koplugin)
+does it well).
+
+Three soldered pads carry no RTS or CTS, so Duo turns on software flow
+control (XON/XOFF) instead. It is safe here rather than by luck: every value
+on the wire is percent-encoded down to letters, digits and `._-`, so the two
+flow-control bytes cannot occur in the data. Without it a book transfer
+overruns the far end every time an e-ink refresh stops its loop for longer
+than its buffer holds.
 
 Before it will carry anything: set **Device** to the right node on each
 reader, then pick **Over a wire** on either one. Picking it moves both, the
@@ -511,20 +536,38 @@ misbehaves: it says what process 1 actually is, which decides whether
 **Duo → Debug** answers the rest without a keyboard. **What the wire looks
 like** lists the serial devices on the reader, says whether the one Duo is
 set to opens, whether a login prompt is holding it, and whether the kernel
-logs to it. **Call down the wire** writes a token drawn fresh for
-the run, and this device's name, down the line and listens for the other —
-run it on both, and it tells apart a wire that works, a device hearing its
-own bytes come back, and nothing at all. It is the token that separates the
-first two: two readers of the same model answer to the same name. A failed
-pairing tells you none of the three.
+logs to it. **Call down the wire** answers three questions in
+order — run it on both devices within a few seconds of each other.
+
+*Is anything there?* Each end writes a token drawn fresh for the run,
+followed by its own name, and listens for the other. The token is what
+separates a wire that works from a device hearing its own bytes come back:
+two readers of the same model answer to the same name. Bytes that arrive but
+never parse is its own answer, and it names the cause — the two ends are not
+at the same speed, which looks exactly like a broken cable and is not.
+
+*How fast, and how clean?* Once each end has heard the other, both send
+numbered lines as hard as the line will take them for two seconds and count
+what arrives. That is the throughput of this cable at this speed, in this
+room, rather than the number on the setting — and the numbers say what was
+lost. A gap in them is bytes the line dropped; a line that will not parse is
+bytes it changed. Either means the speed is above what this wiring carries,
+which is the one thing no amount of reading about baud rates will tell you.
+
+A failed pairing tells you none of it.
 
 Two things to know before wiring anything up. The device is a guess and says
 so: `/dev/ttymxc0` is the usual debug UART on these readers, and it is
 usually also the console, so a getty may be reading the same bytes and
 answering the other reader with a login prompt — stop it first. And what the
-suite proves about this is narrower than it looks: the framing, the handshake
-and the state machine are tested over a pseudo-terminal, but nothing about
-baud rates, framing errors or a full FIFO is. Those wait for a real wire.
+suite proves about this is narrower than it looks. Over a pseudo-terminal it
+covers the framing, the handshake, the state machine, the stty a real device
+gets, a sleep that changes nothing, an hour of frozen loop that changes
+nothing, a step-back that keeps the line, a restarted reader heard rather
+than waited out, and console noise read through. What a pseudo-terminal
+cannot show is anything electrical: baud rates, framing errors, a full FIFO,
+or whether flow control does what it says on this driver. Those wait for a
+real wire, which is what the measurement in **Call down the wire** is for.
 
 ## Reconnecting the plain way
 
