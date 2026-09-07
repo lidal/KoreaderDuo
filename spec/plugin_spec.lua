@@ -3425,6 +3425,40 @@ T.describe("reading the link briskly while the pair moves", function()
         reset()
     end)
 
+    T.it("watches for as long as the two are connected, not for two seconds", function()
+        --[[
+        A window opened by a page turn buys the second turn of a burst and
+        not the first, which is backwards: the turn anybody notices is the
+        one after a pause, and by then the window is long gone. So it is
+        open whenever the two are connected.
+
+        The cost is measured rather than guessed. The reader's own log says
+        0.2ms of work per look when the line is quiet, so twenty
+        milliseconds between looks is ten milliseconds of processor a second
+        against the fifty-millisecond loop's four -- six milliseconds a
+        second, on a device already being held awake because it is
+        connected, next to a frontlight.
+        ]]
+        reset()
+        local real_connected = Core.isConnected
+        Core.isConnected = function() return true end
+        Core.brisk_until = nil
+
+        Core.settings.close_watch = true
+        T.assertTrue(Core:isBrisk(), "a connected pair was not being watched")
+
+        -- Off, and the burst after a page turn is still kept.
+        Core.settings.close_watch = false
+        T.assertTrue(not Core:isBrisk())
+        Core:readBriskly()
+        T.assertTrue(Core:isBrisk(), "turning it off took the burst with it")
+
+        Core.settings.close_watch = true
+        Core.isConnected = real_connected
+        Core.brisk_until = nil
+        reset()
+    end)
+
     T.it("is switched on by the things that move the pair", function()
         reset()
         Core.role = Core.ROLE_LEADER

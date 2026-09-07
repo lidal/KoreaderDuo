@@ -327,6 +327,7 @@ is the live connection: role, peer, and the pages on show.
 | **Follow the leader's book** | Open here when the leader opens there. |
 | **Send the book if the other device lacks it** | Hand the file over the link. On. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role. A wire always does. |
+| **Watch the link closely** | Look at the link every 20ms while connected, rather than when the loop offers. On; costs ~6ms of processor a second. |
 | **Debug → Say what Duo is doing** | The messages at the top of the screen — connected, matched the font size, the book has been sent. On. |
 | **Write a log file**, **Log everything** | See *Reporting something that went wrong*. Both off. |
 | **Pairing code** | Shared secret. Empty means any device may connect. |
@@ -446,7 +447,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-597 tests, with the interesting parts unmocked: two and three device
+598 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -731,16 +732,27 @@ offers it a turn every fifty milliseconds at best and every hundred and ten
 while something is being drawn, so a message can sit unread for longer than
 it took to cross.
 
-Two things follow from that, and both are done. The device that was tapped
-never waits at all: it moves its own screen straight away and puts the
-message on the line *before* doing so, since drawing a page on e-ink is the
-better part of a second and the far screen should be starting its own at
-the same moment. And for two seconds after the pair moves, Duo asks for the
-link every fifteen milliseconds rather than waiting to be offered a turn.
-Polling that fast all day would be a tenth of a processor spent on a line
-that is silent nine tenths of the time; two seconds after a page turn costs
-nothing and covers the only moment it matters, because the best predictor
-of a page turn is the one that just happened. It stops by itself.
+There is no cleverer answer than looking more often. The device about to be
+sent a page has no way of knowing: nothing woke it, it has had no input, and
+the first it can learn of a page turn is by asking. Prediction does not help
+either — the turn anybody notices is the one after a pause, and nothing
+precedes it.
+
+So two things, and both are done. The device that was tapped never waits at
+all: it moves its own screen straight away and puts the message on the line
+*before* doing so, since drawing a page on e-ink is the better part of a
+second and the far screen should be starting its own at the same moment.
+And **Watch the link closely** (on) looks at the link every twenty
+milliseconds for as long as the two are connected, rather than waiting to be
+offered a turn.
+
+The cost of that is measured rather than guessed. Duo's own log reports the
+work it does per look: **0.2 ms** when the line is quiet. Fifty milliseconds
+between looks is four milliseconds of processor a second; twenty is ten. Six
+milliseconds a second, on a device Duo is already holding awake because it
+is connected, next to a frontlight. Turn it off if you would rather have
+that back — a two-second burst after each page turn is kept either way,
+though that buys the second turn of a burst and not the first.
 
 What is left is the e-ink refresh, which is most of what anyone sees and is
 not Duo's to give back.

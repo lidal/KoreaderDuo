@@ -191,15 +191,12 @@ function Duo:ensurePolling()
     UIManager:insertZMQ(poller)
 end
 
---- How often to look at the link while the pair is moving, in seconds.
-Duo.BRISK_EVERY = 0.015
-
 --[[--
 Starts the fast read, if it is not already running.
 
 Self-cancelling: the tick asks the engine whether it is still worth doing
 and simply stops when it is not, so nothing has to remember to turn it off
-and a reader left alone goes quiet by itself.
+and a pair that disconnects goes quiet by itself.
 --]]--
 function Duo:startReadingBriskly()
     if Duo.reading_briskly then return end
@@ -210,9 +207,9 @@ function Duo:startReadingBriskly()
             return
         end
         pcall(function() Core:pollOnce() end)
-        UIManager:scheduleIn(Duo.BRISK_EVERY, tick)
+        UIManager:scheduleIn(Core.BRISK_EVERY, tick)
     end
-    UIManager:scheduleIn(Duo.BRISK_EVERY, tick)
+    UIManager:scheduleIn(Core.BRISK_EVERY, tick)
 end
 
 --------------------------------------------------------------------------
@@ -4305,6 +4302,15 @@ On connecting, the leader's settings win. After that a change on either device m
             callback = function() Core:set("autostart", not Core:get("autostart")) end,
             separator = true,
         },
+        {
+            text = _("Watch the link closely"),
+            help_text = _("Look at the link far more often than KOReader's own loop offers to — every twenty milliseconds rather than every fifty at best, and every hundred and ten while something is being drawn.\n\nThis is the whole of what a page turn still waits for. The wire crosses in about a millisecond; what it waits for is the other device noticing, and a device that is about to be sent a page has no way of knowing — nothing woke it, and the first it can learn of a turn is by asking.\n\nThe cost is measured rather than guessed: 0.2ms of work per look when the line is quiet, so this is about six milliseconds of processor a second, on a device Duo is already holding awake because it is connected, next to a frontlight. Turn it off if you would rather have that back; a shorter burst after each page turn is kept either way."),
+            checked_func = function() return Core:get("close_watch") end,
+            callback = function()
+                Core:set("close_watch", not Core:get("close_watch"))
+                if Core:get("close_watch") then Duo:startReadingBriskly() end
+            end,
+            },
         {
             text = _("Keep the Wi-Fi awake"),
             help_text = _("Stops the wireless card dozing between beacons while Duo is connected.\n\nA reader on an ordinary Wi-Fi network sleeps its radio, and the router holds small packets until the next beacon — which is why a page turn can lag on Wi-Fi while a book transfer, whose traffic never stops, does not. Removing that wait is the difference between a pair that feels immediate and one that does not.\n\nOn by default, and only while the two devices are connected: the radio sleeps as usual the rest of the time. Turn it off if you would rather have the battery. It does nothing on a direct link, which has no router to wait for."),

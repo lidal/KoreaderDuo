@@ -451,6 +451,13 @@ local DEFAULTS = {
     cross, is the book on its way -- and off is where most people will end
     up once they know the answers.
     ]]
+    --[[
+    Whether to look at the link far more often than the reader's own loop
+    offers to. On: the cost is six milliseconds of processor a second on a
+    device already being held awake, and what it buys is the gap between
+    the two screens, which is otherwise a poll rather than a wire.
+    ]]
+    close_watch = true,
     notices = true,
     resume_file = "",
     resume_page = 0,
@@ -1011,27 +1018,40 @@ end
 
 --[[--
 How long to read the link briskly after the pair has moved, in seconds.
+
+Only the floor, for a pair that has asked not to be watched closely all the
+time. It buys the second page turn of a burst and not the first, which is
+backwards: the turn somebody notices is the one after a pause, and by then
+this window is long gone.
 --]]--
 Core.BRISK_FOR = 2
 
 --[[--
-Reads the link far more often than usual, for a couple of seconds.
+Reads the link far more often than the reader's own loop offers to.
 
-The wire's own round trip is a millisecond; what a page turn actually waits
-for is the *other device noticing*. Duo is pumped by the reader's event
-loop, which offers it a turn every fifty milliseconds at best and every
-hundred and ten while something is being drawn -- so a message can sit
-unread for longer than it took to cross, and the two screens end up a poll
-apart rather than a wire apart.
+What a page turn waits for is not the link. The wire's round trip is about
+a millisecond and Wi-Fi's is a hundred; what it waits for is the *other
+device noticing*. Duo is pumped by KOReader's event loop, which offers it a
+turn every fifty milliseconds at best and every hundred and ten while
+something is being drawn, so a message sits unread for longer than it took
+to cross and the two screens end up a poll apart rather than a wire apart.
 
-Polling that fast all the time would be a tenth of a processor spent
-watching a line that is silent nine tenths of the day. Polling that fast
-for two seconds after the pair has moved costs nothing worth measuring and
-covers the only moment it matters, which is somebody turning pages -- and
-turning one page is the best possible predictor of turning another.
+There is no cleverer answer than looking more often. The device that is
+about to be sent a page has no way of knowing: it has had no input, nothing
+woke it, and the first it can learn of a page turn is by asking. Prediction
+does not help either -- the turn worth being quick about is the one after a
+pause, which nothing precedes.
 
-Ends by itself. Nothing has to remember to switch it off.
+So the question is only what looking costs, and the reader's own log
+answers it: 0.2ms of work per poll when the line is quiet. Fifty
+milliseconds between polls is four milliseconds of processor a second;
+twenty is ten. Six milliseconds a second, on a device Duo is already
+holding awake because it is connected, next to a frontlight. That is worth
+sixty milliseconds off every page turn, and it is a setting for anybody who
+disagrees.
 --]]--
+Core.BRISK_EVERY = 0.02
+
 function Core:readBriskly()
     self.brisk_until = Util.now() + Core.BRISK_FOR
     if self.hooks and self.hooks.readBriskly then
@@ -1039,8 +1059,15 @@ function Core:readBriskly()
     end
 end
 
---- True while the link is worth watching closely.
+--[[--
+True while the link is worth watching closely.
+
+Whenever the two are connected, unless somebody has asked otherwise -- in
+which case the burst after a page turn is still kept, because it costs
+nothing and it is better than nothing.
+--]]--
 function Core:isBrisk()
+    if self:get("close_watch") and self:isConnected() then return true end
     return self.brisk_until ~= nil and Util.now() < self.brisk_until
 end
 
@@ -2473,6 +2500,14 @@ end
 function Core:onLinkReady(link)
     self.reconnect_delay = RECONNECT_MIN
     self.last_error = nil
+    --[[
+    Watched closely from here rather than from the first page turn. A window
+    that opens when somebody turns a page buys the second turn of a burst
+    and not the first, which is backwards: the turn anybody notices is the
+    one after a pause, and by then a window opened by the last one is long
+    gone.
+    ]]
+    self:readBriskly()
     -- Whatever was about to be announced about the last drop is no longer
     -- true, and was never worth saying.
     self.announce_drop_at = nil
