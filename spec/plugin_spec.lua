@@ -611,7 +611,10 @@ T.describe("the debug menu", function()
         local shown = table.concat(device:drainMessages(), "\n")
         T.assertMatch(shown, "unfinished")
         T.assertMatch(shown, "stopped booting")
-        T.assertMatch(shown, "way back in", "it never says what makes this recoverable")
+        T.assertMatch(shown, "cannot be fixed from its own menus",
+            "it never says what makes a bad outcome unrecoverable from here")
+        T.assertMatch(shown, "bootloader you can interrupt",
+            "it never says what makes it recoverable")
         device:clearScreen()
 
         -- And the menu marks which entries change the device and which do not.

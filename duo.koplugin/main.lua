@@ -760,7 +760,7 @@ function Duo:setLoginPrompt(wanted)
     end
 
     UIManager:show(ConfirmBox:new{
-        text = T(_("Turn off the login prompt on %1?\n\nThis moves aside:\n%2\n\nA job is renamed rather than edited, so putting it back is exact, and the same menu entry puts it back.\n\nBut this writes to the device's own startup and survives a reboot, and a reader that will not start cannot be fixed from its own menus. Two stopped booting during the session that built this. Do not go on unless the debug UART is wired and you can interrupt the bootloader over it, because that is the only way back.\n\nDo it on both devices."),
+        text = T(_("Turn off the login prompt on %1?\n\nThis moves aside:\n%2\n\nA job is renamed rather than edited, so putting it back is exact, and the same menu entry puts it back.\n\nBut this writes to the device's own startup and survives a reboot, and a reader that will not start cannot be fixed from its own menus. Do not go on unless the debug UART is wired and you can interrupt the bootloader over it, because that is the only way back.\n\nDo it on both devices."),
             path, table.concat(plan, "\n")),
         ok_text = _("I have a way back in"),
         ok_callback = function()
@@ -814,7 +814,7 @@ confirmation before the one entry that writes to the device, and the log --
 and three copies of a warning are three chances for them to disagree about
 what the danger is.
 --]]--
-Duo.DEBUG_WARNING = _("Two readers stopped booting during the session that built this, from a cause that has not been established. Two faults have been found and fixed since — a search for the login prompt wide enough to move parts of the device's own boot sequence, and a root filesystem left writable after a write — and being fixed is not the same as being safe: neither has been proved on hardware that then went on booting.\n\nNothing here is covered by the tests in the way the rest of Duo is. They exercise the framing, the handshake and the state machine over a pseudo-terminal; none of them touches a real serial port, a real startup job or a real reboot.\n\nDo not run any of it on a reader you mind about, and do not run it without a way back in — which on these devices means the debug UART and a bootloader prompt.")
+Duo.DEBUG_WARNING = _("This is the only part of Duo that opens the device's debug UART, and the only part that can move a file in the device's own startup.\n\nTwo readers stopped booting during the session that built it. Both came back after being run flat and charged properly, which is the useful part: a full discharge repairs no filesystem and restores no missing startup job, so it was not something written to disk. Two real faults were found while looking and both are fixed — a search for the login prompt wide enough to move parts of the boot sequence, and a root filesystem left writable after a write.\n\nWhat stays true: a reader that will not start cannot be fixed from its own menus. Have the debug UART wired and a bootloader you can interrupt before using the one entry here that writes.\n\nAnd if a reader ever does go quiet with its frontlight on: charge it properly, for hours, on a wall charger. That is what worked.")
 
 --- How long to keep calling down the wire before giving up, in seconds.
 Duo.WIRE_TEST = 12
@@ -3853,7 +3853,7 @@ function Duo:getMenuTable()
                 },
                 {
                     text = _("Over a wire (unfinished)"),
-                    help_text = _("UNFINISHED. Two readers stopped booting during the session that built this, from a cause not yet established. Duo → Debug → Read this first says what is known.\n\nA serial line: two readers joined TX to RX with a common ground, or any character device. There is nothing to dial and nothing to reconnect — the line is there whenever both devices have power.\n\nPicking it moves both devices, while they can still hear each other. If the other one does not answer, do the same over there.\n\nSet the device below, and make sure nothing else is holding it: on most readers the debug UART is also the console, so a login prompt will be reading the same bytes."),
+                    help_text = _("UNFINISHED and under development. Duo → Debug → Read this first says what is known about how it can go wrong.\n\nA serial line: two readers joined TX to RX with a common ground, or any character device. There is nothing to dial and nothing to reconnect — the line is there whenever both devices have power.\n\nPicking it moves both devices, while they can still hear each other. If the other one does not answer, do the same over there.\n\nSet the device below, and make sure nothing else is holding it: on most readers the debug UART is also the console, so a login prompt will be reading the same bytes."),
                     checked_func = function() return Core:usesSerial() end,
                     keep_menu_open = true,
                     callback = function(touchmenu_instance)
@@ -4118,7 +4118,7 @@ On connecting, the leader's settings win. After that a change on either device m
         },
         {
             text = _("Debug (unfinished)"),
-            help_text = _("The things somebody would otherwise type on a reader's on-screen keyboard, which is a punishment rather than a diagnostic step.\n\nUNFINISHED, and two readers stopped booting during the session that built it. Read the first entry before touching any of the rest."),
+            help_text = _("The things somebody would otherwise type on a reader's on-screen keyboard, which is a punishment rather than a diagnostic step.\n\nUNFINISHED, and the only part of Duo that can change how this device starts. Read the first entry before touching the rest."),
             sub_item_table = {
                 {
                     text = _("Read this first…"),

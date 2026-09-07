@@ -12,11 +12,10 @@ single tap moves both.
 and shows the page after the follower's.
 
 > [!WARNING]
-> **Do not use "Over a wire" or anything under Debug.** Both are unfinished,
-> and two readers stopped booting during the session that built them. The
-> cause is not yet established, so treat the whole area as unsafe rather
-> than as a thing with one known bad button in it. See
-> [Over a wire](#over-a-wire).
+> **"Over a wire" and the Debug menu are unfinished and under development.**
+> They open the device's debug UART and can change its startup, which
+> nothing else in Duo does. Read [Over a wire](#over-a-wire) before using
+> either.
 >
 > Everything else — Wi-Fi, the router-free direct link, the spread, book and
 > settings syncing — is unaffected and is what the plugin is for.
@@ -467,41 +466,46 @@ luajit tools/duo-menu-dump.lua   # the menu as the device builds it
 ## Over a wire
 
 > [!CAUTION]
-> **Work in progress. Do not use this on a reader you mind about.**
+> **Work in progress, and the only part of Duo that can leave a reader
+> unable to start.**
 >
 > Two Paperwhite 3s stopped booting during the session that built this —
 > frontlight on, screen frozen, no progress, and no recovery from a battery
-> pull. The cause has not been established. What is known is that this part
-> of Duo does things the rest does not: it opens the device's debug UART,
-> moves startup jobs aside, and writes to the root filesystem. Any of that
-> can leave a reader that will not start, and none of it has been through
-> enough hands to be trusted yet.
+> pull. Both came back after being run flat and charged properly, which is
+> the useful part of the story: a full discharge does not repair a
+> filesystem and does not restore a missing startup job, so whatever it was,
+> it was not something written to disk. The evidence points at a brownout —
+> charge enough to light the frontlight and begin booting, not enough to
+> finish — and nothing Duo wrote has been implicated since.
 >
-> Two specific faults have been found and fixed since, and either could have
-> done it:
+> Two real faults were found while looking, and both are fixed:
 >
 > * Finding the login prompt matched any startup job mentioning `getty` or
 >   `/bin/login` anywhere in it. On a reader whose whole boot sequence lives
 >   in `/etc/upstart`, that could move aside jobs other jobs wait on — and a
->   job that never starts is a boot that never finishes.
+>   job that never starts is a boot that never finishes. It now requires the
+>   job to name the configured device *and* start a login on it.
 > * Writing to a system file remounted the root filesystem read-write and
 >   did not always put it back. A reader's root is read-only precisely
 >   because these devices lose power without warning, and a journalled
->   filesystem that was writable at that moment can come back damaged. That
->   fault is cumulative and probabilistic: it does nothing at all until one
->   day it does.
+>   filesystem that was writable at that moment can come back damaged. Every
+>   write now shuts it again on the way out.
 >
-> Being fixed is not the same as being safe. Nothing here has been proved on
-> hardware that then went on booting for a week, so until it has, this
-> section describes what the code intends rather than what it is known to
-> do. Read it, do not run it.
+> What remains true regardless: this part of Duo opens the debug UART and
+> can move a file in the device's own startup, and **a reader that will not
+> start cannot be fixed from its own menus**. Have the UART wired and a
+> bootloader you can interrupt before using the one entry that writes. The
+> electrical half of this — baud rates, framing errors, a full FIFO, whether
+> flow control does what it says on this driver — is not covered by the
+> tests and cannot be; a pseudo-terminal proves the framing, the handshake
+> and the state machine, and nothing about a wire.
 >
-> The same warning is in the plugin: **Duo → Debug → Read this first**, and
+> The same summary is in the plugin: **Duo → Debug → Read this first**, and
 > the menu marks which entries only read, which forget at the next reboot,
 > and which one writes to the device's own startup.
 >
 > If a reader has already stopped booting, the way back is at the end of
-> this section.
+> this section — and start by charging it, which is what worked.
 
 **Duo → Link → Over a wire** talks down a character device instead of a
 network: the two readers' debug UARTs, TX to RX with a common ground. On a
@@ -770,15 +774,13 @@ topic, which is set in GitHub's repository settings rather than here.
   probes several and gives up gracefully, but a build that keeps it
   somewhere else costs the library spread with no warning beyond the
   listings not lining up.
-- **Everything in "Over a wire" and under Debug.** Two readers stopped
-  booting during the session that built it, from a cause not yet
-  established. Two faults have been found and fixed since — a job search
-  wide enough to move parts of the device's own boot sequence, and a root
-  filesystem left writable after a write — and neither has been proved on
-  hardware that then went on booting. The suite exercises the framing, the
-  handshake and the state machine over a pseudo-terminal; nothing in it
-  touches a real UART, a real startup job, or a real reboot. Do not run
-  this on a reader you mind about.
+- **The electrical half of "Over a wire".** The suite exercises the framing,
+  the handshake, the state machine and the line settings over a
+  pseudo-terminal, which proves none of: baud rates above 115200, framing
+  errors, a full FIFO, or whether software flow control does what it says
+  on this driver. Nothing in the suite touches a real UART, a real startup
+  job or a real reboot, and nothing can. That is what the measurement in
+  **Call down the wire** is for.
 
 ## Layout
 
