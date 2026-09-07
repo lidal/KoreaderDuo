@@ -572,13 +572,17 @@ autostart setting — that setting exists because bringing Duo up on Wi-Fi
 means bringing the radio up and holding it awake, and a character device
 costs none of that. Stopping Duo by hand is still respected.
 
-What survives from pairing is the code, once. Both devices have to be
-holding the same one or the handshake refuses, which is what stops a stray
-getty or an unrelated serial device from being taken for a partner. A pair
-that has ever been paired already agrees; a follower that has not is asked
-before the line opens rather than being refused over and over with nothing on
-screen to say why. The leader's screen shows the code and the device node
-instead of an address, which means nothing on a line.
+**There is no pairing code on a wire.** A code answers "is the thing on the
+other end the reader I mean?", which on a network is a real question —
+anything on the same Wi-Fi can dial the port — and on three soldered wires
+is not. There is one other end, it is the one you wired on, and anything
+that can reach the line can already reach far more than Duo. Whatever the
+code is set to, and whether it is set at all, the two pair.
+
+The signing does not go away with it: both ends derive their key from a
+known constant instead, so every message still carries a tag. That tag is
+doing a second job the code was not — telling a message apart from the
+console noise this line also carries — and it is the job worth keeping.
 
 On these readers `/dev/ttymxc0` is both the debug UART and the console, so
 two things are in the way of using it: a login prompt reading the bytes the

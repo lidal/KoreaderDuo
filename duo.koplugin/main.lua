@@ -3406,22 +3406,15 @@ rather than after, which on a wire is the difference between pairing and a
 handshake that is refused over and over with nothing on screen to say why.
 --]]--
 function Duo:startOnTheWire(role)
-    if role == Core.ROLE_FOLLOWER and not Core:knowsPeerToken() then
-        self:promptForToken(function() self:startOnTheWire(role) end,
-            _("Type the code shown on the other device.\n\nOnly once: it is kept for next time."))
-        return
-    end
     if not Core:start(role) then return end
     if role == Core.ROLE_LEADER then
         UIManager:show(InfoMessage:new{
             text = T(_([[
 Duo leader is running, on %1.
 
-On the other device open Duo, tap Connect, and choose "This device follows". It asks for the code below the first time.
-
-Code: %2]]),
-                Core:get("serial_device"), Core:ensureToken()),
-            timeout = 60,
+On the other device open Duo, tap Connect, and choose "This device follows". There is no code to type: two readers joined by a wire have nothing to prove to each other.]]),
+                Core:get("serial_device")),
+            timeout = 30,
         })
     end
     self:refreshMenu()

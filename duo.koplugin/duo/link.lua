@@ -209,6 +209,24 @@ wire needs, and it bounds the damage from a line that is noisy or hostile.
 --]]--
 Link.RENEGOTIATE_EVERY = 3
 
+--[[--
+What both ends of a wire use instead of a pairing code.
+
+A code exists to answer "is the thing on the other end the reader I mean?",
+and on a network that is a real question: anything on the same Wi-Fi can
+dial the port. Two readers joined by three soldered wires are not asking it.
+There is exactly one other end, it is the one somebody wired on, and a
+device that can reach the line can already reach far more than Duo.
+
+Not simply skipped, though, because the tag on every message is derived from
+the code and is doing a second job the code is not: it is what tells a
+message apart from the console noise this line also carries. So a wire
+agrees on a known constant, both ends derive the same session key from it,
+and every message is still signed -- what goes away is having to type six
+characters into two readers that are physically attached to each other.
+--]]--
+Link.WIRE_TOKEN = "duo-on-a-wire"
+
 --- Computes the proof of knowing `token` for a given nonce.
 function Link.proof(nonce, token)
     return Sha256.hex(tostring(nonce) .. ":" .. Util.normalizeToken(token))
@@ -346,7 +364,8 @@ function Link.new(options)
         reopen if it were.
         ]]
         on_a_wire = options.on_a_wire and true or false,
-        token = options.token or "",
+        -- A wire needs no pairing code: see WIRE_TOKEN.
+        token = options.on_a_wire and Link.WIRE_TOKEN or options.token or "",
         name = options.name or "KOReader",
         slot = options.slot or 1,
         on_message = options.on_message,

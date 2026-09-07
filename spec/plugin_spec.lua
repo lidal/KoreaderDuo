@@ -3466,32 +3466,34 @@ T.describe("pairing dialogs", function()
         reset()
     end)
 
-    T.it("asks a wire follower for the code before opening the line", function()
+    T.it("asks a wire follower for no code at all", function()
         --[[
-        A wire is still checked, and a follower that has never been told the
-        leader's code is refused over and over with nothing on screen to say
-        why. Asked before the line opens, not after.
+        The reverse of what this used to assert, and deliberately. A pairing
+        code answers "is the thing on the other end the reader I mean?",
+        which on a network is a real question and on three soldered wires is
+        not: there is one other end, it is the one somebody wired on, and
+        anything that can reach the line can already reach far more than
+        Duo. Asking anyway interrupted a pair physically attached to each
+        other for six characters, every few minutes.
         ]]
         reset()
         Core.settings.transport = Core.TRANSPORT_SERIAL
         Core.settings.token = ""
         Core.settings.token_source = ""
-        local started = 0
+        local started = nil
         local real_start = Core.start
-        Core.start = function() started = started + 1 return true end
+        Core.start = function(_, role) started = role return true end
 
         device.plugin:startOnTheWire(Core.ROLE_FOLLOWER)
-        T.assertEquals(started, 0, "it opened the line with a code nobody has heard of")
-        T.assertTrue(device:answerDialog("K7F2QX", "OK"), "no code was asked for")
-        T.assertEquals(started, 1, "it did not go on once it had the code")
-        T.assertEquals(Core.settings.token, "K7F2QX")
+        T.assertEquals(started, Core.ROLE_FOLLOWER, "it stopped to ask for a code")
+        T.assertTrue(not device:currentDialog("InputDialog"), "it asked for a code")
 
-        -- The leader says the code rather than an address that does not exist.
+        -- And the leader says so rather than reading out six characters.
         device:drainMessages()
         device.plugin:startOnTheWire(Core.ROLE_LEADER)
         local shown = table.concat(device:drainMessages(), "\n")
-        T.assertMatch(shown, "K7F2QX")
         T.assertMatch(shown, "/dev/ttymxc0")
+        T.assertMatch(shown, "no code to type")
 
         Core.start = real_start
         Core.settings.transport = Core.TRANSPORT_TCP

@@ -2350,7 +2350,14 @@ function Core:onLinkClosed(link, reason)
     forever while the one thing that would help -- six characters off the
     other screen -- is never asked for.
     ]]
-    if self:isFollower() and reason == Link.BAD_TOKEN then
+    --[[
+    Never on a wire, where there is no code to be wrong about: both ends
+    derive their key from a known constant, so a refusal here would mean
+    something the user cannot fix by typing. Asking anyway is how a pair
+    joined by copper came to be interrupted for six characters every few
+    minutes.
+    ]]
+    if self:isFollower() and reason == Link.BAD_TOKEN and not self:usesSerial() then
         self:stop(reason)
         self:forgetToken()
         if self.hooks and self.hooks.askForToken then

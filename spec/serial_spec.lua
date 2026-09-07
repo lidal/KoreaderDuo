@@ -451,22 +451,50 @@ T.describe("two devices over a serial link", function()
             "the line never recovered from an unterminated one")
     end)
 
-    T.it("turns away a device with the wrong pairing code", function()
+    T.it("needs no pairing code, and does not care what is set", function()
+        --[[
+        A pairing code answers "is the thing on the other end the reader I
+        mean?", and on a network that is a real question: anything on the
+        same Wi-Fi can dial the port. Three soldered wires are not asking
+        it. There is one other end, it is the one somebody wired on, and
+        anything that can reach the line can already reach far more than
+        Duo.
+
+        This used to refuse, and the refusal was not even quiet -- it asked
+        for six characters, every few minutes, from a pair physically
+        attached to each other.
+
+        The signing does not go away with it. Both ends derive their key
+        from a known constant instead, so every message still carries a tag,
+        which is what tells one apart from the console noise this line also
+        carries.
+        ]]
         controller:call(leader, "Core:stop('reset')")
         controller:call(follower, "Core:stop('reset')")
         for _, device in ipairs({ leader, follower }) do
             controller:call(device, "Core.settings.transport = 'serial'")
         end
+        -- Deliberately different, and deliberately one of them empty.
         controller:call(leader, "Core.settings.token = 'S3R14L'")
-        controller:call(follower, "Core.settings.token = 'WR0NG2'")
+        controller:call(follower, "Core.settings.token = ''")
         controller:call(leader, ("Core.settings.serial_device = %q"):format(PTY_A))
         controller:call(follower, ("Core.settings.serial_device = %q"):format(PTY_B))
         controller:call(leader, "Core:start('leader')")
         controller:call(follower, "Core:start('follower')")
 
-        socket.sleep(2)
-        T.assertEquals(controller:call(leader, "Core:isConnected()"), "false",
-            "a device with the wrong code got in over serial")
+        controller:assertEventually(leader, "Core:isConnected()", true,
+            "it wanted a pairing code for a piece of copper")
+        controller:assertEventually(follower, "Core:isConnected()", true)
+
+        -- And what crosses it is still signed.
+        T.assertEquals(controller:call(leader, "Core:getReadyLinks()[1].session_key ~= nil"),
+            "true", "the wire stopped signing along with the code")
+
+        -- Which is only worth anything if the pair still works.
+        controller:call(leader, "D:jumpToPage(20)")
+        controller:assertEventually(follower, "D:getPage()", 21,
+            "codeless is not the same as working")
+
         controller:call(leader, "Core:stop('done')")
         controller:call(follower, "Core:stop('done')")
     end)
