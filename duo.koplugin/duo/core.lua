@@ -1169,11 +1169,35 @@ function Core:checkRadioSetting()
     end
 end
 
+--[[--
+How many pages the spread has, which is not the same as how many this
+device has.
+
+The two copies of a book do not always paginate to the same number of
+screens -- a hyphenation dictionary that is only on one, a font that fell
+back, a margin that did not travel -- and where they differ the spread ends
+where the *shorter* one does. Counting only this device's pages let the
+leader turn onto a screen the other reader had already run out of book for,
+which is the same thing as turning to a page that does not exist.
+
+Only ever shorter, never longer: a follower that has not said yet, or is
+not there, leaves this device's own count alone.
+--]]--
+function Core:spreadPageCount()
+    local mine = self.reader and self.reader.getPageCount() or nil
+    if not mine or not self:isLeader() then return mine end
+    for _, link in ipairs(self:getReadyLinks()) do
+        local theirs = link.peer_pages
+        if theirs and theirs > 0 and theirs < mine then mine = theirs end
+    end
+    return mine
+end
+
 function Core:getSpreadOptions()
     return {
         mode = self:get("mode"),
         reverse = self:get("reverse"),
-        page_count = self.reader and self.reader.getPageCount() or nil,
+        page_count = self:spreadPageCount(),
         pages_per_view = self.reader and self.reader.getPagesPerView
             and self.reader.getPagesPerView() or 1,
     }
@@ -1361,6 +1385,9 @@ function Core:stop(reason, goodbye)
     ]]
     self.typography_snapshot = nil
     self.frontlight_snapshot = nil
+    -- The other device's page count belongs to the book it was counting.
+    for _, link in ipairs(self.links) do link.peer_pages = nil end
+    self.told_pages = nil
     -- A fresh start is a fair reason to try a book that would not come.
     self.library_failed = nil
     self:dropTransfers()
@@ -4881,6 +4908,7 @@ function Core:handleMessage(link, msg)
         self.leader_page = Protocol.num(msg, "leader_page")
         self.my_slot = Protocol.num(msg, "slot")
         self.spread_step = Protocol.num(msg, "step")
+        self:reportOwnPageCount(link, Protocol.num(msg, "pages"))
         self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
         self:applyRemotePage(Protocol.num(msg, "page"),
             Protocol.num(msg, "pages"), msg.typo)
@@ -4962,6 +4990,17 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.DOCACK then
         if not self:isLeader() then return end
         self:handleDocumentAck(link, msg)
+    elseif msg.type == Protocol.PAGES then
+        if not self:isLeader() then return end
+        local pages = Protocol.num(msg, "pages", 0)
+        local was = link.peer_pages
+        link.peer_pages = pages > 0 and pages or nil
+        if link.peer_pages ~= was then
+            self:log("the other device has", tostring(link.peer_pages), "pages in this book")
+            -- The end of the spread has moved, so everyone is told where
+            -- they now stand.
+            self:broadcastState()
+        end
     elseif msg.type == Protocol.HOME then
         if self:isLeader() then return end
         self:handleRemoteHome()
@@ -4998,6 +5037,16 @@ function Core:sendDocumentAck(state, file, reason)
         state = state,
         file = file or "",
         reason = reason or "",
+        --[[
+        And how long the book is on this device, which the leader cannot
+        work out for itself. The two copies do not always paginate to the
+        same number of screens -- a hyphenation dictionary, a font that fell
+        back, a margin that did not travel -- and the end of the spread is
+        the end of the *shorter* one. Without this the leader counted only
+        its own pages and let the pair walk off the end of the other's.
+        ]]
+        pages = (self.reader and self.reader.getPageCount and
+            self.reader.getPageCount()) or 0,
     })
 end
 
@@ -5056,6 +5105,10 @@ function Core:handleDocumentAck(link, msg)
     -- Whatever it says, the other device is answering again, so the silence
     -- it was being forgiven for is over.
     if link.expectAnswers then link:expectAnswers() end
+    -- How long the book is over there, which the end of the spread depends
+    -- on. See spreadPageCount.
+    local pages = Protocol.num(msg, "pages", 0)
+    link.peer_pages = pages > 0 and pages or nil
     local pending = link.doc_pending
     if not pending then return end
     local state = msg.state or ""
@@ -5274,6 +5327,31 @@ Warns when the two devices paginate the same book differently.
 @int leader_pages  how many pages the leader says the book has
 @string[opt] leader_typo  the leader's layout fingerprint, when it sent one
 --]]--
+--[[--
+Tells the leader how long this book is here, when that is not what it
+thinks.
+
+The leader decides where the spread ends, and it can only do that from the
+shorter of the two books -- which it cannot see. A DOCACK carries this when
+the leader opened the book, but a pair that opened it independently, or a
+relayout that changed the count afterwards, has no DOCACK to carry it. So
+it is said whenever the number the leader quotes is not this device's own,
+and said once per number rather than once per page turn.
+--]]--
+function Core:reportOwnPageCount(link, leader_pages)
+    if not link or not self.reader or not self.reader.getPageCount then return end
+    local mine = self.reader.getPageCount()
+    if not mine or mine <= 0 then return end
+    if mine == leader_pages then
+        -- Agreed. Said again if they ever diverge.
+        self.told_pages = nil
+        return
+    end
+    if self.told_pages == mine then return end
+    self.told_pages = mine
+    link:send(Protocol.PAGES, { pages = mine })
+end
+
 function Core:checkPagination(leader_pages, leader_typo)
     if self.warned_pagination or not leader_pages or leader_pages == 0 then return end
     if not self.reader then return end

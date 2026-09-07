@@ -3300,6 +3300,72 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("the end of the shorter book", function()
+    T.it("will not turn onto a screen the other device has run out of book for", function()
+        --[[
+        Reported from a pair: a two-page book, the follower already showing
+        page two, and the leader still willing to advance onto it. The two
+        copies do not always paginate to the same number of screens -- a
+        hyphenation dictionary that is only on one, a font that fell back, a
+        margin that did not travel -- and the leader counted only its own,
+        so it turned onto a screen the other reader had no book left for.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local link = { slot = 1, send = function() end, isReady = function() return true end }
+        local real_links = Core.getReadyLinks
+        Core.getReadyLinks = function() return { link } end
+
+        -- This device's own copy is longer than the other one's.
+        T.assertEquals(Core:spreadPageCount(), Core.reader.getPageCount())
+        link.peer_pages = 2
+        T.assertEquals(Core:spreadPageCount(), 2,
+            "the spread is as long as the shorter of the two books")
+
+        -- Which is what the ceiling is worked out from.
+        Core.reader.gotoPage(1)
+        T.assertTrue(not Core:applyRelativeTurn(1),
+            "it turned onto a page the other device does not have")
+        T.assertEquals(Core.reader.getPage(), 1, "and it moved anyway")
+
+        -- A follower that has said nothing leaves this device's own count be.
+        link.peer_pages = nil
+        T.assertEquals(Core:spreadPageCount(), Core.reader.getPageCount())
+
+        Core.getReadyLinks = real_links
+        reset()
+    end)
+
+    T.it("says how long its own copy is when the leader quotes another number", function()
+        -- The leader cannot see the other book, and a pair that opened it
+        -- independently sends no DOCACK to carry the number.
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        local sent = {}
+        local link = {
+            slot = 1,
+            send = function(_, kind, fields) sent[#sent + 1] = { kind, fields } end,
+        }
+        Core.told_pages = nil
+
+        Core:reportOwnPageCount(link, 999)
+        T.assertEquals(#sent, 1, "it never told the leader")
+        T.assertEquals(sent[1][1], "PAGES")
+        T.assertEquals(sent[1][2].pages, Core.reader.getPageCount())
+
+        -- Once per number, not once per page turn.
+        Core:reportOwnPageCount(link, 999)
+        T.assertEquals(#sent, 1, "it said the same thing twice")
+
+        -- And nothing at all when the two already agree.
+        Core:reportOwnPageCount(link, Core.reader.getPageCount())
+        T.assertEquals(#sent, 1)
+
+        Core.told_pages = nil
+        reset()
+    end)
+end)
+
 T.describe("saying it before doing it", function()
     --[[
     Turning a page on an e-ink reader is a repaint, and a repaint is the
