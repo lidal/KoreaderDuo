@@ -445,6 +445,13 @@ local DEFAULTS = {
     coming back to it goes there rather than painting a page it is about to
     replace. Not shared: it describes this device's own screen.
     ]]
+    --[[
+    Whether Duo says what it is doing as it does it. On, because the first
+    hour with a pair is all questions -- did it connect, did that setting
+    cross, is the book on its way -- and off is where most people will end
+    up once they know the answers.
+    ]]
+    notices = true,
     resume_file = "",
     resume_page = 0,
     side = "",
@@ -540,8 +547,25 @@ function Core:trace(...)
     self:log(...)
 end
 
+--[[--
+Says something in passing.
+
+Every one of these is Duo narrating itself -- connected, matched the font
+size, the book has been sent -- and all of them are worth seeing while a
+pair is new and none of them once it is not. So they can be switched off,
+and switching them off silences the lot: a setting that leaves half of them
+on is a setting nobody can predict.
+
+Written to the log either way. Turning the talking off must not turn the
+record off, or the next thing that goes wrong is a thing with no trace.
+
+What this does not cover is alert, which is for the handful of things that
+have gone wrong and need an answer -- a refused pairing code, a book that
+could not be saved, a device that will not open. Those are not narration.
+--]]--
 function Core:notify(text)
     self:log("notify:", text)
+    if not self:get("notices") then return end
     if self.hooks and self.hooks.notify then self.hooks.notify(text) end
 end
 

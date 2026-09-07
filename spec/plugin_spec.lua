@@ -3332,6 +3332,66 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("saying what it is doing, or not", function()
+    T.it("silences every notice at once, and none of the alerts", function()
+        --[[
+        All of them or none: a setting that leaves half the messages on is a
+        setting nobody can predict. Alerts are not covered, because they are
+        not Duo narrating itself -- a refused pairing code and a book that
+        could not be saved are things that have gone wrong and need an
+        answer.
+        ]]
+        reset()
+        local said, warned = {}, {}
+        local real_notify, real_alert = Core.hooks.notify, Core.hooks.alert
+        Core.hooks.notify = function(text) said[#said + 1] = text end
+        Core.hooks.alert = function(text) warned[#warned + 1] = text end
+
+        T.assertTrue(Core:get("notices"), "a new pair should say what it is doing")
+        Core:notify("connected to the other device")
+        T.assertEquals(#said, 1)
+
+        Core:set("notices", false)
+        Core:notify("matched the font size")
+        Core:notify("the book has been sent")
+        T.assertEquals(#said, 1, "it went on talking after being asked not to")
+
+        Core:alert("the leader refused that pairing code")
+        T.assertEquals(#warned, 1, "it swallowed something that needed an answer")
+
+        Core.hooks.notify, Core.hooks.alert = real_notify, real_alert
+        Core.settings.notices = true
+        reset()
+    end)
+
+    T.it("keeps writing the log whichever way it is set", function()
+        -- Turning the talking off must not turn the record off, or the next
+        -- thing that goes wrong is a thing with no trace.
+        reset()
+        Core.settings.notices = false
+        local logged = {}
+        local real_log = Core.hooks.log
+        -- The log takes a list of pieces, not one line: "notify:" and the
+        -- text arrive separately.
+        Core.hooks.log = function(...)
+            local pieces = {}
+            for index = 1, select("#", ...) do
+                pieces[index] = tostring((select(index, ...)))
+            end
+            logged[#logged + 1] = table.concat(pieces, " ")
+        end
+        Core.settings.debug_log = true
+
+        Core:notify("the book has been sent")
+        T.assertMatch(table.concat(logged, "\n"), "the book has been sent")
+
+        Core.hooks.log = real_log
+        Core.settings.debug_log = false
+        Core.settings.notices = true
+        reset()
+    end)
+end)
+
 T.describe("reading the link briskly while the pair moves", function()
     T.it("watches closely for a couple of seconds after a turn, then stops", function()
         --[[

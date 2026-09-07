@@ -327,6 +327,7 @@ is the live connection: role, peer, and the pages on show.
 | **Follow the leader's book** | Open here when the leader opens there. |
 | **Send the book if the other device lacks it** | Hand the file over the link. On. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role. A wire always does. |
+| **Debug → Say what Duo is doing** | The messages at the top of the screen — connected, matched the font size, the book has been sent. On. |
 | **Write a log file**, **Log everything** | See *Reporting something that went wrong*. Both off. |
 | **Pairing code** | Shared secret. Empty means any device may connect. |
 | **Device name**, **Port** | 9970 by default; UDP 9971 for the search. |
@@ -445,7 +446,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-595 tests, with the interesting parts unmocked: two and three device
+597 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.

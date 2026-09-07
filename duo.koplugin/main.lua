@@ -4375,6 +4375,13 @@ On connecting, the leader's settings win. After that a change on either device m
                     separator = true,
                 },
             {
+                text = _("Say what Duo is doing"),
+                help_text = _("The messages that appear at the top of the screen as Duo works: connected to the other device, matched the font size, the book has been sent, and the rest.\n\nOn, because the first hour with a pair is all questions — did it connect, did that setting cross, is the book on its way — and off is where most people end up once they know the answers. Switching it off silences all of them: half of them would be a setting nobody can predict.\n\nThe log is written either way, so turning the talking off does not turn the record off. What this does not cover is the handful of things that have gone wrong and need an answer — a refused pairing code, a book that could not be saved — which are not Duo narrating itself."),
+                checked_func = function() return Core:get("notices") end,
+                callback = function() Core:set("notices", not Core:get("notices")) end,
+                separator = true,
+            },
+            {
                 text = _("Write a log file"),
                 help_text = _("Keep a record of what Duo does, in a file you can copy off the device over USB. Off by default. Worth switching on before reproducing something that went wrong, and worth switching off again afterwards.\n\nThe log holds book and folder names, device names and addresses. It does not hold your pairing code or anything you have read."),
                 checked_func = function() return Core:get("debug_log") end,
