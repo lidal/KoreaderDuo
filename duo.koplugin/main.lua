@@ -1851,8 +1851,8 @@ function Duo:bindDocument()
         getTypography = function()
             return Typography.snapshot(ui)
         end,
-        applyTypography = function(settings)
-            return Typography.apply(ui, settings, Event)
+        applyTypography = function(settings, refused)
+            return Typography.apply(ui, settings, Event, refused)
         end,
         getDocument = function()
             return {

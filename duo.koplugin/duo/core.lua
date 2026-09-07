@@ -807,6 +807,10 @@ function Core:attachReader(binding)
     self.typography_snapshot = nil
     self.typography_checked_at = nil
     self.typography_backup = nil
+    -- Including what the last book would not accept: a different book may
+    -- well take what that one refused.
+    self.typography_refused = nil
+    self.told_pages = nil
     self:changed()
     if not self:isActive() then return end
     if self:isLeader() then
@@ -1388,6 +1392,8 @@ function Core:stop(reason, goodbye)
     -- The other device's page count belongs to the book it was counting.
     for _, link in ipairs(self.links) do link.peer_pages = nil end
     self.told_pages = nil
+    -- And what a book would not accept belongs to that book.
+    self.typography_refused = nil
     -- A fresh start is a fair reason to try a book that would not come.
     self.library_failed = nil
     self:dropTransfers()
@@ -4656,8 +4662,18 @@ function Core:applyTypography(msg, from_link)
 
     local Typography = require("duo/typography")
     local before = self.reader.getTypography()
+    --[[
+    What this book has already refused, carried between messages.
+
+    A setting a handler clamps, refuses or quietly puts back looks exactly
+    like one that never arrived, so the next message tries it again -- and
+    each attempt is a relayout somebody is watching. On the screen it is a
+    book flicking between two states neither device asked for. Kept per
+    document: a different book may well accept what this one would not.
+    ]]
+    self.typography_refused = self.typography_refused or {}
     self.applying_typography = true
-    local applied = self.reader.applyTypography(settings)
+    local applied = self.reader.applyTypography(settings, self.typography_refused)
     self.applying_typography = false
     self.typography_snapshot = self.reader.getTypography()
 

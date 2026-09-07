@@ -97,6 +97,65 @@ T.describe("reading and applying on a device", function()
         T.assertEquals(margins[1], 25)
     end)
 
+    T.it("asks once for a setting the document will not take", function()
+        --[[
+        Reported from a pair: the follower switching block rendering on and
+        off a couple of times on every connect, on a book that already had
+        the right setting.
+
+        A handler that clamps a value, refuses it for this document or puts
+        its own back leaves the setting looking exactly as it did before the
+        message arrived. So the next message tries it again, and the one
+        after that, and each attempt is a relayout somebody is watching --
+        the book flicking between two states neither device asked for.
+        ]]
+        local stubborn = Instance.new{ name = "Kindle-S", page_count = 120 }
+        local configurable = stubborn.ui.document.configurable
+        local tries = 0
+        -- A setting this document will not keep, however politely it is set.
+        local real_handle = stubborn.ui.handleEvent
+        stubborn.ui.handleEvent = function(self_ui, event)
+            local result = real_handle(self_ui, event)
+            if event and event.args and configurable.font_size ~= 22 then
+                tries = tries + 1
+                configurable.font_size = 22
+            end
+            return result
+        end
+
+        local refused = {}
+        local first = Typography.apply(stubborn.ui,
+            { font_size = "31" }, stubborn.Event, refused)
+        T.assertEquals(#first, 0, "it claimed a change that did not happen")
+        T.assertTrue(first.would_not_take and first.would_not_take.font_size,
+            "it never noticed the setting had not taken")
+        T.assertEquals(tries, 1)
+
+        -- And again, and again, and it does not try any more.
+        Typography.apply(stubborn.ui, { font_size = "31" }, stubborn.Event, refused)
+        Typography.apply(stubborn.ui, { font_size = "31" }, stubborn.Event, refused)
+        T.assertEquals(tries, 1,
+            "it went on relaying the book out for a setting that will not take")
+
+        -- A book that has not refused it is still asked.
+        local fresh = {}
+        Typography.apply(stubborn.ui, { font_size = "31" }, stubborn.Event, fresh)
+        T.assertEquals(tries, 2, "a different book must be asked on its own terms")
+
+        stubborn.ui.handleEvent = real_handle
+    end)
+
+    T.it("stops asking for a typeface this device does not have", function()
+        -- Same reasoning: a font will not appear by being asked for again
+        -- every few seconds.
+        local device_b = Instance.new{ name = "Kindle-F", page_count = 80 }
+        local refused = {}
+        local applied = Typography.apply(device_b.ui,
+            { font_face = "Some Font Nobody Has" }, device_b.Event, refused)
+        T.assertEquals(applied.missing_font, "Some Font Nobody Has")
+        T.assertTrue(refused.font_face, "it will ask for it again for ever")
+    end)
+
     T.it("says so when the other device's typeface is missing here", function()
         local applied = Typography.apply(device.ui, { font_face = "Some Font Nobody Has" }, device.Event)
         T.assertEquals(applied.missing_font, "Some Font Nobody Has")

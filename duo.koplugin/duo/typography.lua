@@ -306,7 +306,17 @@ KOReader relayouts and saves exactly as if a person had changed it.
 @tparam table Event KOReader's Event class
 @treturn table the keys actually changed
 --]]--
-function Typography.apply(ui, settings, Event)
+--[[--
+Applies the other device's layout to this one.
+
+@tparam table ui a ReaderUI
+@tparam table settings key -> encoded value
+@tparam table Event KOReader's Event class
+@tparam[opt] table refused  keys this document has already refused, which
+    are skipped and added to. See "would not take", below.
+@treturn table the keys that really changed
+--]]--
+function Typography.apply(ui, settings, Event, refused)
     local applied = {}
     if not ui or not ui.document or not settings then return applied end
     if ui.document.info and ui.document.info.has_pages then return applied end
@@ -316,7 +326,7 @@ function Typography.apply(ui, settings, Event)
 
     for _, key in ipairs(Typography.KEYS) do
         local wanted = settings[key]
-        if wanted ~= nil and configurable then
+        if wanted ~= nil and configurable and not (refused and refused[key]) then
             local current = Typography.encodeValue(configurable[key])
             if not sameEncoded(current, wanted) then
                 local event = events[key]
@@ -329,12 +339,29 @@ function Typography.apply(ui, settings, Event)
                         ui:handleEvent(Event:new(event,
                             Typography.eventArgument(key, value)))
                     end)
-                    if ok then
-                        applied[#applied+1] = key
-                    else
+                    if not ok then
                         configurable[key] = Typography.decodeValue(current, configurable[key])
                         applied.errors = applied.errors or {}
                         applied.errors[key] = tostring(err)
+                    elseif sameEncoded(Typography.encodeValue(configurable[key]), wanted) then
+                        applied[#applied+1] = key
+                    else
+                        --[[
+                        Set, and did not take. A handler that clamps a value,
+                        refuses it for this document, or puts its own back
+                        leaves the setting looking exactly as it did before
+                        the message arrived -- so the next message tries it
+                        again, and the one after that, and each attempt is a
+                        relayout the reader can see. The book flickers
+                        between two states neither device asked for.
+
+                        Asked once per document, then. What will not take
+                        will not take, and saying so once beats saying it
+                        every few seconds for as long as the book is open.
+                        ]]
+                        applied.would_not_take = applied.would_not_take or {}
+                        applied.would_not_take[key] = true
+                        if refused then refused[key] = true end
                     end
                 end
             end
@@ -342,6 +369,7 @@ function Typography.apply(ui, settings, Event)
     end
 
     local face = settings[Typography.FONT_FACE]
+    if refused and refused[Typography.FONT_FACE] then face = nil end
     if face and ui.font and ui.font.font_face ~= face then
         local ok = pcall(function()
             ui:handleEvent(Event:new("SetFont", face))
@@ -352,6 +380,9 @@ function Typography.apply(ui, settings, Event)
             applied[#applied+1] = Typography.FONT_FACE
         else
             applied.missing_font = face
+            -- A typeface this device does not have will not appear by being
+            -- asked for again every few seconds.
+            if refused then refused[Typography.FONT_FACE] = true end
         end
     end
 
