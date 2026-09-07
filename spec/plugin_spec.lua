@@ -862,6 +862,78 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("counts gaps inside what it saw, not from the other device's first line", function()
+        --[[
+        Reported from a pair of readers: losses on almost every run at every
+        speed, and *fewer* the faster the line went. That is the wrong way
+        round for anything electrical -- a cable that cannot hold a speed
+        gets worse as the speed rises, never better -- so the losses were
+        the measurement's own.
+
+        Three of them. The two devices cannot start together, because each
+        begins when it hears the other; the flood then threw away everything
+        phase one had already read, which was the other end's first several
+        hundred lines, and counted the gap as loss. Its numbering started
+        from one rather than from the first line actually seen, so the head
+        start counted twice. And the calls the other end was still making,
+        because it had not heard this one yet, were counted as damage.
+        ]]
+        local function measureWith(script)
+            reset()
+            local step = 0
+            local real = package.loaded["duo/transport_serial"]
+            package.loaded["duo/transport_serial"] = {
+                isAvailable = function() return true end,
+                open = function()
+                    return {
+                        send = function() return true end,
+                        flush = function() return true end,
+                        close = function() end,
+                        -- Full, so the sending half of the flood stays out
+                        -- of the way of what this is measuring.
+                        pending = function() return 1e9 end,
+                        receive = function()
+                            step = step + 1
+                            return script[step] or ""
+                        end,
+                    }
+                end,
+            }
+            local was_test, was_flood = device.Duo.WIRE_TEST, device.Duo.WIRE_FLOOD
+            device.Duo.WIRE_FLOOD = 0
+            device.plugin:testTheWire()
+            device.Duo.WIRE_TEST, device.Duo.WIRE_FLOOD = was_test, was_flood
+            package.loaded["duo/transport_serial"] = real
+            local shown = table.concat(device:drainMessages(), "\n")
+            device:clearScreen()
+            reset()
+            return shown
+        end
+
+        local function flood(n)
+            return ("DUOFLOOD %d %s\n"):format(n, ("D"):rep(48))
+        end
+
+        -- A clean line: a tail from before this run opened the device, a
+        -- call the other end had not stopped making, then three lines in a
+        -- row that happen to start at 500 because it started first.
+        local clean = measureWith{
+            "half a line from before\nDUOWIRE abc123 KindleHogre\n",
+            flood(500) .. flood(501) .. flood(502),
+        }
+        T.assertMatch(clean, "The wire works")
+        T.assertMatch(clean, "3 lines · 0 lost · 0 mangled",
+            "it invented losses on a line that lost nothing")
+
+        -- And a real gap is still a real gap.
+        local holed = measureWith{
+            "DUOWIRE abc123 KindleHogre\n",
+            flood(500) .. flood(502) .. flood(503),
+        }
+        T.assertMatch(holed, "3 lines · 1 lost · 0 mangled",
+            "it stopped noticing a line that really did drop bytes")
+    end)
+
     T.it("blames the speed when bytes come back that make no sense", function()
         --[[
         The one fault this test can otherwise not see. Two ends at different

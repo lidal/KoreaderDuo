@@ -1079,12 +1079,20 @@ function Duo:testTheWire()
     --------------------------------------------------------------------
     local function measure(heard)
         local padding = ("D"):rep(48)
-        local sent, seq, flood_in = 0, 0, 0
-        local good, bad, highest = 0, 0, 0
+        local seq, flood_in = 0, 0
+        local good, bad, calls, lowest, highest = 0, 0, 0, nil, 0
         local started = os.time()
-        local carry = ""
-        buffer = ""
+        local carry, opened_mid_line = "", true
 
+        --[[
+        Everything already read counts, and this is the correction that
+        mattered most. The flood used to begin by throwing the buffer away
+        -- and the other device starts flooding when it hears *this* one,
+        which is before this one has heard it back, so what was thrown away
+        was its first several hundred lines. They then showed up as a gap in
+        the numbering, which is to say as bytes the wire had lost. It had
+        lost nothing; the test had.
+        ]]
         local function count(chunk)
             carry = carry .. chunk
             while true do
@@ -1095,8 +1103,23 @@ function Duo:testTheWire()
                 if #line > 0 then
                     local n = tonumber(line:match("^DUOFLOOD (%d+) "))
                     if n then
+                        opened_mid_line = false
                         good = good + 1
                         if n > highest then highest = n end
+                        if not lowest or n < lowest then lowest = n end
+                    elseif line:match("^DUOWIRE ") then
+                        --[[
+                        The other end still calling, because it has not heard
+                        this one yet. Expected during the changeover and not
+                        a fault of any kind -- counted as damage, it put a
+                        handful of "mangled" lines on every single run.
+                        ]]
+                        opened_mid_line = false
+                        calls = calls + 1
+                    elseif opened_mid_line then
+                        -- The tail of a line that was already in flight when
+                        -- this run opened the device. Evidence of nothing.
+                        opened_mid_line = false
                     else
                         bad = bad + 1
                     end
@@ -1104,18 +1127,34 @@ function Duo:testTheWire()
             end
         end
 
+        -- Whatever phase one had already taken off the line belongs to the
+        -- measurement, not to the bin.
+        count(buffer)
+        buffer = ""
+
         local function report()
             local seconds = math.max(1, os.time() - started)
             local rate = flood_in / seconds / 1024
             local lines = { T(_("The wire works. Heard %1."), heard), "" }
             lines[#lines+1] = T(_("%1 baud · %2 KB/s"),
                 tostring(baud), string.format("%.1f", rate))
-            local missing = math.max(0, highest - good)
+            --[[
+            Gaps inside what was actually seen, rather than everything the
+            other device ever sent. The two do not start together and cannot:
+            each begins when it hears the other. Counting from one made the
+            head start of whichever device spoke first look like loss, which
+            is why a faster line scored better -- the same fixed head start
+            is a smaller share of a larger number.
+            ]]
+            local missing = 0
+            if good > 0 and lowest then
+                missing = math.max(0, (highest - lowest + 1) - good)
+            end
             lines[#lines+1] = T(_("%1 lines · %2 lost · %3 mangled"),
                 tostring(good), tostring(missing), tostring(bad))
             if missing > 0 or bad > 0 then
                 lines[#lines+1] = ""
-                lines[#lines+1] = _("Bytes are going missing or arriving changed, which means this wiring will not carry this speed. Drop to the next one down, on both devices, and run this again.")
+                lines[#lines+1] = _("Bytes are going missing or arriving changed. If it gets worse as the speed goes up, the wiring will not carry this speed — drop to the next one down on both devices. If it gets better, it is not the wiring.")
             elseif good == 0 then
                 lines[#lines+1] = ""
                 lines[#lines+1] = _("Nothing came through to measure. The other device answered but stopped before the second half — run them closer together.")
@@ -1131,14 +1170,23 @@ function Duo:testTheWire()
                         seq = seq - 1
                         break
                     end
-                    sent = sent + 1
                 end
                 stream:flush()
-                local before = bytes_in
-                readMore()
-                flood_in = flood_in + (bytes_in - before)
-                count(buffer)
-                buffer = ""
+                --[[
+                Read until the line is dry, not once. One read takes at most
+                four kilobytes, and at the top speed on offer that is less
+                than arrives between two turns of this loop -- so the reader
+                fell behind the wire, the kernel's buffer overran, and the
+                test blamed the cable for a shortfall it had caused itself.
+                ]]
+                for _ = 1, 256 do
+                    local before = bytes_in
+                    if not readMore() then break end
+                    if bytes_in == before then break end
+                    flood_in = flood_in + (bytes_in - before)
+                    count(buffer)
+                    buffer = ""
+                end
             end)
             if not ok then
                 finish(T(_("The line stopped answering while measuring %1."), path))

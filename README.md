@@ -445,7 +445,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-569 tests, with the interesting parts unmocked: two and three device
+570 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -660,6 +660,15 @@ room, rather than the number on the setting — and the numbers say what was
 lost. A gap in them is bytes the line dropped; a line that will not parse is
 bytes it changed. Either means the speed is above what this wiring carries,
 which is the one thing no amount of reading about baud rates will tell you.
+
+The gaps are counted inside what was actually seen, not from the other
+device's first line. The two cannot start together — each begins when it
+hears the other — so whichever spoke first has a head start, and counting
+from one turns that head start into loss. Which is worth knowing as a
+principle: **if losses fall as the speed rises, they are not electrical.**
+A cable that will not hold a speed gets worse as the speed goes up, never
+better, so anything that improves with baud is being produced somewhere
+above the wire.
 
 A failed pairing tells you none of it.
 
