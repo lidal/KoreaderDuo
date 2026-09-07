@@ -599,6 +599,25 @@ function Duo:initReadsInittab()
     return true
 end
 
+--[[--
+Tells process 1 to read /etc/inittab again, where there is a process 1 that
+reads it.
+
+Both directions go through here, which is the point. The way out grew this
+rule and the way back had not, so undoing the change signalled a process
+that making it had carefully not signalled -- and undoing something must
+never be riskier than doing it was. On these readers process 1 is init.exe,
+which never reads that file, so the signal has no upside to weigh against
+whatever it decides to do with one.
+
+@treturn boolean  whether the signal was sent
+--]]--
+function Duo:tellInitToReread()
+    if not self:initReadsInittab() then return false end
+    os.execute("kill -HUP 1 2>/dev/null")
+    return true
+end
+
 --- True while Duo has a console job turned off.
 function Duo:consoleJobsAreOff()
     local out = ask("ls /etc/init/*.duo-off /etc/upstart/*.duo-off 2>/dev/null", true)
@@ -691,7 +710,7 @@ function Duo:setLoginPrompt(wanted)
         if original then
             spill("/etc/inittab", original)
             os.execute(("rm -f %s 2>/dev/null"):format(backup))
-            os.execute("kill -HUP 1 2>/dev/null")
+            Duo:tellInitToReread()
         end
         os.execute("mount -o remount,ro / 2>/dev/null")
         UIManager:show(InfoMessage:new{
@@ -755,7 +774,7 @@ function Duo:setLoginPrompt(wanted)
                             tostring(moved), tostring(err)) })
                     return
                 end
-                os.execute("kill -HUP 1 2>/dev/null")
+                Duo:tellInitToReread()
             end
             os.execute("mount -o remount,ro / 2>/dev/null")
             local pid = Duo:whatHoldsTheLine(path)

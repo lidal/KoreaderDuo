@@ -687,6 +687,36 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("signals process 1 in neither direction where nothing reads inittab", function()
+        --[[
+        The way out grew this rule and the way back had not, so undoing the
+        change signalled a process that making it had carefully not
+        signalled. Undoing something must never be riskier than doing it
+        was.
+        ]]
+        reset()
+        local ran = {}
+        local real_execute = os.execute
+        local real_reads = rawget(device.Duo, "initReadsInittab")
+        -- Restored whatever happens: os.execute is the whole machine's, and
+        -- a test that throws while holding it takes every later test with it.
+        local ok, failure = pcall(function()
+            os.execute = function(command) ran[#ran + 1] = tostring(command) return true end
+
+            device.Duo.initReadsInittab = function() return false end
+            T.assertTrue(not device.Duo:tellInitToReread(), "it signalled anyway")
+            T.assertEquals(#ran, 0, "it ran something on a reader that reads no inittab")
+
+            device.Duo.initReadsInittab = function() return true end
+            T.assertTrue(device.Duo:tellInitToReread(), "it never signalled at all")
+            T.assertMatch(table.concat(ran, "\n"), "kill %-HUP 1")
+        end)
+        os.execute = real_execute
+        device.Duo.initReadsInittab = real_reads
+        if not ok then error(failure, 0) end
+        reset()
+    end)
+
     T.it("leaves /etc/inittab alone where nothing reads it", function()
         -- Process 1 on these readers is the manufacturer's upstart, which
         -- never reads that file. Editing it achieves nothing, and the
