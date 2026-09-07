@@ -139,16 +139,13 @@ function Duo:init()
         -- here yet, and the side it picked is the answer.
         if role == nil or role == "" then role = Core:getSide() end
         --[[
-        A wire starts itself. This setting exists because bringing Duo up on
-        Wi-Fi means bringing the radio up and holding it awake, which is a
-        real cost to somebody using one reader today; opening a character
-        device costs nothing, and there is nothing that might not be there to
-        connect to -- the line is either wired or it is not. A deliberate
-        stop still counts: that leaves ROLE_OFF behind, and this does not
-        argue with it.
+        The setting, and only the setting. It used to be overridden on a
+        wire, on the reasoning that opening a character device costs nothing
+        and so there is nothing to weigh -- which is true, and still left a
+        checkbox saying "off" beside a plugin that started anyway. Picking
+        the wire turns it on instead, where it can be seen and turned off.
         ]]
-        local wanted = Core:get("autostart") or Core:usesSerial()
-        if wanted and role and role ~= Core.ROLE_OFF then
+        if Core:get("autostart") and role and role ~= Core.ROLE_OFF then
             -- Behind a pcall, because this is the one call on the reader's
             -- startup path that touches hardware nobody has checked yet.
             -- A wire that cannot be opened is a thing to report, never a
@@ -2273,7 +2270,8 @@ end
 
 function Duo:onDuoToggle()
     if Core:isActive() then
-        Core:stop("stopped")
+        -- A gesture is a person asking, so it stays stopped.
+        Core:stop("stopped", nil, true)
         Core:notify(_("Duo: stopped"))
     else
         self:showConnectDialog()
@@ -2879,6 +2877,14 @@ function Duo:switchToWire()
         return
     end
     local role = self:standingRole()
+    --[[
+    And a wire is worth starting by itself, so picking one says so. Not
+    silently: the setting is two entries down the same menu, checked, and
+    can be turned off there. Bringing Duo up on Wi-Fi costs a radio held
+    awake, which is why that setting is off by default; a wire costs an
+    open file.
+    ]]
+    Core:set("autostart", true)
     self:leaveDirectLink(function()
         self:notOnADirectLink()
         Core:stop("switching to the wire")
@@ -3892,7 +3898,8 @@ function Duo:getMenuTable()
             callback = function(touchmenu_instance)
                 self.menu_container = touchmenu_instance
                 if Core:isActive() then
-                    Core:stop("stopped by user")
+                    -- The one stop that means "and stay stopped".
+                    Core:stop("stopped by user", nil, true)
                     Core:notify(_("Duo: stopped"))
                 else
                     self:showConnectDialog()
@@ -4242,12 +4249,16 @@ On connecting, the leader's settings win. After that a change on either device m
         },
         {
             text = _("Start Duo when KOReader starts"),
-            help_text = _("Off by default, because starting Duo on Wi-Fi means bringing the radio up and holding it awake — a real cost on a day you are reading with one device.\n\nA wire costs none of that and always starts itself, so this says nothing there. Stopping Duo by hand is still respected either way: it stays stopped until you start it again."),
-            -- Always on over a wire, and the box should not claim otherwise.
-            checked_func = function()
-                return Core:get("autostart") or Core:usesSerial()
-            end,
-            enabled_func = function() return not Core:usesSerial() end,
+            help_text = _("Off by default, because starting Duo on Wi-Fi means bringing the radio up and holding it awake — a real cost on a day you are reading with one device. A wire costs none of that, and is worth leaving on.\n\nStopping Duo by hand is respected either way: it stays stopped until you start it again. Duo's own restarts — changing the link, changing the speed, testing the wire — are not stops and do not count."),
+            --[[
+            Not greyed out any more. It was, on the claim that a wire starts
+            itself whatever this says -- and it did not, because every one
+            of Duo's own restarts had been writing "deliberately stopped"
+            over the role it was about to start again in. So the control was
+            disabled *and* wrong, which is the worst of both: nothing to
+            turn on, and nothing turning on.
+            ]]
+            checked_func = function() return Core:get("autostart") end,
             callback = function() Core:set("autostart", not Core:get("autostart")) end,
             separator = true,
         },

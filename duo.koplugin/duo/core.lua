@@ -825,7 +825,17 @@ function Core:attachReader(binding)
         self:pushTypography("document opened")
         self:broadcastState()
     else
-        self:resumeWhereItStood()
+        --[[
+        Wanted on the next turn of the loop, not here.
+
+        This runs while KOReader is still standing the document up -- it is
+        what "the reader is ready" means -- and moving a page from inside
+        that is reaching into a half-built view. A reader that had just
+        opened a book went down and took the device with it, on the line
+        after this one in the log. Fifty milliseconds later the view is
+        finished and a page turn is only a page turn.
+        ]]
+        self.resume_wanted = true
         local link = self:getReadyLinks()[1]
         if link then
             -- We may have been reopened on a different book; ask where we
@@ -892,6 +902,7 @@ function Core:detachReader(binding)
         self:save()
     end
     self.resume_file, self.resume_page = nil, nil
+    self.resume_wanted = nil
     self.reader = nil
     -- Page numbers mean nothing once the book they counted is gone.
     self.assigned_page = nil
@@ -1398,7 +1409,15 @@ Stops Duo and closes everything it was holding.
                              that is, since each device is the "other" one
                              from where the other is standing
 --]]--
-function Core:stop(reason, goodbye)
+--[[--
+Stops Duo.
+
+@tparam[opt] string reason  for the log and the notice
+@tparam[opt] string goodbye what to tell the peer, when that differs
+@tparam[opt] boolean deliberate  true only when a person asked for this.
+    See the note on autostart_role inside.
+--]]--
+function Core:stop(reason, goodbye, deliberate)
     -- Says these closures were asked for, so they are announced at once
     -- rather than held back in case the pair recovers: nothing is going to.
     self.stopping = true
@@ -1453,7 +1472,23 @@ function Core:stop(reason, goodbye)
     self:setAwake(false)
     if self.role ~= Core.ROLE_OFF then
         self.role = Core.ROLE_OFF
-        self.settings.autostart_role = Core.ROLE_OFF
+        --[[
+        Only a stop somebody asked for is remembered as one.
+
+        Duo stops itself constantly and always has: to change transport, to
+        change speed, to test the wire, on the way into a restart. Every one
+        of those wrote "deliberately off" over the role it was about to
+        start again in, so the next time KOReader started there was nothing
+        to start -- and the pair had to be connected by hand, from a menu
+        whose autostart setting said it should not have to be. Running the
+        wire test was enough to do it.
+
+        A restart says so by leaving the role in place; only stop() called
+        for its own sake clears it.
+        ]]
+        if deliberate then
+            self.settings.autostart_role = Core.ROLE_OFF
+        end
         self:save()
         self:changed()
     end
@@ -2089,6 +2124,18 @@ end
 function Core:pollOnce()
     -- First, because everything below it reads a clock this may have moved.
     self:noticeFrozenLoop(Util.now())
+    --[[
+    Anything that wants to move a page waits for here, where the reader is
+    finished being built. See attachReader.
+    ]]
+    if self.resume_wanted then
+        self.resume_wanted = nil
+        pcall(function() self:resumeWhereItStood() end)
+    end
+    if self.resume_listing_wanted then
+        self.resume_listing_wanted = nil
+        pcall(function() self:resumeListingWhereItStood() end)
+    end
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
     self:checkLink()   -- and this is how the network under it is
@@ -3279,7 +3326,9 @@ function Core:attachBrowser(binding)
         The leader answers SYNC with the listing among everything else, so
         one line here closes the gap for good.
         ]]
-        self:resumeListingWhereItStood()
+        -- On the next turn, for the reason above: the file manager is still
+        -- being built when this runs.
+        self.resume_listing_wanted = true
         local link = self:getReadyLinks()[1]
         if link then link:send(Protocol.SYNC, {}) end
         --[[
@@ -3314,6 +3363,7 @@ function Core:detachBrowser(binding)
     if binding and self.browser and self.browser ~= binding then return end
     self.browser = nil
     self.browser_state = nil
+    self.resume_listing_wanted = nil
     self:changed()
 end
 

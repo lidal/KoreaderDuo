@@ -3322,8 +3322,15 @@ T.describe("coming back to a book", function()
         T.assertEquals(Core:get("resume_file"), file, "it forgot where it stood")
         T.assertEquals(Core:get("resume_page"), 2)
 
-        -- And on the way back in it goes there, before asking anybody.
+        -- And on the way back in it goes there, before asking anybody --
+        -- on the next turn of the loop, not from inside the attach, which
+        -- runs while KOReader is still standing the document up.
         Core:attachReader(device.plugin.reader_binding)
+        local before = Core.reader.getPage()
+        T.assertTrue(Core.resume_wanted, "it never asked to go back at all")
+        T.assertNotEquals(before, 2,
+            "it moved a page from inside a half-built view")
+        Core:pollOnce()
         T.assertEquals(Core.reader.getPage(), 2,
             "it sat on the page it was about to be told to leave")
 
