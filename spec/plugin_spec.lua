@@ -3300,6 +3300,91 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("saying it before doing it", function()
+    --[[
+    Turning a page on an e-ink reader is a repaint, and a repaint is the
+    better part of a second on these devices. A leader that moved and then
+    said where it had gone therefore put its own screen a full refresh ahead
+    of the other's, on every single turn -- and none of that delay was the
+    link. It was one device waiting for the other to finish drawing before
+    it was even told there was anything to draw.
+    ]]
+    local function watch(work)
+        local order = {}
+        local real_links = Core.getReadyLinks
+        Core.getReadyLinks = function()
+            return {{
+                slot = 1,
+                send = function(_, kind) order[#order + 1] = "told:" .. kind end,
+                isReady = function() return true end,
+            }}
+        end
+        local ok, failure = pcall(work, order)
+        Core.getReadyLinks = real_links
+        if not ok then error(failure, 0) end
+        return order
+    end
+
+    T.it("tells the other device where it is going before it moves", function()
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local order = watch(function(recorded)
+            local real_turn = Core.reader.turnRelative
+            Core.reader.turnRelative = function(diff)
+                recorded[#recorded + 1] = "moved"
+                return real_turn(diff)
+            end
+            Core:applyRelativeTurn(1)
+            Core.reader.turnRelative = real_turn
+        end)
+        T.assertEquals(order[1], "told:STATE",
+            "it repainted its own screen before saying a word")
+        T.assertEquals(order[2], "moved")
+        reset()
+    end)
+
+    T.it("does not then say it a second time when the page lands", function()
+        -- Harmless, but it is a second message per turn on a link whose
+        -- whole point is to be quick.
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local order = watch(function()
+            -- The reader reports the change itself on the way through, which
+            -- is the report that used to be the second announcement.
+            Core:applyRelativeTurn(1)
+        end)
+        local told = 0
+        for index = 1, #order do
+            if order[index] == "told:STATE" then told = told + 1 end
+        end
+        T.assertEquals(told, 1, "it announced the same page twice")
+        reset()
+    end)
+
+    T.it("does the same for the book list", function()
+        reset()
+        Core.role = Core.ROLE_LEADER
+        device:openFileManager{ path = "/books", perpage = 4,
+            items = { "a.epub", "b.epub", "c.epub", "d.epub",
+                      "e.epub", "f.epub", "g.epub", "h.epub" } }
+        Core.role = Core.ROLE_LEADER
+        Core.settings.share_browser = true
+        local order = watch(function(recorded)
+            local real_go = Core.browser.goToPage
+            Core.browser.goToPage = function(page)
+                recorded[#recorded + 1] = "moved"
+                return real_go(page)
+            end
+            Core:applyBrowserTurn(1)
+            Core.browser.goToPage = real_go
+        end)
+        T.assertEquals(order[1], "told:BROWSE",
+            "it redrew its own listing before saying a word")
+        T.assertEquals(order[2], "moved")
+        reset()
+    end)
+end)
+
 T.describe("which page this device holds", function()
     T.it("acts on a side changed while the two are connected", function()
         -- Somebody who has just said this is the right-hand page and watches

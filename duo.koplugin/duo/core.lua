@@ -2441,9 +2441,16 @@ end
 -- Talking about pages
 --------------------------------------------------------------------------
 
-function Core:sendStateTo(link)
+--[[--
+Tells one device where it stands.
+
+@tparam table link
+@tparam[opt] number as_if  the page this device is *about to* be on, for
+    telling the pair before moving rather than after. See applyRelativeTurn.
+--]]--
+function Core:sendStateTo(link, as_if)
     if not self.reader then return end
-    local leader_page = self.reader.getPage()
+    local leader_page = as_if or self.reader.getPage()
     if not leader_page then return end
     local options = self:getSpreadOptions()
     local page, clamped = Spread.pageForSlot(leader_page, link.slot, options)
@@ -2465,11 +2472,11 @@ function Core:sendStateTo(link)
     })
 end
 
-function Core:broadcastState()
+function Core:broadcastState(as_if)
     if not self:isLeader() then return end
     self:noteActivity()
     for _, link in ipairs(self:getReadyLinks()) do
-        self:sendStateTo(link)
+        self:sendStateTo(link, as_if)
     end
     self:changed()
 end
@@ -2789,16 +2796,44 @@ function Core:applyRelativeTurn(diff)
             self:log("not turning: the spread already reaches the end of the book")
             return false
         end
-        local wanted = page + diff * step
-        if wanted > ceiling or wanted < floor then
-            -- Part of a step still fits, so the last turn of a book lands
-            -- on the last whole spread rather than being refused.
-            self.reader.turnRelative(Util.clamp(wanted, floor, ceiling) - page)
-            return true
-        end
+        local wanted = Util.clamp(page + diff * step, floor, ceiling)
+        self:turnAndTell(page, wanted)
+        return true
     end
-    self.reader.turnRelative(diff * step)
+    self:turnAndTell(page, (page or 0) + diff * step)
     return true
+end
+
+--[[--
+Moves this device, having told the other one first.
+
+The order is the whole of it. Turning a page on an e-ink reader is a
+repaint, and a repaint is the better part of a second on these devices --
+so a leader that moved and then said where it had gone put its own screen a
+full refresh ahead of the other's, every single turn. Nothing in that delay
+was the link: it was one device waiting for the other to finish drawing
+before it was even told there was something to draw.
+
+Said first, both screens start their refresh at the same moment and the
+pair reads as one thing. The message costs about eighty bytes and is on the
+wire before this function returns.
+
+@tparam ?number from  the page this device is on
+@tparam number to     the page it is about to be on
+--]]--
+function Core:turnAndTell(from, to)
+    if not self.reader then return end
+    if to ~= from then
+        self:broadcastState(to)
+        --[[
+        And the announcement that follows the move is not repeated. The
+        reader will report the page change in a moment and that would
+        broadcast the same numbers again -- harmless, but it is a second
+        message per turn on a link where the whole point is to be quick.
+        ]]
+        self.told_state_for = to
+    end
+    self.reader.turnRelative((to or 0) - (from or 0))
 end
 
 --[[--
@@ -2857,6 +2892,13 @@ function Core:onPageChanged(page)
     if not self:isActive() then return end
     if self.applying_remote then return end
     if self:isLeader() then
+        if self.told_state_for and self.told_state_for == page then
+            -- Already announced, before this device moved. See turnAndTell.
+            self.told_state_for = nil
+            self:changed()
+            return
+        end
+        self.told_state_for = nil
         self:broadcastState()
     else
         self:reportJump(page)
@@ -3186,11 +3228,14 @@ function Core:browserState()
 end
 
 --- Sends one device the page of the listing it should be showing.
-function Core:sendBrowserTo(link)
+-- @tparam[opt] number as_if  the listing page this device is about to move
+--     to, for telling the pair before moving rather than after.
+function Core:sendBrowserTo(link, as_if)
     if not self:isLeader() or not self.browser then return end
     if not self:get("share_browser") then return end
     local state = self:browserState()
     if not state then return end
+    if as_if then state.page = as_if end
     self.browser_state = state
 
     local page = Spread.pageForSlot(state.page, link.slot, {
@@ -3223,10 +3268,10 @@ function Core:sendBrowserTo(link)
 end
 
 --- Sends every device the page of the listing it should be showing.
-function Core:broadcastBrowser()
+function Core:broadcastBrowser(as_if)
     if self:isLeader() then self:noteActivity() end
     for _, link in ipairs(self:getReadyLinks()) do
-        self:sendBrowserTo(link)
+        self:sendBrowserTo(link, as_if)
     end
     self:changed()
 end
@@ -3604,8 +3649,11 @@ function Core:applyBrowserTurn(diff)
     -- Clamped rather than wrapped: cycling round to the first page would
     -- put the devices on unrelated parts of the list.
     local target = Util.clamp(state.page + diff * step, 1, state.pages)
+    -- Told before moving, for the same reason a page turn is: redrawing a
+    -- listing on e-ink is a repaint, and the other device should be starting
+    -- its own at the same moment rather than after this one has finished.
+    if target ~= state.page then self:broadcastBrowser(target) end
     self.browser.goToPage(target)
-    self:broadcastBrowser()
 end
 
 --- Notices the leader moving through the listing by any other route.
@@ -4521,6 +4569,20 @@ end
 -- but the delay changes: the check itself is the same check.
 local TYPOGRAPHY_POLL = tonumber(os.getenv("DUO_TYPOGRAPHY_POLL") or "") or 1.5
 
+--[[--
+And a much shorter one for the frontlight, which shares none of the reasons
+for the number above.
+
+Typography is throttled because reading it means asking the document engine
+for a dozen settings, and doing that twenty times a second on a reader is a
+waste of a battery. The frontlight is three numbers off the power module,
+which costs nothing worth measuring -- it was only ever on the same clock
+because it was written next to it. A second and a half of that clock is a
+second and a half of one reader being brighter than the other, on the one
+setting where the two sitting side by side makes the difference obvious.
+--]]--
+local FRONTLIGHT_POLL = tonumber(os.getenv("DUO_FRONTLIGHT_POLL") or "") or 0.15
+
 function Core:typographyEnabled()
     return self:get("match_typography") and self.reader ~= nil
         and self.reader.getTypography ~= nil
@@ -4743,7 +4805,7 @@ function Core:checkFrontlight()
     if not self:frontlightEnabled() or not self:isConnected() then return end
     if self.applying_frontlight then return end
     local now = Util.now()
-    if self.frontlight_checked_at and now - self.frontlight_checked_at < TYPOGRAPHY_POLL then
+    if self.frontlight_checked_at and now - self.frontlight_checked_at < FRONTLIGHT_POLL then
         return
     end
     self.frontlight_checked_at = now
