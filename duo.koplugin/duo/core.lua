@@ -3279,6 +3279,7 @@ function Core:attachBrowser(binding)
         The leader answers SYNC with the listing among everything else, so
         one line here closes the gap for good.
         ]]
+        self:resumeListingWhereItStood()
         local link = self:getReadyLinks()[1]
         if link then link:send(Protocol.SYNC, {}) end
         --[[
@@ -3328,6 +3329,36 @@ devices are showing each other. What may be copied is a different question
 with a different answer -- see `sharedFolder` -- and the two were tangled
 together for far too long.
 --]]--
+--[[--
+Puts a follower back on the screenful of the listing it was showing, before
+it asks anybody.
+
+The same wait as coming back into a book, on the other screen. Leaving a
+book puts both devices in the file manager at once, and the follower cannot
+be told which screenful is its until the leader has finished getting there
+too -- so it paints the first one and holds it long enough to be read.
+
+Where it was is where it is about to be told, so it goes there now. Only
+for the same listing: a guess that is wrong would be a visible jump, which
+is the thing being got rid of.
+--]]--
+function Core:resumeListingWhereItStood()
+    if self:isLeader() or not self.browser then return end
+    local last = self.resume_listing
+    if not last or not last.page or last.page <= 1 then return end
+    local state = self:browserState()
+    if not state then return end
+    if (state.path or "") ~= (last.path or "") then return end
+    if (state.view or "") ~= (last.view or "") then return end
+    if state.pages and last.page > state.pages then return end
+    if state.page == last.page then return end
+    self:log("back in the listing - going to screen", last.page,
+        "rather than waiting to be told")
+    self.applying_remote = true
+    pcall(self.browser.goToPage, last.page)
+    self.applying_remote = false
+end
+
 function Core:browserState()
     if not self.browser then return nil end
     return self.browser.getState()
@@ -3416,8 +3447,19 @@ function Core:applyBrowser(msg)
         self.browser.setPerPage(Protocol.num(msg, "perpage"),
             Protocol.num(msg, "cols"), Protocol.num(msg, "rows"))
     end
-    self.browser.goToPage(Protocol.num(msg, "page", 1))
+    local page = Protocol.num(msg, "page", 1)
+    self.browser.goToPage(page)
     self.applying_remote = false
+    --[[
+    Remembered, so that coming back to the listing does not begin by
+    painting the first screen. See resumeListingWhereItStood.
+    ]]
+    local now_showing = self:browserState()
+    self.resume_listing = {
+        path = (now_showing and now_showing.path) or msg.path or "",
+        view = (now_showing and now_showing.view) or msg.view or "",
+        page = page,
+    }
 
     self:checkListing(msg)
     self:changed()
@@ -3752,9 +3794,30 @@ function Core:applyBrowserTurn(diff)
     local state = self:browserState()
     if not state then return end
     local step = Spread.stepFor(self:get("mode"), self:followerCount())
+    --[[
+    The end of the listing is where the *far* end of the spread reaches it,
+    not where this device does. A book has always known that; the listing
+    did not, and clamped to its own last page instead -- so on a list two
+    screens long, with the other device already showing the second, this one
+    turned onto the second as well and the pair sat looking at the same
+    screenful with nothing beyond it. The same fault, on the other screen.
+    ]]
+    local options = {
+        mode = self:get("mode"),
+        reverse = self:get("reverse"),
+        page_count = state.pages,
+        pages_per_view = 1,
+    }
+    local followers = self:followerCount()
+    local ceiling = math.max(Spread.leaderCeiling(state.pages, followers, options) or 1, 1)
+    local floor = math.max(Spread.leaderFloor(state.pages, followers, options) or 1, 1)
+    if (diff > 0 and state.page >= ceiling) or (diff < 0 and state.page <= floor) then
+        self:log("not turning the listing: the spread already reaches the end of it")
+        return
+    end
     -- Clamped rather than wrapped: cycling round to the first page would
     -- put the devices on unrelated parts of the list.
-    local target = Util.clamp(state.page + diff * step, 1, state.pages)
+    local target = Util.clamp(state.page + diff * step, floor, ceiling)
     -- Told before moving, for the same reason a page turn is: redrawing a
     -- listing on e-ink is a repaint, and the other device should be starting
     -- its own at the same moment rather than after this one has finished.

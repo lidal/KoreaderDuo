@@ -733,17 +733,29 @@ T.describe("one book list across two screens", function()
         controller:assertEventually(follower, "UI.file_chooser.page", 4)
     end)
 
-    T.it("stops at the end of the list instead of wrapping round", function()
-        -- KOReader's own paging cycles back to the first page at the end,
-        -- which would put the two devices on unrelated parts of the list.
+    T.it("stops where the far half of the spread reaches the end", function()
+        --[[
+        Two things at once. KOReader's own paging cycles back to the first
+        page at the end, which would put the two devices on unrelated parts
+        of the list; and the end of the list is where the *far* half of the
+        spread reaches it, not where this device does.
+
+        This test used to assert the second one wrong -- both devices on the
+        last screenful, which is the pair showing one thing twice with
+        nothing beyond it. A book has always stopped a screenful earlier
+        than that. The listing does now too.
+        ]]
         browseTogether{ count = 20, perpage = 6 } -- four screenfuls
         callLeader("UI.file_chooser:onNextPage()")
         controller:assertEventually(leader, "UI.file_chooser.page", 3)
+        controller:assertEventually(follower, "UI.file_chooser.page", 4)
+
         callLeader("UI.file_chooser:onNextPage()")
         socket.sleep(0.6)
-        T.assertEquals(controller:number(leader, "UI.file_chooser.page"), 4,
-            "the leader should stop at the last screenful")
-        T.assertEquals(controller:number(follower, "UI.file_chooser.page"), 4)
+        T.assertEquals(controller:number(leader, "UI.file_chooser.page"), 3,
+            "the leader turned onto the screenful the follower was showing")
+        T.assertEquals(controller:number(follower, "UI.file_chooser.page"), 4,
+            "and the follower has nothing after it to move to")
     end)
 
     T.it("makes both devices fit the same number of books on a screen", function()
@@ -809,15 +821,17 @@ T.describe("one book list across two screens", function()
             "a swipe on the grid of the second device did not reach the first")
         controller:assertEventually(follower, "UI.file_chooser.page", 2)
 
-        -- And the end of the list is a wall, not a loop.
+        -- And the end of the list is a wall, not a loop -- one screenful
+        -- earlier than the last, because the follower holds that one.
         callLeader("UI.file_chooser:onNextPage()")
+        controller:assertEventually(leader, "UI.file_chooser.page", 3)
         controller:assertEventually(follower, "UI.file_chooser.page", 4)
         callLeader("UI.file_chooser:onNextPage()")
         socket.sleep(0.8)
-        T.assertEquals(controller:number(leader, "UI.file_chooser.page"), 5,
-            "the leader should stop at the last screenful rather than wrap")
+        T.assertEquals(controller:number(leader, "UI.file_chooser.page"), 4,
+            "the leader should stop where the follower reaches the end")
         T.assertEquals(controller:number(follower, "UI.file_chooser.page"), 5,
-            "with nothing after it, the follower shows the last screenful too")
+            "the follower holds the last screenful, and the leader the one before")
     end)
 
     T.it("says so when one device is a grid and the other a list", function()

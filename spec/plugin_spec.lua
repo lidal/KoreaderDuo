@@ -3341,6 +3341,47 @@ T.describe("coming back to a book", function()
         reset()
     end)
 
+    T.it("goes back to the screenful of the listing it was showing", function()
+        --[[
+        The same wait as coming back into a book, on the other screen.
+        Leaving a book puts both devices in the file manager at once, and
+        the follower cannot be told which screenful is its until the leader
+        has finished getting there too -- so it paints the first one and
+        holds it long enough to be read.
+        ]]
+        reset()
+        local many = {}
+        for index = 1, 40 do many[index] = ("book%02d.epub"):format(index) end
+        device:openFileManager{ path = "/books", perpage = 4, items = many }
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.share_browser = true
+        local here = Core:browserState()
+
+        -- It was on the fourth screenful when it left.
+        Core.resume_listing = { path = here.path, view = here.view, page = 4 }
+        Core:resumeListingWhereItStood()
+        T.assertEquals(Core:browserState().page, 4,
+            "it sat on the screenful it was about to be told to leave")
+
+        -- A different listing is not guessed at: a wrong jump is the very
+        -- thing being got rid of.
+        Core.browser.goToPage(1)
+        Core.resume_listing = { path = "/somewhere-else", view = "folder:/somewhere-else", page = 4 }
+        Core:resumeListingWhereItStood()
+        T.assertEquals(Core:browserState().page, 1, "it jumped on a hunch")
+
+        -- Nor is a screenful the listing no longer has.
+        Core.resume_listing = { path = here.path, view = here.view, page = 99 }
+        Core:resumeListingWhereItStood()
+        T.assertEquals(Core:browserState().page, 1)
+
+        Core.resume_listing = nil
+        Core.role = Core.ROLE_OFF
+        -- Put the book back: every test after this one wants a reader.
+        device:openDocument{ page_count = 300 }
+        reset()
+    end)
+
     T.it("writes it down when the book closes, not on every page turn", function()
         -- A settings file written per page turn is a disk write per turn on
         -- a device where that is felt.
@@ -3503,9 +3544,11 @@ T.describe("saying it before doing it", function()
     T.it("does the same for the book list", function()
         reset()
         Core.role = Core.ROLE_LEADER
-        device:openFileManager{ path = "/books", perpage = 4,
-            items = { "a.epub", "b.epub", "c.epub", "d.epub",
-                      "e.epub", "f.epub", "g.epub", "h.epub" } }
+        -- Long enough that a turn is allowed: the leader stops one
+        -- screenful before the end, since the follower holds that one.
+        local many = {}
+        for index = 1, 40 do many[index] = ("book%02d.epub"):format(index) end
+        device:openFileManager{ path = "/books", perpage = 4, items = many }
         Core.role = Core.ROLE_LEADER
         Core.settings.share_browser = true
         local order = watch(function(recorded)
