@@ -336,6 +336,20 @@ function Env.install(options)
     lfs does not: code written against the simpler shape walked no folders
     at all on a real device, and the tests said it was fine.
     ]]
+    --[[
+    Reading a symlink without following it, which is how Duo finds what
+    holds a serial line: /proc/<pid>/fd/<n> points at the device, and
+    opening it to find that out would open the device. There is no readlink
+    in plain Lua, so the stub answers from a table the tests set up.
+    ]]
+    lfs_stub.links = {}
+    function lfs_stub.symlinkattributes(path, what)
+        local target = lfs_stub.links[path]
+        if not target then return nil end
+        if what == "target" then return target end
+        return { target = target, mode = "link" }
+    end
+
     function lfs_stub.dir(path)
         if lfs_stub.attributes(path, "mode") ~= "directory" then
             error(("cannot open %s"):format(tostring(path)))

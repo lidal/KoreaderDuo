@@ -690,6 +690,43 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("labels the login prompt by whether a job is moved, not by a leftover file", function()
+        --[[
+        Reported from a reader: a login prompt was holding the line, and the
+        only thing the menu offered was to put it back. The label counted a
+        leftover /etc/inittab backup as "the prompt is off", which is not
+        what that file means -- it means Duo once edited inittab. So the
+        entry offered "put back", put nothing back, and went on offering it,
+        while the one action that would have helped was unreachable.
+        ]]
+        reset()
+        local labels = {}
+        local function walk(items)
+            for index = 1, #items do
+                local item = items[index]
+                local text = item.text_func and item.text_func() or item.text
+                if text then labels[#labels + 1] = tostring(text) end
+                if item.sub_item_table then walk(item.sub_item_table) end
+            end
+        end
+        local real = device.Duo.consoleJobsAreOff
+
+        device.Duo.consoleJobsAreOff = function() return false end
+        labels = {}
+        walk(device.plugin:getMenuTable())
+        T.assertMatch(table.concat(labels, "\n"), "Turn off the login prompt",
+            "with nothing moved aside it must offer to move something aside")
+
+        device.Duo.consoleJobsAreOff = function() return true end
+        labels = {}
+        walk(device.plugin:getMenuTable())
+        T.assertMatch(table.concat(labels, "\n"), "Put the login prompt back",
+            "with a job moved aside it must offer to put it back")
+
+        device.Duo.consoleJobsAreOff = real
+        reset()
+    end)
+
     T.it("signals process 1 in neither direction where nothing reads inittab", function()
         --[[
         The way out grew this rule and the way back had not, so undoing the

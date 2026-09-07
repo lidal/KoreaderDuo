@@ -253,6 +253,49 @@ Moves Duo between a network and a wire.
 Stopping first, because the two have nothing in common: one listens and
 dials, the other opens a file that was already there.
 --]]--
+--- A whole file, or nil.
+local function slurp(path)
+    local handle = io.open(path, "r")
+    if not handle then return nil end
+    local text = handle:read("*a")
+    handle:close()
+    return text
+end
+
+--- Writes a whole file, remounting the root read-write if it has to.
+local function spill(path, text)
+    local handle = io.open(path, "w")
+    local opened_it_up = false
+    if not handle then
+        os.execute("mount -o remount,rw / 2>/dev/null")
+        opened_it_up = true
+        handle = io.open(path, "w")
+        if not handle then
+            os.execute("mount -o remount,ro / 2>/dev/null")
+            return false, "could not open it for writing"
+        end
+    end
+    local ok, err = handle:write(text)
+    handle:close()
+    --[[
+    Put back on the way out, on every path out.
+
+    A reader's root filesystem is mounted read-only for a reason, and it is
+    this one: these devices lose power without warning -- a flat battery, a
+    long press, somebody taking the back off -- and a journalled filesystem
+    that was writable at that moment can come back damaged. Leaving it open
+    after one write means every unclean power-off from then until the next
+    reboot is a chance at a reader that will not start, hours or days after
+    the write that opened it. The window is meant to be one file long.
+    ]]
+    if opened_it_up then
+        os.execute("sync 2>/dev/null")
+        os.execute("mount -o remount,ro / 2>/dev/null")
+    end
+    if not ok then return false, tostring(err) end
+    return true
+end
+
 --- Whatever a read-only command printed, trimmed, or nil if it said nothing.
 local function ask(command, quiet)
     local pipe = io.popen(command .. (quiet and "" or " 2>&1"))
@@ -299,7 +342,7 @@ function Duo:showWireReport()
     say(T(_("Duo is set to: %1"), path))
     say("")
 
-    local found = ask("ls -1 /dev/ttymxc* /dev/ttyS* /dev/ttyUSB* /dev/rfcomm* 2>/dev/null")
+    local found = Duo:serialDevicesHere()
     say(_("Serial devices on this reader:"))
     say(found or _("  (none found)"))
     say("")
@@ -332,7 +375,8 @@ function Duo:showWireReport()
     end
     say("")
 
-    local console = ask("grep -o 'console=[^ ]*' /proc/cmdline")
+    local console = slurp("/proc/cmdline")
+    console = console and console:match("console=[^%s]*")
     if console then
         say(_("The kernel logs to:"))
         say("  " .. console)
@@ -343,16 +387,74 @@ function Duo:showWireReport()
     UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
 end
 
---- The process holding a device open, if there is one.
+--[[--
+The serial devices on this reader, one per line.
+
+A directory read rather than four globs through a shell. Nothing here needs
+a process created for it, and every process created is a pause on a screen
+somebody is waiting in front of.
+--]]--
+function Duo:serialDevicesHere()
+    local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if not ok or not lfs or not lfs.dir then return nil end
+    local names = {}
+    pcall(function()
+        for entry in lfs.dir("/dev") do
+            if entry:match("^ttymxc%d+$") or entry:match("^ttyS%d+$")
+                or entry:match("^ttyUSB%d+$") or entry:match("^rfcomm%d+$")
+                or entry:match("^ttyACM%d+$") then
+                names[#names + 1] = "/dev/" .. entry
+            end
+        end
+    end)
+    if #names == 0 then return nil end
+    table.sort(names)
+    return table.concat(names, "\n")
+end
+
+--[[--
+The process holding a device open, if there is one.
+
+The fallback used to be a shell loop -- for every process, list its open
+descriptors and grep them -- which is two forks per process. On a reader
+carrying a couple of hundred of them that is several hundred `ls` and `grep`
+invocations, run one after another on a slow ARM core, with `io.popen`
+holding the event loop the whole way. The screen stops, sometimes for tens
+of seconds, and it stops on a menu entry whose whole purpose is to say what
+is wrong.
+
+The same question answered in Lua is a directory walk and a readlink per
+descriptor, with no process created at all. `/proc/<pid>/fd/<n>` is a
+symlink to the file, and a symlink is read without opening what it points
+at -- which matters here more than the speed does, because opening a tty is
+the other way this used to stop.
+--]]--
 function Duo:whatHoldsTheLine(path)
-    local out = ask(("fuser %s"):format(path))
-    local pid = out and out:match("(%d+)")
+    if not path or path == "" then return nil end
+    -- One fork, and worth it: where fuser exists it answers at once.
+    local out = ask(("fuser %s 2>/dev/null"):format(path), true)
+    local pid = out and out:match("^%s*(%d+)")
     if pid then return pid end
-    -- No fuser on this firmware, so ask the kernel directly: a process
-    -- holding it has the device among its open file descriptors.
-    out = ask(("for p in /proc/[0-9]*; do " ..
-        "if ls -l $p/fd 2>/dev/null | grep -q %s; then basename $p; fi; done"):format(path))
-    return out and out:match("(%d+)")
+
+    local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if not ok or not lfs or not lfs.dir or not lfs.symlinkattributes then return nil end
+    local found = nil
+    pcall(function()
+        for entry in lfs.dir("/proc") do
+            if not found and entry:match("^%d+$") then
+                pcall(function()
+                    for fd in lfs.dir("/proc/" .. entry .. "/fd") do
+                        if fd ~= "." and fd ~= ".." then
+                            local link = lfs.symlinkattributes(
+                                ("/proc/%s/fd/%s"):format(entry, fd), "target")
+                            if link == path then found = entry return end
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+    return found
 end
 
 --[[--
@@ -365,9 +467,22 @@ is one process name and one piece of somebody else's noise, run together
 where somebody is trying to decide whether to kill it.
 --]]--
 function Duo:nameOfProcess(pid)
-    local out = ask(("tr '\\0' ' ' < /proc/%s/cmdline 2>/dev/null"):format(pid), true)
-    if out and out ~= "" then return (out:gsub("%s+$", "")) end
-    return ask(("readlink /proc/%s/exe 2>/dev/null"):format(pid), true)
+    -- Read, not shelled out for. /proc/<pid>/cmdline is an ordinary file to
+    -- anything that opens it, and one fewer process created is one fewer
+    -- pause on a screen somebody is waiting on.
+    local handle = io.open(("/proc/%s/cmdline"):format(pid), "rb")
+    if handle then
+        local raw = handle:read("*a") or ""
+        handle:close()
+        local name = raw:gsub("%z", " "):gsub("%s+$", "")
+        if name ~= "" then return name end
+    end
+    local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok and lfs and lfs.symlinkattributes then
+        local exe = lfs.symlinkattributes(("/proc/%s/exe"):format(pid), "target")
+        if exe and exe ~= "" then return exe end
+    end
+    return nil
 end
 
 --[[--
@@ -422,49 +537,6 @@ function Duo:freeTheLine()
     })
 end
 
---- A whole file, or nil.
-local function slurp(path)
-    local handle = io.open(path, "r")
-    if not handle then return nil end
-    local text = handle:read("*a")
-    handle:close()
-    return text
-end
-
---- Writes a whole file, remounting the root read-write if it has to.
-local function spill(path, text)
-    local handle = io.open(path, "w")
-    local opened_it_up = false
-    if not handle then
-        os.execute("mount -o remount,rw / 2>/dev/null")
-        opened_it_up = true
-        handle = io.open(path, "w")
-        if not handle then
-            os.execute("mount -o remount,ro / 2>/dev/null")
-            return false, "could not open it for writing"
-        end
-    end
-    local ok, err = handle:write(text)
-    handle:close()
-    --[[
-    Put back on the way out, on every path out.
-
-    A reader's root filesystem is mounted read-only for a reason, and it is
-    this one: these devices lose power without warning -- a flat battery, a
-    long press, somebody taking the back off -- and a journalled filesystem
-    that was writable at that moment can come back damaged. Leaving it open
-    after one write means every unclean power-off from then until the next
-    reboot is a chance at a reader that will not start, hours or days after
-    the write that opened it. The window is meant to be one file long.
-    ]]
-    if opened_it_up then
-        os.execute("sync 2>/dev/null")
-        os.execute("mount -o remount,ro / 2>/dev/null")
-    end
-    if not ok then return false, tostring(err) end
-    return true
-end
-
 --[[--
 Everything this device will say about what starts the login prompt.
 
@@ -481,7 +553,7 @@ however many getty lines are in it.
 function Duo:whatStartsTheLoginPrompt(path)
     local device = path:gsub("^/dev/", "")
     local found = {
-        init = ask("cat /proc/1/comm 2>/dev/null") or ask("readlink /proc/1/exe"),
+        init = Duo:nameOfProcess(1) or "?",
         inittab = nil,
         jobs = ask(("grep -l -i 'getty' /etc/init/*.conf /etc/upstart/*.conf 2>/dev/null")),
     }
@@ -589,9 +661,7 @@ Duo edits a file at the root of the device's own startup -- and on the
 reader this was written for, the honest answer is that it should not.
 --]]--
 function Duo:initReadsInittab()
-    local one = ask("cat /proc/1/comm 2>/dev/null", true)
-        or ask("readlink /proc/1/exe 2>/dev/null", true) or ""
-    one = tostring(one):lower()
+    local one = tostring(Duo:nameOfProcess(1) or ""):lower()
     if one:find("init.exe", 1, true) or one:find("upstart", 1, true) then
         return false
     end
@@ -706,16 +776,49 @@ function Duo:setLoginPrompt(wanted)
 
     if wanted then
         local put_back = Duo:setConsoleJobs(true)
+        --[[
+        Inside a writable root, which it was not. A reader's root is
+        read-only, spill opens it for its own write and shuts it again, and
+        the rm that followed then failed silently -- so the backup stayed,
+        and on the old label that meant the entry went on saying "put back"
+        for ever, having put nothing back.
+        ]]
         local original = slurp(backup)
         if original then
-            spill("/etc/inittab", original)
-            os.execute(("rm -f %s 2>/dev/null"):format(backup))
+            writable(function()
+                spill("/etc/inittab", original)
+                os.execute(("rm -f %s 2>/dev/null"):format(backup))
+            end)
             Duo:tellInitToReread()
         end
-        os.execute("mount -o remount,ro / 2>/dev/null")
-        UIManager:show(InfoMessage:new{
-            text = T(_("Put back: %1 startup job(s)%2.\n\nThe login prompt returns now or on the next boot."),
-                tostring(put_back), original and _(", and /etc/inittab") or "") })
+        --[[
+        And it says what is true afterwards rather than what was attempted.
+        "Put back: 0 startup job(s)" on a device where a login prompt is
+        still holding the line is the least useful sentence available: it
+        reports a number, when the thing worth saying is that nothing was
+        moved aside in the first place, so nothing came back.
+        ]]
+        local holder = Duo:whatHoldsTheLine(path)
+        local lines = {}
+        if put_back > 0 then
+            lines[#lines+1] = T(_("Put back: %1 startup job(s)%2."),
+                tostring(put_back), original and _(", and /etc/inittab") or "")
+            lines[#lines+1] = _("The login prompt returns now or on the next boot.")
+        else
+            lines[#lines+1] = _("Nothing was moved aside, so nothing came back.")
+            if original then
+                lines[#lines+1] = _("A leftover /etc/inittab has been restored.")
+            end
+        end
+        lines[#lines+1] = ""
+        if holder then
+            lines[#lines+1] = T(_("%1 is holding %2 now (%3), which is what a login prompt on the line looks like."),
+                Duo:nameOfProcess(holder) or "Something", path, holder)
+        else
+            lines[#lines+1] = T(_("Nothing is holding %1 at the moment."), path)
+        end
+        UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+        self:refreshMenu()
         return
     end
 
@@ -4146,24 +4249,26 @@ On connecting, the leader's settings win. After that a change on either device m
                     callback = function() Duo:showLoginPromptReport() end,
                 },
                 {
+                    --[[
+                    Read from the one thing that decides it: whether a job
+                    has been moved aside. A leftover /etc/inittab backup
+                    used to count too, and it means something else entirely
+                    -- that Duo once edited that file -- so a device with a
+                    backup and no moved job offered "put back", put nothing
+                    back, and went on offering it. From where the user sat,
+                    a login prompt was holding the line and the only thing
+                    on the menu was an offer to give it back.
+                    ]]
                     text_func = function()
                         if Duo:consoleJobsAreOff() then
                             return _("Put the login prompt back…")
                         end
-                        local f = io.open("/etc/inittab.duo-original", "r")
-                        if f then f:close() return _("Put the login prompt back…") end
                         return _("Turn off the login prompt (changes startup)…")
                     end,
                     help_text = _("THE ONE THAT CHANGES THE DEVICE. Everything else on this screen either reads, or forgets at the next reboot. This moves a file in the device's own startup, and a device that will not start cannot be fixed from its own menus.\n\nKilling the login prompt never wins: whatever started it puts it back under a new number. On these readers that is a startup job, which this moves aside — renamed rather than edited, so putting it back is exact.\n\nSurviving a reboot is the point of it and the risk of it. Have the debug UART wired and a bootloader you can interrupt before you use this, because that is the only way back if the reader stops booting."),
                     keep_menu_open = true,
                     callback = function()
-                        local back = Duo:consoleJobsAreOff()
-                        if not back then
-                            local f = io.open("/etc/inittab.duo-original", "r")
-                            back = f ~= nil
-                            if f then f:close() end
-                        end
-                        Duo:setLoginPrompt(back)
+                        Duo:setLoginPrompt(Duo:consoleJobsAreOff())
                     end,
                     separator = true,
                 },
