@@ -2625,6 +2625,37 @@ function Core:broadcastState(as_if)
 end
 
 --[[--
+Tells the other device the book is being left, before this one has left it.
+
+The mirror of announceOpening, and the same saving. Going home used to be
+announced when the leader's *file manager appeared* -- which is after it has
+torn the reader down and built the whole listing, seconds on a large
+library. The follower then started its own from a standing stop, so the two
+did it one after the other and the reader waited for both in turn.
+
+The signal it replaced was worse in one specific way and this keeps the
+guard: switching straight from one book to another tears a reader down too,
+and a follower sent home then would close a book it is about to be told to
+open. So this says nothing while a book is on its way. Anything it does get
+wrong is corrected by the DOC that follows, which is the same bargain the
+opening announcement already makes.
+--]]--
+function Core:announceLeavingBook()
+    if not self:isLeader() or not self:isConnected() then return false end
+    if not self:get("follow_document") then return false end
+    -- Not while another book is being opened: that tears the reader down
+    -- as well, and looks exactly like this from here.
+    if self.opening_file then return false end
+    self:log("leaving the book - telling the other device now")
+    for _, link in ipairs(self:getReadyLinks()) do
+        -- Both ends are about to go quiet while they build a listing.
+        if link.allowSilence then link:allowSilence() end
+        link:send(Protocol.HOME, {})
+    end
+    return true
+end
+
+--[[--
 Tells the other device which book is being opened, before opening it.
 
 Opening a book on a reader is not quick -- a large one is seconds of
@@ -5957,6 +5988,17 @@ function Core:checkLink()
     if not self.link_check_at then return end
     if Util.now() < self.link_check_at then return end
     --[[
+    Nothing on a wire is a radio question. From a log of a pair joined by
+    copper: "checking the direct link survived the sleep", followed by an
+    iw probe reporting the house Wi-Fi and "duo link: not configured by
+    Duo" -- a whole diagnosis of something that has no bearing on whether
+    two soldered wires are still soldered.
+    ]]
+    if self:usesSerial() then
+        self.link_check_at = nil
+        return
+    end
+    --[[
     A link already coming up needs no help, and rebuilding the network under
     it would be the opposite of help. Put off rather than dropped: this is
     the one check a sleep gets, and consuming it because a handshake happened
@@ -6091,6 +6133,8 @@ keeps checking that the stream still has somewhere to be.
 --]]--
 function Core:checkLinkHealth()
     if not self:isActive() then return end
+    -- And neither is the repair: there is no cell to rebuild under a wire.
+    if self:usesSerial() then return end
     --[[
     Connected settles all of this, and has to be asked before anything else
     returns.

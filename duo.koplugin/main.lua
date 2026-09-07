@@ -1783,6 +1783,13 @@ end
 
 function Duo:onCloseDocument()
     self:unwrapPageTurns()
+    --[[
+    Said before the binding goes, because after it there is no link between
+    this device and the book it is leaving to say anything about. The other
+    reader can start building its listing now rather than when this one has
+    finished building its own.
+    ]]
+    Core:announceLeavingBook()
     Core:detachReader(self.reader_binding)
 end
 

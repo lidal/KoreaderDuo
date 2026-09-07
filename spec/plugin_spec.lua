@@ -3332,6 +3332,44 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("leaving a book", function()
+    T.it("says so before tearing the reader down, not after arriving", function()
+        --[[
+        Going home used to be announced when the leader's file manager
+        appeared -- after it had torn the reader down and built the whole
+        listing, which on a large library is seconds. The follower then
+        started its own from a standing stop, so the two did it one after
+        the other and the reader waited for both in turn.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.settings.follow_document = true
+        local sent = {}
+        local real_links = Core.getReadyLinks
+        Core.getReadyLinks = function()
+            return {{ slot = 1, send = function(_, kind) sent[#sent + 1] = kind end,
+                      isReady = function() return true end }}
+        end
+
+        T.assertTrue(Core:announceLeavingBook(), "it said nothing at all")
+        T.assertEquals(sent[1], "HOME")
+
+        -- And nothing while a book is on its way: switching straight from
+        -- one book to another tears the reader down too, and a follower
+        -- sent home then closes a book it is about to be told to open.
+        sent = {}
+        Core.opening_file = "/books/next.epub"
+        T.assertTrue(not Core:announceLeavingBook(),
+            "it sent the other device home in the middle of opening a book")
+        T.assertEquals(#sent, 0)
+
+        Core.opening_file = nil
+        Core.getReadyLinks = real_links
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("coming back to a book", function()
     T.it("goes where it stood rather than painting a page it will replace", function()
         --[[
