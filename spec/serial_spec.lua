@@ -200,12 +200,13 @@ T.describe("serial transport", function()
             "the line still waits for a carrier three wires do not carry")
         T.assertMatch(flags, "%-crtscts", "it expects an RTS and a CTS that are not wired")
         T.assertMatch(flags, "%-echo", "the line echoes what it is sent")
-        -- Off unless asked for: on these readers this line is the console,
-        -- and one stray XOFF on a console stops everything that writes to it.
+        -- Off unless asked for, since the caller decides: three pads carry
+        -- no RTS or CTS, so this is the only flow control there is, and the
+        -- one line it is unsafe on is a console somebody is still using.
         T.assertMatch(flags, "%-ixon", "flow control was on without being asked for")
         T.assertMatch(flags, "%-ixoff", "flow control was on without being asked for")
 
-        -- And on when it is asked for.
+        -- And on when it is asked for, which is what Duo asks for.
         local c = assert(SerialTransport.open(PTY_A, { baud = 115200, flow_control = true }))
         flags = flagsOn(PTY_A)
         c:close()
@@ -449,6 +450,53 @@ T.describe("two devices over a serial link", function()
         controller:call(leader, "D:jumpToPage(60)")
         controller:assertEventually(follower, "D:getPage()", 61,
             "the line never recovered from an unterminated one")
+    end)
+
+    T.it("survives a message with a byte missing out of the middle of it", function()
+        --[[
+        The fault the logs were full of. Three soldered pads carry no flow
+        control, so a reader stalled on an e-ink refresh overruns the far
+        end's buffer and a message arrives short. Its tag is then checked
+        against a line that is not the line that was signed, and the link
+        used to hang up -- turning one lost byte into a lost session, a
+        fresh handshake, and the whole of the pair's state pushed across
+        again, which is itself a burst large enough to lose the next one.
+        ]]
+        connectOverSerial()
+        local pipe = assert(io.open(PTY_A, "wb"))
+        pipe:write("STATE leader_page=5 page=6 slot=1 mac=deadbeefdeadbeef\n")
+        pipe:close()
+        socket.sleep(0.5)
+        T.assertEquals(controller:call(follower, "Core:isConnected()"), "true",
+            "one damaged message ended the session")
+
+        -- And the pair is still carrying meaning, not merely still open.
+        controller:call(leader, "D:jumpToPage(30)")
+        controller:assertEventually(follower, "D:getPage()", 31,
+            "it stopped working after a damaged message")
+    end)
+
+    T.it("makes the session again when nothing arriving is signed for it", function()
+        --[[
+        The other half. One unsigned message is a lost byte; a stream of
+        them is two ends holding different keys, and that has to be settled
+        rather than read past for ever.
+        ]]
+        connectOverSerial()
+        local pipe = assert(io.open(PTY_A, "wb"))
+        for _ = 1, 8 do
+            pipe:write("STATE leader_page=5 page=6 slot=1 mac=deadbeefdeadbeef\n")
+        end
+        pipe:close()
+
+        -- It steps back and comes round again over the same line, without
+        -- ever closing it.
+        controller:assertEventually(follower, "Core:isConnected()", true,
+            "it never got a session back")
+        T.assertEquals(controller:call(follower, "#Core.links"), "1",
+            "it closed the wire instead of starting the session again")
+        controller:call(leader, "D:jumpToPage(40)")
+        controller:assertEventually(follower, "D:getPage()", 41)
     end)
 
     T.it("needs no pairing code, and does not care what is set", function()

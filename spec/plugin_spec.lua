@@ -824,6 +824,38 @@ T.describe("the debug menu", function()
         reset()
     end)
 
+    T.it("opens the line with flow control on", function()
+        --[[
+        There is no other flow control on three soldered pads, and without
+        it a reader stalled on an e-ink refresh overruns the far end's
+        buffer -- which arrives as a message with bytes missing out of the
+        middle, and reads as a pairing code that does not match or a
+        signature that does not check. Calling down the wire never shows it,
+        because both devices do nothing but read for those two seconds.
+        ]]
+        reset()
+        T.assertTrue(Core:get("wire_flow_control"),
+            "the wire opens with no flow control on it at all")
+
+        -- The module table itself, because the engine took its reference to
+        -- it when it was loaded: swapping package.loaded would swap a table
+        -- nothing is looking at.
+        local transport = package.loaded["duo/transport_serial"]
+        local asked
+        local real_open = transport.open
+        transport.open = function(_, options) asked = options return nil, "not today" end
+        Core.settings.transport = Core.TRANSPORT_SERIAL
+        Core.wire_open_failures = 0
+        Core:openSerialLink()
+        T.assertTrue(asked and asked.flow_control,
+            "it opened the line without asking for flow control")
+
+        transport.open = real_open
+        Core.settings.transport = Core.TRANSPORT_TCP
+        device:clearScreen()
+        reset()
+    end)
+
     T.it("backs off a line that will not open, rather than hammering it", function()
         --[[
         A line that will not open is not a peer that has not answered yet.

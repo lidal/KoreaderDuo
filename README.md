@@ -445,7 +445,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-580 tests, with the interesting parts unmocked: two and three device
+583 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -547,14 +547,31 @@ will not transmit until CTS is asserted, which on those same three wires it
 never is.
 
 **Link → Let the line ask the other end to wait** is software flow control
-(XON/XOFF), and it is **off**. Without it there is no flow control at all,
-so a book transfer overruns the far end every time an e-ink refresh stops
-its loop for longer than its buffer holds. With it, on *this* line, one
-stray XOFF — a single byte out of a framing error at the wrong speed, which
-is exactly what setting a wire up produces — stops the port until an XON
-that may never come, and everything that writes to the console blocks behind
-it, the reader included. Turn it on only for a line that is not this
-device's console.
+(XON/XOFF), and it is **on**. There is no other flow control on three pads,
+and without it a reader stalled on an e-ink refresh overruns the far end's
+four-kilobyte buffer at any speed on offer. What arrives then is a message
+with bytes missing out of the middle of it — which reads as a pairing code
+that does not match, or a signature that does not check, and neither has
+anything to do with what went wrong.
+
+**Calling down the wire will not show this.** Both devices do nothing but
+read for those two seconds, so nothing overruns and the measurement comes
+back clean at the top speed. It only bites in use, which is worth knowing
+before concluding from a clean measurement that the line is fine.
+
+Turn it off only for a line that is also a live console: one stray XOFF
+stops that port until an XON that may never come, and everything writing to
+the console blocks behind it. A wire whose console is still live does not
+work at all — the login prompt eats the bytes the other reader sends — so
+in practice that state is behind you by the time this matters.
+
+A message that does not check out no longer ends the session either. On a
+network an unsigned message means an injection or a relayed handshake and
+there is nothing to do but hang up; on a wire it is almost always a lost
+byte, and hanging up turns that into a fresh handshake plus the whole of
+the pair's state pushed across again — itself a burst large enough to lose
+the next one. The message is dropped and reading goes on. Five in a row is
+a different thing, and makes the session again over the same line.
 
 Before it will carry anything: set **Device** to the right node on each
 reader, then pick **Over a wire** on either one. Picking it moves both, the

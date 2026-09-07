@@ -178,6 +178,17 @@ Leaving them there is the whole point.
 --]]--
 Link.READ_WHEN_BELOW = 128 * 1024
 
+--[[--
+How many unsigned messages in a row mean the key is wrong rather than the
+line noisy.
+
+One is a byte that went missing. Five in a row is not: no wire drops five
+messages running and delivers nothing in between, so at that point the two
+ends really are holding different keys and the session has to be made
+again.
+--]]--
+Link.BAD_MACS_BEFORE_RESTART = 5
+
 --- Seconds allowed for the handshake.
 Link.HANDSHAKE_TIMEOUT = 10
 --- Seconds between repeated challenges while nobody has answered.
@@ -552,6 +563,18 @@ function Link:handleHandshake(msg)
             return
         end
         if self.token ~= "" and msg.proof ~= Link.proof(self.nonce, self.token) then
+            --[[
+            On a wire the code is a constant both ends already agree on, so
+            a proof that does not match is not a device with the wrong code
+            -- it is this one, with a byte missing out of the middle of its
+            answer. Refusing it hangs up on the only reader there is; the
+            challenge repeats anyway, and the next answer is usually whole.
+            ]]
+            if self.on_a_wire then
+                if self.trace then self.trace("a hello that did not add up; asking again") end
+                self.challenged_at = nil
+                return
+            end
             self:sendMessage(Protocol.DENY, { reason = Link.BAD_TOKEN })
             self:close(Link.BAD_TOKEN)
             return
@@ -606,7 +629,24 @@ function Link:handleHandshake(msg)
         end
         if msg.type == Protocol.WELCOME then
             if self.token ~= "" and msg.proof ~= Link.proof(self.nonce, self.token) then
-                -- Someone is listening on that port, but it is not our leader.
+                --[[
+                On a network: someone is listening on that port, but it is
+                not our leader.
+
+                On a wire there is nobody else it could be, and two things
+                that are not a wrong code look exactly like one from here.
+                A byte may have gone missing out of the welcome. Or the
+                leader may have asked twice -- the second challenge carries
+                a new nonce, this end answers it with a new nonce of its
+                own, and the welcome for the *first* one arrives afterwards
+                and is checked against the second. Both are answered by
+                waiting: the leader repeats its challenge, and the next
+                exchange settles.
+                ]]
+                if self.on_a_wire then
+                    if self.trace then self.trace("a welcome that did not add up; waiting") end
+                    return
+                end
                 self:close(Link.BAD_TOKEN)
                 return
             end
@@ -827,14 +867,36 @@ function Link:dispatch(msg)
     end
     if not self:verify(msg) then
         --[[
-        Either somebody is injecting messages into a conversation they
-        cannot sign, or the two ends derived different keys -- which is what
-        a relayed handshake looks like from in here. Both are reasons to
-        stop talking rather than to carry on and find out.
+        On a connection this is one of two things, and neither is survivable:
+        somebody injecting messages into a conversation they cannot sign, or
+        two ends that derived different keys, which is what a relayed
+        handshake looks like from in here.
+
+        On a wire there is a third, and it is much the commonest: a byte
+        went missing out of the middle of the message. Three soldered pads
+        carry no flow control, and a reader stalled on an e-ink refresh
+        overruns the far end's buffer -- so the tag is checked against a
+        line that is no longer the line that was signed. Hanging up over
+        that turns one lost byte into a lost session, a fresh handshake and
+        the whole of the pair's state pushed across again, which is itself
+        a burst large enough to lose the next one.
+
+        So a wire drops the message and reads on. A key that is genuinely
+        wrong fails every message rather than the occasional one, and that
+        is what the count is for.
         ]]
+        if self.on_a_wire then
+            self.bad_macs = (self.bad_macs or 0) + 1
+            if self.trace then self.trace("unsigned message; dropped") end
+            if self.bad_macs >= Link.BAD_MACS_BEFORE_RESTART then
+                self:renegotiate("nothing arriving is signed for this session")
+            end
+            return
+        end
         self:close("message was not signed by the other device")
         return
     end
+    self.bad_macs = 0
     --[[
     And taken back off once it has done its job, so that nothing downstream
     ever meets it. More than tidiness: several handlers take a message and

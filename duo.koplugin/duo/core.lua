@@ -315,10 +315,21 @@ local DEFAULTS = {
     everything that writes to the console blocks behind it, the reader
     included.
 
-    So it is offered, and it is off, and the menu says which line it is safe
-    on: one that is not this device's console.
+    On, and the danger it was held off for turns out to be behind us by the
+    time it can bite. A wire whose console is still live does not work at
+    all -- the login prompt eats the bytes the other reader sends -- so
+    anybody with a working wire has already stopped the console, and a
+    stray XOFF has nothing left to wedge.
+
+    What settled it was a measurement. Calling down the wire at the top
+    speed drops nothing at all, because both devices are doing nothing but
+    reading. In use they are drawing on e-ink: the log shows the loop
+    stopping for 625ms, which at 115200 is seven kilobytes against a
+    four-kilobyte buffer, and at the top speed it is far worse. The bytes
+    that go missing are not the cable's doing and no amount of soldering
+    will help. This is the mechanism that was invented for it.
     ]]
-    wire_flow_control = false,
+    wire_flow_control = true,
     keep_radio_awake = true,
     --[[
     Reconnect the plain way: try again in a second, and keep trying.
