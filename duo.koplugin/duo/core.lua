@@ -428,6 +428,13 @@ local DEFAULTS = {
     leader pushing its own side across would make both of them the left
     page.
     ]]
+    --[[
+    Where this device stood in the book it was last showing, so a follower
+    coming back to it goes there rather than painting a page it is about to
+    replace. Not shared: it describes this device's own screen.
+    ]]
+    resume_file = "",
+    resume_page = 0,
     side = "",
     autostart = false,
     autostart_role = "off",
@@ -818,6 +825,7 @@ function Core:attachReader(binding)
         self:pushTypography("document opened")
         self:broadcastState()
     else
+        self:resumeWhereItStood()
         local link = self:getReadyLinks()[1]
         if link then
             -- We may have been reopened on a different book; ask where we
@@ -833,6 +841,37 @@ function Core:attachReader(binding)
     end
 end
 
+--[[--
+Puts a follower back on the page it was showing, before it asks anybody.
+
+The ask is a round trip, and a round trip is not the wait: the leader
+cannot answer until it has finished opening its own copy of the book, which
+on a large one is a second or more. All of that is time the follower spends
+showing a page it is about to replace -- long enough to read, which is
+exactly why it is noticeable.
+
+The page it was on last time is nearly always the page it is about to be
+told, so it goes there now and the answer, when it comes, changes nothing.
+Only for the same book, and only when there is one to go back to: a guess
+that is wrong here would be a jump the reader can see, which is the thing
+being got rid of.
+--]]--
+function Core:resumeWhereItStood()
+    if self:isLeader() or not self.reader or not self.reader.gotoPage then return end
+    local page = self:get("resume_page")
+    local file = self:get("resume_file")
+    if not page or page <= 0 or not file or file == "" then return end
+    local document = self.reader.getDocument and self.reader.getDocument()
+    if not document or document.file ~= file then return end
+    local count = self.reader.getPageCount()
+    if count and count > 0 and page > count then return end
+    if self.reader.getPage() == page then return end
+    self:log("back in", file, "- going to page", page, "rather than waiting to be told")
+    self.applying_remote = true
+    pcall(self.reader.gotoPage, page)
+    self.applying_remote = false
+end
+
 --- Drops the binding when its document goes away.
 -- The `binding` argument guards against a stale plugin instance tearing down
 -- the binding that a newer one has already installed: when KOReader switches
@@ -840,6 +879,19 @@ end
 -- unhooking then would silently stop syncing.
 function Core:detachReader(binding)
     if binding and self.reader and self.reader ~= binding then return end
+    --[[
+    Written down on the way out, which is the one moment it is worth a disk
+    write: the book is closing, and where this device stood in it is what
+    stops the next opening from painting a page it is about to replace.
+    ]]
+    if self.resume_file and self.resume_page
+            and (self:get("resume_file") ~= self.resume_file
+                or self:get("resume_page") ~= self.resume_page) then
+        self.settings.resume_file = self.resume_file
+        self.settings.resume_page = self.resume_page
+        self:save()
+    end
+    self.resume_file, self.resume_page = nil, nil
     self.reader = nil
     -- Page numbers mean nothing once the book they counted is gone.
     self.assigned_page = nil
@@ -3151,6 +3203,27 @@ function Core:applyRemotePage(page, leader_pages, leader_typo)
         return
     end
     self.pending_page = nil
+    --[[
+    And remembered across the book being closed, which is what stops the
+    flash on the way back in.
+
+    A follower reopening a book paints whatever page it lands on, and only
+    then hears where it belongs -- because it cannot hear until the leader
+    has finished opening its own copy, which is a second or so of a large
+    book. So the reader shows one page, holds it long enough to be read,
+    and replaces it. Knowing where the pair stood last time means going
+    there at once instead of asking and waiting.
+    ]]
+    --[[
+    Held in memory and written when the book closes, not here. This runs on
+    every page the leader sends, and a settings file written on every page
+    turn is a disk write per turn on a device where that is felt.
+    ]]
+    local document = self.reader.getDocument and self.reader.getDocument()
+    if document and document.file and document.file ~= "" then
+        self.resume_file = document.file
+        self.resume_page = wanted
+    end
     -- Recorded whether or not this device has to move for it: this is the
     -- page it has been *sent*, and it is what tells a jump made here from
     -- the leader's own idea of where this screen belongs.

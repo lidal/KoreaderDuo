@@ -3300,6 +3300,79 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("coming back to a book", function()
+    T.it("goes where it stood rather than painting a page it will replace", function()
+        --[[
+        Reported from a pair: the follower shows the first screen for about
+        a second on the way back into a book, then jumps to the second.
+
+        The ask is a round trip, and the round trip is not the wait: the
+        leader cannot answer until it has finished opening its own copy,
+        which on a large book is a second or more. All of it is time the
+        follower spends showing a page it is about to replace -- long enough
+        to read, which is exactly why it is noticeable.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        local file = Core.reader.getDocument().file
+
+        -- It was on page 2 when the book was closed.
+        Core.resume_file, Core.resume_page = file, 2
+        Core:detachReader(nil)
+        T.assertEquals(Core:get("resume_file"), file, "it forgot where it stood")
+        T.assertEquals(Core:get("resume_page"), 2)
+
+        -- And on the way back in it goes there, before asking anybody.
+        Core:attachReader(device.plugin.reader_binding)
+        T.assertEquals(Core.reader.getPage(), 2,
+            "it sat on the page it was about to be told to leave")
+
+        -- A different book is not guessed at: a wrong jump is the very
+        -- thing being got rid of.
+        Core.settings.resume_file = "/books/some-other.epub"
+        Core.settings.resume_page = 9
+        Core.reader.gotoPage(1)
+        Core:resumeWhereItStood()
+        T.assertEquals(Core.reader.getPage(), 1, "it jumped on a hunch")
+
+        Core.settings.resume_file = ""
+        Core.settings.resume_page = 0
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("writes it down when the book closes, not on every page turn", function()
+        -- A settings file written per page turn is a disk write per turn on
+        -- a device where that is felt.
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.resume_file = ""
+        Core.settings.resume_page = 0
+        local writes = 0
+        local real_save = Core.save
+        Core.save = function(self) writes = writes + 1 return real_save(self) end
+
+        Core:applyRemotePage(2)
+        Core:applyRemotePage(3)
+        Core:applyRemotePage(4)
+        T.assertEquals(Core:get("resume_page"), 0, "it wrote to disk on a page turn")
+        T.assertEquals(Core.resume_page, 4, "it did not keep track at all")
+
+        writes = 0
+        Core:detachReader(nil)
+        T.assertEquals(Core:get("resume_page"), 4)
+        T.assertTrue(writes > 0, "it never wrote it down")
+
+        Core.save = real_save
+        -- Put the book back: every test after this one wants a reader.
+        Core:attachReader(device.plugin.reader_binding)
+        Core.settings.resume_file = ""
+        Core.settings.resume_page = 0
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("the end of the shorter book", function()
     T.it("will not turn onto a screen the other device has run out of book for", function()
         --[[
