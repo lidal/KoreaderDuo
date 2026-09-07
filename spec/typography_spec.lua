@@ -97,6 +97,56 @@ T.describe("reading and applying on a device", function()
         T.assertEquals(margins[1], 25)
     end)
 
+    T.it("asks twice for a setting the engine puts back, and no more", function()
+        --[[
+        From a log, on every opening of the same book:
+
+            in TYPO
+            matched block rendering mode, embedded styles, font weight
+            in TYPO
+            matched block rendering mode, embedded styles, font weight
+
+        The same three, twice, on a book that already had them. Some of
+        these settings make the engine reload the document, and the reload
+        puts back what the file itself says -- *after* the handler has
+        returned, so the value looks right at the moment it is checked and
+        is gone by the time the next message arrives. Which is
+        indistinguishable, from in here, from a value that never arrived.
+
+        The second attempt usually sticks, because the reload has happened
+        by then. A third never will, and by then somebody is watching a book
+        change its mind on a loop.
+        ]]
+        local device_r = Instance.new{ name = "Kindle-R", page_count = 200 }
+        local configurable = device_r.ui.document.configurable
+        local tried = {}
+
+        local first = Typography.apply(device_r.ui, { font_size = "29" }, device_r.Event, tried)
+        T.assertTableEquals(first, { "font_size" })
+        T.assertEquals(configurable.font_size, 29, "it did not take at the moment it was set")
+
+        -- And then the reload puts the file's own value back.
+        configurable.font_size = 22
+        local second = Typography.apply(device_r.ui, { font_size = "29" }, device_r.Event, tried)
+        T.assertTableEquals(second, { "font_size" }, "the second attempt is the one that works")
+        T.assertEquals(configurable.font_size, 29)
+
+        -- A third asking is not made, however many messages arrive.
+        configurable.font_size = 22
+        local third = Typography.apply(device_r.ui, { font_size = "29" }, device_r.Event, tried)
+        Typography.apply(device_r.ui, { font_size = "29" }, device_r.Event, tried)
+        T.assertEquals(#third, 0,
+            "the book went on changing its mind for as long as messages arrived")
+        T.assertEquals(configurable.font_size, 22)
+
+        -- A reader who really does change the font again is not stopped by
+        -- what the last value did.
+        local fresh = Typography.apply(device_r.ui, { font_size = "31" }, device_r.Event, tried)
+        T.assertTableEquals(fresh, { "font_size" },
+            "a new value was refused on the last one's account")
+        T.assertEquals(configurable.font_size, 31)
+    end)
+
     T.it("asks once for a setting the document will not take", function()
         --[[
         Reported from a pair: the follower switching block rendering on and

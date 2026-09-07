@@ -307,6 +307,36 @@ KOReader relayouts and saves exactly as if a person had changed it.
 @treturn table the keys actually changed
 --]]--
 --[[--
+How many times to set the same key to the same value before letting it be.
+
+Two, and the second is not defensive -- it is the one that works. Some of
+these settings make the engine reload the document, and a reload puts back
+what the file itself says, so the value Duo set a moment ago is gone by the
+time anybody looks. Asked again it usually sticks, because the reload has
+happened. Asked a third time it never will, and by then somebody is
+watching a book change its mind on a loop.
+
+Counted against the value as well as the key, so that a reader who really
+does change the font three times is not stopped after two.
+--]]--
+Typography.TRIES = 2
+
+local function triesSoFar(record, wanted)
+    if not record or record.value ~= wanted then return 0 end
+    return record.n or 0
+end
+
+local function noteTry(refused, key, wanted, spent)
+    if not refused then return end
+    local record = refused[key]
+    if not record or record.value ~= wanted then
+        refused[key] = { value = wanted, n = spent or 1 }
+    else
+        record.n = (record.n or 0) + (spent or 1)
+    end
+end
+
+--[[--
 Applies the other device's layout to this one.
 
 @tparam table ui a ReaderUI
@@ -326,7 +356,8 @@ function Typography.apply(ui, settings, Event, refused)
 
     for _, key in ipairs(Typography.KEYS) do
         local wanted = settings[key]
-        if wanted ~= nil and configurable and not (refused and refused[key]) then
+        if wanted ~= nil and configurable
+            and triesSoFar(refused and refused[key], wanted) < Typography.TRIES then
             local current = Typography.encodeValue(configurable[key])
             if not sameEncoded(current, wanted) then
                 local event = events[key]
@@ -345,6 +376,16 @@ function Typography.apply(ui, settings, Event, refused)
                         applied.errors[key] = tostring(err)
                     elseif sameEncoded(Typography.encodeValue(configurable[key]), wanted) then
                         applied[#applied+1] = key
+                        --[[
+                        Counted even though it took. It looks right at this
+                        instant, and some of these keys make the engine
+                        reload the document afterwards -- which puts the
+                        file's own value back, so the next message finds it
+                        wrong again and sets it again. That is the loop
+                        somebody sees as a book changing its mind. The
+                        second attempt usually sticks; there is no third.
+                        ]]
+                        noteTry(refused, key, wanted)
                     else
                         --[[
                         Set, and did not take. A handler that clamps a value,
@@ -361,7 +402,9 @@ function Typography.apply(ui, settings, Event, refused)
                         ]]
                         applied.would_not_take = applied.would_not_take or {}
                         applied.would_not_take[key] = true
-                        if refused then refused[key] = true end
+                        -- Refused outright rather than merely not stuck:
+                        -- there is nothing for a second attempt to settle.
+                        noteTry(refused, key, wanted, Typography.TRIES)
                     end
                 end
             end
@@ -369,7 +412,10 @@ function Typography.apply(ui, settings, Event, refused)
     end
 
     local face = settings[Typography.FONT_FACE]
-    if refused and refused[Typography.FONT_FACE] then face = nil end
+    if face and triesSoFar(refused and refused[Typography.FONT_FACE], face)
+        >= Typography.TRIES then
+        face = nil
+    end
     if face and ui.font and ui.font.font_face ~= face then
         local ok = pcall(function()
             ui:handleEvent(Event:new("SetFont", face))
@@ -382,7 +428,7 @@ function Typography.apply(ui, settings, Event, refused)
             applied.missing_font = face
             -- A typeface this device does not have will not appear by being
             -- asked for again every few seconds.
-            if refused then refused[Typography.FONT_FACE] = true end
+            noteTry(refused, Typography.FONT_FACE, face, Typography.TRIES)
         end
     end
 

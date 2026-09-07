@@ -5105,10 +5105,21 @@ function Core:applyTypography(msg, from_link)
         if self:isLeader() then
             self:broadcastState()
         elseif from_link then
-            -- Every page number in this book just changed. Waiting for the
-            -- leader's next broadcast means sitting on the wrong page until
-            -- somebody turns one; asking costs a single line.
-            from_link:send(Protocol.SYNC, {})
+            --[[
+            Every page number in this book just changed. Waiting for the
+            leader's next broadcast means sitting on the wrong page until
+            somebody turns one; asking costs a single line.
+
+            The page and nothing else, which matters more than it looks. A
+            plain SYNC is answered with everything, and everything includes
+            the typography that has just been applied -- which, if applying
+            it changed anything, is applied again, and asks again. From the
+            log: DOC, TYPO, "matched block rendering mode, embedded styles,
+            font weight", SYNC, and round once more, five times over on
+            every opening of the same book. What is wanted here is where
+            this device now stands, so that is what is asked for.
+            ]]
+            from_link:send(Protocol.SYNC, { what = "state" })
         end
     end
     if applied and applied.missing_font then
@@ -5374,6 +5385,16 @@ function Core:handleMessage(link, msg)
         self:handleNap(msg)
     elseif msg.type == Protocol.SYNC then
         if not self:isLeader() then return end
+        --[[
+        A narrow ask is answered narrowly. Everything below is what a device
+        that has just opened a book needs; a device that has just relaid one
+        out needs the page and would be sent back round the loop by the
+        rest.
+        ]]
+        if msg.what == "state" then
+            self:sendStateTo(link)
+            return
+        end
         self:sendDocumentTo(link)
         --[[
         Typography before the page, and never left out.

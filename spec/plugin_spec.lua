@@ -3332,6 +3332,39 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("asking for the state without asking for everything", function()
+    T.it("answers a narrow ask narrowly", function()
+        --[[
+        From a log, on every opening of the same book: DOC, TYPO, "matched
+        block rendering mode, embedded styles, font weight", SYNC, and round
+        again, five times over.
+
+        Applying typography relays the book out, which moves every page
+        number, so the follower asks where it now stands. A plain ask is
+        answered with everything -- including the typography it has just
+        applied, which it applies again, and asks again. What it wants is
+        the page.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local sent = {}
+        local link = { slot = 1, send = function(_, kind) sent[#sent + 1] = kind end }
+
+        Core:handleMessage(link, { type = "SYNC", what = "state" })
+        T.assertTableEquals(sent, { "STATE" },
+            "a device that only wanted the page was sent the whole world back")
+
+        -- And a device that has just opened a book still gets everything,
+        -- which is the one time it is certain to need it.
+        sent = {}
+        Core:handleMessage(link, { type = "SYNC" })
+        T.assertTrue(#sent > 1, "an opening device was left without its settings")
+
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("putting right what the line ate", function()
     --[[
     There is no retransmission anywhere in Duo, and on a wire nothing below
