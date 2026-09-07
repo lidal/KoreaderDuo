@@ -3332,6 +3332,58 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("reading the link briskly while the pair moves", function()
+    T.it("watches closely for a couple of seconds after a turn, then stops", function()
+        --[[
+        The wire's own round trip is a millisecond; what a page turn waits
+        for is the other device *noticing*. Duo is pumped by the reader's
+        event loop, which offers it a turn every fifty milliseconds at best
+        and every hundred and ten while something is being drawn -- so a
+        message can sit unread for longer than it took to cross.
+
+        Watching that closely all day would be a tenth of a processor spent
+        on a line that is silent nine tenths of the time. Watching it for
+        two seconds after the pair has moved costs nothing and covers the
+        only moment it matters, because the best predictor of a page turn is
+        the one that just happened.
+        ]]
+        reset()
+        T.assertTrue(not Core:isBrisk(), "it was watching a link nobody had used")
+
+        local asked = 0
+        local real = Core.hooks.readBriskly
+        Core.hooks.readBriskly = function() asked = asked + 1 end
+        Core:readBriskly()
+        T.assertTrue(Core:isBrisk())
+        T.assertEquals(asked, 1, "it never told the reader to look more often")
+
+        -- And it lets go by itself: nothing has to remember to stop it.
+        Core.brisk_until = require("duo/util").now() - 1
+        T.assertTrue(not Core:isBrisk(), "it went on watching after the pair went quiet")
+
+        Core.hooks.readBriskly = real
+        reset()
+    end)
+
+    T.it("is switched on by the things that move the pair", function()
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local real_links = Core.getReadyLinks
+        Core.getReadyLinks = function()
+            return {{ slot = 1, send = function() end, isReady = function() return true end }}
+        end
+
+        Core.brisk_until = nil
+        Core:applyRelativeTurn(1)
+        T.assertTrue(Core:isBrisk(), "a page turn did not wake the link up")
+
+        Core.getReadyLinks = real_links
+        Core.brisk_until = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("asking for the state without asking for everything", function()
     T.it("answers a narrow ask narrowly", function()
         --[[

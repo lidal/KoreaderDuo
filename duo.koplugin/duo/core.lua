@@ -985,6 +985,41 @@ function Core:noteActivity()
     self:updateAwake()
 end
 
+--[[--
+How long to read the link briskly after the pair has moved, in seconds.
+--]]--
+Core.BRISK_FOR = 2
+
+--[[--
+Reads the link far more often than usual, for a couple of seconds.
+
+The wire's own round trip is a millisecond; what a page turn actually waits
+for is the *other device noticing*. Duo is pumped by the reader's event
+loop, which offers it a turn every fifty milliseconds at best and every
+hundred and ten while something is being drawn -- so a message can sit
+unread for longer than it took to cross, and the two screens end up a poll
+apart rather than a wire apart.
+
+Polling that fast all the time would be a tenth of a processor spent
+watching a line that is silent nine tenths of the day. Polling that fast
+for two seconds after the pair has moved costs nothing worth measuring and
+covers the only moment it matters, which is somebody turning pages -- and
+turning one page is the best possible predictor of turning another.
+
+Ends by itself. Nothing has to remember to switch it off.
+--]]--
+function Core:readBriskly()
+    self.brisk_until = Util.now() + Core.BRISK_FOR
+    if self.hooks and self.hooks.readBriskly then
+        pcall(self.hooks.readBriskly)
+    end
+end
+
+--- True while the link is worth watching closely.
+function Core:isBrisk()
+    return self.brisk_until ~= nil and Util.now() < self.brisk_until
+end
+
 --- Brings the standby hold in line with what this device now needs.
 function Core:updateAwake()
     self:setAwake(self:shouldStayAwake())
@@ -1456,6 +1491,8 @@ function Core:stop(reason, goodbye, deliberate)
     self.reconnect_at = nil
     self.turn_pending = nil
     self.resync_asked_at = nil
+    -- Nothing is moving, so there is nothing worth watching closely for.
+    self.brisk_until = nil
     -- A fresh start deserves a prompt first try at the line, whatever the
     -- last episode spent working out about it.
     self.wire_open_failures = 0
@@ -2960,6 +2997,9 @@ function Core:handleRelativeTurn(diff)
     local id = Util.randomHex(3)
     self.turn_pending = { id = id, dir = diff, at = Util.now(), tries = 1 }
     link:send(Protocol.TURN, { dir = diff, id = id })
+    -- The answer is a page for this screen, and it should not wait behind a
+    -- poll that was scheduled for a link with nothing on it.
+    self:readBriskly()
     self:noteTurnSent("turn")
     self:turnAhead(diff)
     return true
@@ -3165,6 +3205,9 @@ function Core:turnAndTell(from, to)
     if not self.reader then return end
     if to ~= from then
         self:broadcastState(to)
+        -- Somebody is turning pages, and the best predictor of another
+        -- page turn is the one that just happened.
+        self:readBriskly()
         --[[
         And the announcement that follows the move is not repeated. The
         reader will report the page change in a moment and that would
@@ -4083,6 +4126,7 @@ function Core:applyBrowserTurn(diff)
     -- listing on e-ink is a repaint, and the other device should be starting
     -- its own at the same moment rather than after this one has finished.
     if target ~= state.page then self:broadcastBrowser(target) end
+    self:readBriskly()
     self.browser.goToPage(target)
 end
 
@@ -5340,6 +5384,7 @@ function Core:handleMessage(link, msg)
         self.spread_step = Protocol.num(msg, "step")
         -- The leader has spoken, which is the answer whatever it says.
         self.turn_pending = nil
+        self:readBriskly()
         self:reportOwnPageCount(link, Protocol.num(msg, "pages"))
         self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
         self:applyRemotePage(Protocol.num(msg, "page"),

@@ -445,7 +445,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-593 tests, with the interesting parts unmocked: two and three device
+595 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -720,6 +720,36 @@ than waited out, and console noise read through. What a pseudo-terminal
 cannot show is anything electrical: baud rates, framing errors, a full FIFO,
 or whether flow control does what it says on this driver. Those wait for a
 real wire, which is what the measurement in **Call down the wire** is for.
+
+## What a page turn actually waits for
+
+Not the link. Over a wire a message crosses in about a millisecond, and
+over Wi-Fi the round trip measures around a hundred — what it waits for is
+the *other device noticing*. Duo is pumped by KOReader's event loop, which
+offers it a turn every fifty milliseconds at best and every hundred and ten
+while something is being drawn, so a message can sit unread for longer than
+it took to cross.
+
+Two things follow from that, and both are done. The device that was tapped
+never waits at all: it moves its own screen straight away and puts the
+message on the line *before* doing so, since drawing a page on e-ink is the
+better part of a second and the far screen should be starting its own at
+the same moment. And for two seconds after the pair moves, Duo asks for the
+link every fifteen milliseconds rather than waiting to be offered a turn.
+Polling that fast all day would be a tenth of a processor spent on a line
+that is silent nine tenths of the time; two seconds after a page turn costs
+nothing and covers the only moment it matters, because the best predictor
+of a page turn is the one that just happened. It stops by itself.
+
+What is left is the e-ink refresh, which is most of what anyone sees and is
+not Duo's to give back.
+
+A number worth reading correctly if you turn the log on: `turn answered in
+546ms` is **not** what you waited for. It measures from asking to hearing
+back, and the device that asked has already moved its own screen and is
+busy drawing it — it cannot read the reply until that finishes, so its own
+refresh is inside the number. The gap between the two screens is a poll,
+not half a second.
 
 ## What happens when the line eats a message
 

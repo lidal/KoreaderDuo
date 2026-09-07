@@ -172,11 +172,47 @@ function Duo:ensurePolling()
         -- Only when ours moved, or the two would agree at each other for ever.
         if benchmark:agree(at) then Core:proposeBenchmark(benchmark.began_at) end
     end
+    --[[
+    And a second, faster way in, used only while the pair is moving.
+
+    The registered poller above is offered a turn every fifty milliseconds
+    at best, and every hundred and ten while something is being drawn. That
+    is the whole of a page turn's remaining delay: not the wire, which
+    crosses in a millisecond, but the other device noticing. A scheduled
+    task runs sooner than the loop's own poll, so while somebody is turning
+    pages Duo asks for one every fifteen milliseconds and stops as soon as
+    they have finished.
+    ]]
+    Core.hooks.readBriskly = function() Duo:startReadingBriskly() end
     local poller = Core:getPoller()
     for _, registered in ipairs(UIManager._zeromqs or {}) do
         if registered == poller then return end
     end
     UIManager:insertZMQ(poller)
+end
+
+--- How often to look at the link while the pair is moving, in seconds.
+Duo.BRISK_EVERY = 0.015
+
+--[[--
+Starts the fast read, if it is not already running.
+
+Self-cancelling: the tick asks the engine whether it is still worth doing
+and simply stops when it is not, so nothing has to remember to turn it off
+and a reader left alone goes quiet by itself.
+--]]--
+function Duo:startReadingBriskly()
+    if Duo.reading_briskly then return end
+    Duo.reading_briskly = true
+    local function tick()
+        if not Core:isBrisk() or not Core:isActive() then
+            Duo.reading_briskly = false
+            return
+        end
+        pcall(function() Core:pollOnce() end)
+        UIManager:scheduleIn(Duo.BRISK_EVERY, tick)
+    end
+    UIManager:scheduleIn(Duo.BRISK_EVERY, tick)
 end
 
 --------------------------------------------------------------------------
