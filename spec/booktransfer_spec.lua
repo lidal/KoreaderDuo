@@ -306,6 +306,103 @@ T.describe("sending and receiving a file", function()
     end)
 end)
 
+T.describe("a book that arrives damaged", function()
+    local Checksum = require("duo/checksum")
+
+    T.it("computes the ordinary CRC-32, so anything else can check it too", function()
+        -- The standard vectors. A digest that is nearly right is worse than
+        -- none: it would be compared against the other device's right one
+        -- for ever, and every book would look damaged.
+        T.assertEquals(Checksum.of("123456789"), "cbf43926")
+        T.assertEquals(Checksum.of(""), "00000000")
+        T.assertEquals(Checksum.of("The quick brown fox jumps over the lazy dog"), "414fa339")
+        -- And it is the same fed a piece at a time, which is how a book
+        -- goes past it.
+        local running = Checksum.new()
+        running:add("12345")
+        running:add("6789")
+        T.assertEquals(running:value(), "cbf43926")
+    end)
+
+    T.it("throws away a book whose bytes are not the bytes that were sent", function()
+        --[[
+        Book chunks are the one thing on this link that carries no
+        signature -- an HMAC over every kilobyte of a several-megabyte file
+        is more than a reader's processor should be asked for. The byte
+        count already catches a chunk the line ate; what it cannot catch is
+        a chunk that arrived the right length and wrong, which on a wire
+        with no parity is exactly what a flipped bit looks like.
+        ]]
+        local body = string.rep("a page of a book\n", 400)
+        local path = TMP .. "/crc.epub"
+        local out = assert(io.open(path, "wb"))
+        out:write(body)
+        out:close()
+
+        local sender = assert(BookTransfer.newSender(path, { chunk_size = 512 }))
+        local receiver = assert(BookTransfer.newReceiver{
+            directory = TMP .. "/incoming",
+            name = "crc.epub",
+            size = sender.size,
+        })
+        while true do
+            local chunk = sender:next()
+            if not chunk then break end
+            T.assertTrue(receiver:write(chunk))
+        end
+        local sent_digest = sender:digest()
+        T.assertTrue(sent_digest ~= nil and #sent_digest == 8,
+            "the sender never worked out what it had sent")
+        sender:close()
+
+        -- The right bytes go through.
+        local ok_path = receiver:finish(sent_digest)
+        T.assertTrue(ok_path ~= nil, "a good book was refused")
+
+        -- And the wrong ones do not, whatever the length says.
+        local again = assert(BookTransfer.newReceiver{
+            directory = TMP .. "/incoming",
+            name = "crc2.epub",
+            size = #body,
+        })
+        local sender2 = assert(BookTransfer.newSender(path, { chunk_size = 512 }))
+        local first = true
+        while true do
+            local chunk = sender2:next()
+            if not chunk then break end
+            if first then
+                -- One character of one chunk, same length, different book.
+                chunk = chunk:gsub("^.", chunk:sub(1, 1) == "Y" and "Z" or "Y")
+                first = false
+            end
+            again:write(chunk)
+        end
+        sender2:close()
+        local bad, why = again:finish(sent_digest)
+        T.assertNil(bad, "a damaged book was kept")
+        T.assertMatch(tostring(why), "damaged")
+    end)
+
+    T.it("keeps a book when neither end could work out a digest", function()
+        -- Nothing here refuses to send a book because it could not check
+        -- it: the count is still there, and no digest is where this was
+        -- before it existed.
+        local path = TMP .. "/nodigest.epub"
+        local out = assert(io.open(path, "wb"))
+        out:write("a short book")
+        out:close()
+        local sender = assert(BookTransfer.newSender(path))
+        local receiver = assert(BookTransfer.newReceiver{
+            directory = TMP .. "/incoming",
+            name = "nodigest.epub",
+            size = sender.size,
+        })
+        receiver:write(sender:next())
+        sender:close()
+        T.assertTrue(receiver:finish("") ~= nil, "an unchecked book was refused")
+    end)
+end)
+
 -- After the run, not before it: describe() only registers, run() executes.
 local exit_code = T.run()
 os.execute("rm -rf " .. TMP)

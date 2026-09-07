@@ -23,6 +23,7 @@ local Discovery = require("duo/discovery")
 local Link = require("duo/link")
 local NetUtil = require("duo/netutil")
 local Protocol = require("duo/protocol")
+local Sha256 = require("duo/sha256")
 local Spread = require("duo/spread")
 local TcpTransport = require("duo/transport_tcp")
 local SerialTransport = require("duo/transport_serial")
@@ -1453,6 +1454,8 @@ function Core:stop(reason, goodbye, deliberate)
         self.connector = nil
     end
     self.reconnect_at = nil
+    self.turn_pending = nil
+    self.resync_asked_at = nil
     -- A fresh start deserves a prompt first try at the line, whatever the
     -- last episode spent working out about it.
     self.wire_open_failures = 0
@@ -2147,6 +2150,7 @@ function Core:pollOnce()
         self.resume_listing_wanted = nil
         pcall(function() self:resumeListingWhereItStood() end)
     end
+    self:checkTurnAnswered()
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
     self:checkLink()   -- and this is how the network under it is
@@ -2333,6 +2337,10 @@ function Core:adoptStream(stream, is_leader)
         -- should hear about that the same way it hears about a close, minus
         -- the part that goes looking for a new connection.
         on_unready = function(_, why) self:onLinkUnready(link, why) end,
+        -- Where this device stands, on every heartbeat, so that a message
+        -- the line ate repairs itself. See heartbeatFields.
+        on_heartbeat = function() return self:heartbeatFields(link) end,
+        on_heard_heartbeat = function(_, msg) self:heardHeartbeat(link, msg) end,
         -- Who this device is, so the other end can tell a reconnection from
         -- a second reader arriving.
         id = self.instance_id,
@@ -2578,6 +2586,111 @@ function Core:onLinkUnready(link, why)
     -- did stop talking for a moment.
     self.told_connected_to = nil
     self:changed()
+end
+
+--------------------------------------------------------------------------
+-- The heartbeat, which is also the repair
+--------------------------------------------------------------------------
+
+--[[--
+How long to leave between asking for the state again, in seconds.
+
+Long enough that a device which is merely mid-relayout is not asked twice
+for the same thing, short enough that a page turn the line ate is put right
+before the reader has finished being annoyed by it.
+--]]--
+Core.RESYNC_EVERY = 3
+
+--[[--
+A short fingerprint of everything the two devices are supposed to agree on.
+
+Not a checksum of a message -- a checksum of a *belief*. Everything Duo
+shares is absolute rather than incremental: "you are on page 12", "the
+light is at 4", "lay the book out like this". Nothing needs replaying in
+order, and nothing needs a sequence number; a device that has fallen behind
+only has to notice, and ask.
+
+Which makes this the whole of the error correction, and the reason there is
+no retransmit buffer anywhere in Duo. On Wi-Fi none of it is needed, since
+TCP repairs what it carries. On a wire nothing does: three soldered pads
+have no CRC and no acknowledgement, so a message the line eats is simply
+gone, and the tag on the next one cannot bring it back. What it can do is
+make the disagreement visible within two seconds.
+--]]--
+function Core:sharedSignature()
+    local parts = {}
+    for _, key in ipairs(SHARED_SETTINGS) do
+        parts[#parts + 1] = tostring(self:get(key))
+    end
+    parts[#parts + 1] = tostring(self:typographySignature() or "")
+    local light = self.frontlight_snapshot
+    if light then
+        parts[#parts + 1] = ("%s/%s/%s"):format(
+            tostring(light.on), tostring(light.intensity), tostring(light.warmth))
+    end
+    return Sha256.hex(table.concat(parts, "|")):sub(1, 8)
+end
+
+--[[--
+What this device puts on its heartbeat.
+
+Only the leader, because only the leader has anything to assert: where the
+pair stands is its to decide, and a follower repeating its own idea of it
+back would be agreeing with itself.
+--]]--
+function Core:heartbeatFields()
+    if not self:isLeader() then return nil end
+    local fields = { cs = self:sharedSignature() }
+    if self.reader and self.reader.getPage then
+        fields.lp = self.reader.getPage()
+    end
+    if self.browser and self:get("share_browser") then
+        local state = self:browserState()
+        if state then fields.bp = state.page end
+    end
+    return fields
+end
+
+--[[--
+Reads a heartbeat, and asks for the state again when this device disagrees
+with it.
+
+Three things can disagree, and each one is a message the line ate: the page
+the leader is on, the screenful of the listing it is on, and the settings
+the pair is supposed to share. Any of them is answered the same way -- ask,
+and the leader sends everything.
+
+Rate limited, because a device in the middle of relaying out a book
+disagrees for a second or two quite legitimately, and asking twice a second
+through that would be a burst of traffic at the exact moment the reader is
+busiest.
+--]]--
+function Core:heardHeartbeat(link, msg)
+    if self:isLeader() or not link then return end
+    local reason = nil
+    local leader_page = Protocol.num(msg, "lp")
+    if leader_page and self.leader_page and leader_page ~= self.leader_page then
+        reason = "the leader is on a page this device was never told about"
+    end
+    local listing = Protocol.num(msg, "bp")
+    if not reason and listing and self.browser and self:get("share_browser") then
+        local state = self:browserState()
+        if state and self.browser_leader_page and listing ~= self.browser_leader_page then
+            reason = "the leader is on a screenful of the list this device was never told about"
+        end
+    end
+    if not reason and msg.cs and msg.cs ~= "" and msg.cs ~= self:sharedSignature() then
+        reason = "the two devices no longer agree on what they share"
+    end
+    if not reason then
+        self.resync_wanted_at = nil
+        return
+    end
+    local now = Util.now()
+    if self.resync_asked_at and now - self.resync_asked_at < Core.RESYNC_EVERY then return end
+    self.resync_asked_at = now
+    self:log("asking for the state again:", reason)
+    link:send(Protocol.SYNC, {})
 end
 
 --------------------------------------------------------------------------
@@ -2833,10 +2946,63 @@ function Core:handleRelativeTurn(diff)
     end
     local link = self:getReadyLinks()[1]
     if not link then return false end
-    link:send(Protocol.TURN, { dir = diff })
+    --[[
+    Given a name, so that asking again is safe.
+
+    A turn is the one thing this device sends that is not a statement about
+    the world: everything else says "the light is at 4" or "you are on page
+    12" and can be repeated all day. This says "move", and a wire that eats
+    it leaves a reader who tapped and watched nothing happen -- the one
+    loss somebody feels directly. So it is asked again, and the name is what
+    stops the second asking moving the pair twice when the first arrived
+    after all.
+    ]]
+    local id = Util.randomHex(3)
+    self.turn_pending = { id = id, dir = diff, at = Util.now(), tries = 1 }
+    link:send(Protocol.TURN, { dir = diff, id = id })
     self:noteTurnSent("turn")
     self:turnAhead(diff)
     return true
+end
+
+--[[--
+How long to wait for a turn to be answered before asking again, in seconds.
+
+A turn crosses to the leader, moves a real reader and comes back as a page
+for this screen, which on a large book is most of a second. Asking again
+sooner than that would be asking a device that is working on it.
+--]]--
+Core.TURN_RETRY = 1.2
+
+--- How many times to ask. Two, because a line that ate both is not a line
+--- one more will get through.
+Core.TURN_TRIES = 3
+
+--[[--
+Asks again for a turn the leader never answered.
+
+Any state from the leader is the answer, whatever it says: it may be the
+page this device asked for, or the page it was already on because the turn
+was refused at the end of the book. Either way the leader has spoken, and
+there is nothing left to wait for.
+--]]--
+function Core:checkTurnAnswered()
+    local pending = self.turn_pending
+    if not pending then return end
+    if not self:isConnected() then self.turn_pending = nil return end
+    local now = Util.now()
+    if now - pending.at < Core.TURN_RETRY then return end
+    if pending.tries >= Core.TURN_TRIES then
+        self:log("the turn was never answered; giving up on it")
+        self.turn_pending = nil
+        return
+    end
+    local link = self:getReadyLinks()[1]
+    if not link then self.turn_pending = nil return end
+    pending.tries = pending.tries + 1
+    pending.at = now
+    self:log("no answer to the turn; asking again", ("(%d)"):format(pending.tries))
+    link:send(Protocol.TURN, { dir = pending.dir, id = pending.id })
 end
 
 --[[--
@@ -3540,6 +3706,9 @@ function Core:applyBrowser(msg)
             Protocol.num(msg, "cols"), Protocol.num(msg, "rows"))
     end
     local page = Protocol.num(msg, "page", 1)
+    -- Kept so a heartbeat can be compared with it: the leader's own
+    -- screenful, not this device's half of the spread.
+    self.browser_leader_page = Protocol.num(msg, "leader_page")
     self.browser.goToPage(page)
     self.applying_remote = false
     --[[
@@ -4521,7 +4690,13 @@ function Core:pumpBookSender()
         sent = sent + 1
         local chunk = transfer.sender:next()
         if not chunk then
-            transfer.link:send(Protocol.BOOK_DONE, { size = transfer.sender.size })
+            transfer.link:send(Protocol.BOOK_DONE, {
+                size = transfer.sender.size,
+                -- What these bytes came to on the way out, so the far end
+                -- can say whether the same bytes arrived. Book chunks are
+                -- the one thing here that carries no signature.
+                crc = transfer.sender:digest() or "",
+            })
             transfer.sender:close()
             self:clearTemporary(transfer)
             self.book_sender = nil
@@ -4619,9 +4794,9 @@ function Core:handleBookData(msg)
     end
 end
 
-function Core:handleBookDone()
+function Core:handleBookDone(digest)
     if not self.book_receiver then return end
-    local path, err = self.book_receiver:finish()
+    local path, err = self.book_receiver:finish(digest)
     self.book_receiver = nil
     local request = self.book_request
     self.book_request = nil
@@ -5152,6 +5327,8 @@ function Core:handleMessage(link, msg)
         self.leader_page = Protocol.num(msg, "leader_page")
         self.my_slot = Protocol.num(msg, "slot")
         self.spread_step = Protocol.num(msg, "step")
+        -- The leader has spoken, which is the answer whatever it says.
+        self.turn_pending = nil
         self:reportOwnPageCount(link, Protocol.num(msg, "pages"))
         self:checkPagination(Protocol.num(msg, "pages"), msg.typo)
         self:applyRemotePage(Protocol.num(msg, "page"),
@@ -5163,7 +5340,27 @@ function Core:handleMessage(link, msg)
         -- Timed on this side too: a slow turn is either the network or this
         -- device moving a real reader, and only the leader can tell which.
         local began = self:isVerbose() and Util.now() or nil
-        self:applyRelativeTurn(Protocol.num(msg, "dir", 1))
+        --[[
+        By name, because the follower asks again when the line eats one and
+        the second asking must not move the pair twice. A turn with no name
+        is from an older build and is acted on as it always was.
+        ]]
+        local id = msg.id
+        if id and id ~= "" and link.last_turn_id == id then
+            self:log("that turn has already been served; answering again rather than moving")
+            self:sendStateTo(link)
+            return
+        end
+        link.last_turn_id = id
+        local moved = self:applyRelativeTurn(Protocol.num(msg, "dir", 1))
+        --[[
+        And answered whether or not anything moved. A refused turn -- the
+        end of the book -- used to be answered with silence, which from the
+        other end is indistinguishable from a turn the line ate, and had the
+        follower asking twice more for something that was never going to
+        happen.
+        ]]
+        if not moved then self:sendStateTo(link) end
         if began then
             self:log(("served a follower's turn in %.0fms"):format((Util.now() - began) * 1000))
         end
@@ -5219,7 +5416,7 @@ function Core:handleMessage(link, msg)
     elseif msg.type == Protocol.BOOK_DATA then
         self:handleBookData(msg)
     elseif msg.type == Protocol.BOOK_DONE then
-        self:handleBookDone()
+        self:handleBookDone(msg.crc)
     elseif msg.type == Protocol.BOOK_ERR then
         self:handleBookError(msg)
     elseif msg.type == Protocol.RELOAD then

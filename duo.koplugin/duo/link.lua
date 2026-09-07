@@ -383,6 +383,16 @@ function Link.new(options)
         on_ready = options.on_ready,
         on_close = options.on_close,
         on_identify = options.on_identify,
+        --[[
+        What to put on the heartbeat, and what to do with one that arrives.
+
+        The link owns the heartbeat's timing and knows nothing about pages;
+        the engine knows about pages and should not be running a second
+        timer beside this one. So the link asks what to carry and hands over
+        what came back.
+        ]]
+        on_heartbeat = options.on_heartbeat,
+        on_heard_heartbeat = options.on_heard_heartbeat,
         id = options.id or "",
         trace = options.trace,
         reader = Protocol.newReader(),
@@ -908,6 +918,14 @@ function Link:dispatch(msg)
     msg.mac = nil
     if msg.type == Protocol.PING then
         self:sendMessage(Protocol.PONG, { t = msg.t })
+        --[[
+        Answered first, then read. A heartbeat carries where the other
+        device stands, and the round trip should not wait behind whatever
+        this end decides to do about it.
+        ]]
+        if self.on_heard_heartbeat then
+            pcall(self.on_heard_heartbeat, self, msg)
+        end
         return
     end
     if msg.type == Protocol.PONG then
@@ -971,7 +989,14 @@ function Link:checkTimers()
         return
     end
     if now - self.last_tx >= Link.PING_INTERVAL then
-        self:sendMessage(Protocol.PING, { t = string.format("%.3f", now) })
+        local beat = { t = string.format("%.3f", now) }
+        if self.on_heartbeat then
+            local ok, extra = pcall(self.on_heartbeat, self)
+            if ok and type(extra) == "table" then
+                for key, value in pairs(extra) do beat[key] = value end
+            end
+        end
+        self:sendMessage(Protocol.PING, beat)
     end
 end
 

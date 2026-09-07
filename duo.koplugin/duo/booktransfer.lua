@@ -15,6 +15,7 @@ swallowing memory.
 --]]--
 
 local Base64 = require("duo/base64")
+local Checksum = require("duo/checksum")
 
 local BookTransfer = {}
 
@@ -135,6 +136,9 @@ function BookTransfer.newSender(path, options)
         sent = 0,
         chunk_size = options.chunk_size or BookTransfer.CHUNK,
         done = false,
+        -- Run over the file as it is read, so the far end has something to
+        -- check the book against. See duo.checksum.
+        crc = Checksum.new(),
     }, Sender)
 end
 
@@ -147,7 +151,13 @@ function Sender:next()
         return nil
     end
     self.sent = self.sent + #data
+    if self.crc then self.crc:add(data) end
     return Base64.encodeUrl(data)
+end
+
+--- The checksum of everything sent so far, or nil where there is none.
+function Sender:digest()
+    return self.crc and self.crc:value() or nil
 end
 
 function Sender:progress()
@@ -208,6 +218,7 @@ function BookTransfer.newReceiver(options)
         part_path = part_path,
         size = size,
         received = 0,
+        crc = Checksum.new(),
     }, Receiver)
 end
 
@@ -222,6 +233,7 @@ function Receiver:write(encoded)
     end
     self.file:write(data)
     self.received = self.received + #data
+    if self.crc then self.crc:add(data) end
     return true
 end
 
@@ -230,15 +242,35 @@ function Receiver:progress()
     return self.received / self.size
 end
 
---- Moves the finished file into place.
--- @treturn string the path, or nil plus an error message
-function Receiver:finish()
+--[[--
+Moves the finished file into place.
+
+@tparam[opt] string digest  what the sender made of the same bytes. Where
+    both ends could compute one and they differ, the book is thrown away
+    rather than kept: a book with a bad byte in it is worse than no book,
+    because nothing later will ever look at it again.
+@treturn string the path, or nil plus an error message
+--]]--
+function Receiver:finish(digest)
     if not self.file then return nil, "transfer already finished" end
     self.file:close()
     self.file = nil
     if self.size > 0 and self.received ~= self.size then
         os.remove(self.part_path)
         return nil, ("the book arrived incomplete (%d of %d bytes)"):format(self.received, self.size)
+    end
+    --[[
+    The count catches a chunk the line ate. It cannot catch a chunk that
+    arrived the right length and wrong, which on a wire with no parity is
+    exactly what a flipped bit looks like -- and book chunks are the one
+    thing on this link that carries no signature.
+    ]]
+    if digest and digest ~= "" and self.crc then
+        local mine = self.crc:value()
+        if mine ~= digest then
+            os.remove(self.part_path)
+            return nil, ("the book arrived damaged (%s, expected %s)"):format(mine, digest)
+        end
     end
     os.remove(self.final_path)
     local ok, err = os.rename(self.part_path, self.final_path)

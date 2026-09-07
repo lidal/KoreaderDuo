@@ -3332,6 +3332,142 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("putting right what the line ate", function()
+    --[[
+    There is no retransmission anywhere in Duo, and on a wire nothing below
+    it provides any: three soldered pads have no CRC and no acknowledgement,
+    so a message the line eats is gone and the tag on the next one cannot
+    bring it back. What everything here does instead is make the
+    disagreement visible, because everything Duo shares is a statement about
+    the world rather than an instruction -- "you are on page 12", not
+    "advance one" -- and a statement can simply be made again.
+    ]]
+    T.it("carries where the leader stands on every heartbeat", function()
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local beat = Core:heartbeatFields()
+        T.assertTrue(beat ~= nil, "the leader said nothing about where it is")
+        T.assertEquals(beat.lp, Core.reader.getPage())
+        T.assertTrue(beat.cs and #beat.cs == 8, "no fingerprint of what the two share")
+
+        -- A follower has nothing to assert: where the pair stands is the
+        -- leader's to decide, and repeating its own idea back would be
+        -- agreeing with itself.
+        Core.role = Core.ROLE_FOLLOWER
+        T.assertNil(Core:heartbeatFields())
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("asks for the state again when a heartbeat disagrees with it", function()
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        local sent = {}
+        local link = { slot = 1, send = function(_, kind) sent[#sent + 1] = kind end }
+
+        -- Agreement is silence.
+        Core.leader_page = 10
+        Core.resync_asked_at = nil
+        Core:heardHeartbeat(link, { lp = "10", cs = Core:sharedSignature() })
+        T.assertEquals(#sent, 0, "it asked about a state it already had")
+
+        -- A page it was never told about is a message the line ate.
+        Core:heardHeartbeat(link, { lp = "12", cs = Core:sharedSignature() })
+        T.assertEquals(sent[1], "SYNC", "it sat on a page the leader had left")
+
+        -- And it does not ask twice a second while the other device is
+        -- busy relaying a book out.
+        sent = {}
+        Core:heardHeartbeat(link, { lp = "12", cs = Core:sharedSignature() })
+        T.assertEquals(#sent, 0, "it asked again before the first answer could arrive")
+
+        -- Settings that have drifted are the same question.
+        Core.resync_asked_at = nil
+        Core.leader_page = 10
+        sent = {}
+        Core:heardHeartbeat(link, { lp = "10", cs = "0badf00d" })
+        T.assertEquals(sent[1], "SYNC", "the two disagreed about what they share and neither asked")
+
+        Core.leader_page = nil
+        Core.resync_asked_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("asks again for a turn nobody answered, by name", function()
+        --[[
+        The one thing Duo sends that is not a statement: this says "move",
+        and a wire that eats it leaves somebody who tapped and watched
+        nothing happen. So it is asked again -- and the name is what stops
+        the second asking moving the pair twice when the first arrived after
+        all.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.follower_can_turn = true
+        local sent = {}
+        local real_links = Core.getReadyLinks
+        Core.getReadyLinks = function()
+            return {{ slot = 1, isReady = function() return true end,
+                      send = function(_, kind, fields) sent[#sent + 1] = { kind, fields } end }}
+        end
+
+        T.assertTrue(Core:handleRelativeTurn(1))
+        T.assertEquals(sent[1][1], "TURN")
+        local id = sent[1][2].id
+        T.assertTrue(id and id ~= "", "the turn went out with no name on it")
+
+        -- Not asked again while the leader might still be working on it.
+        Core:checkTurnAnswered()
+        T.assertEquals(#sent, 1)
+
+        -- Asked again once that time is up, with the same name.
+        Core.turn_pending.at = Core.turn_pending.at - Core.TURN_RETRY - 1
+        Core:checkTurnAnswered()
+        T.assertEquals(#sent, 2, "the tap was lost and never asked about")
+        T.assertEquals(sent[2][2].id, id, "it asked again under a different name")
+
+        -- Any word from the leader is the answer, whatever it says.
+        Core:handleMessage(Core:getReadyLinks()[1],
+            { type = "STATE", page = "5", leader_page = "4", slot = "1" })
+        T.assertNil(Core.turn_pending, "it went on waiting after being answered")
+
+        Core.getReadyLinks = real_links
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("serves a repeated turn once, and answers it twice", function()
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local moved = 0
+        local real_apply = Core.applyRelativeTurn
+        Core.applyRelativeTurn = function() moved = moved + 1 return true end
+        local answered = 0
+        local real_send = Core.sendStateTo
+        Core.sendStateTo = function() answered = answered + 1 end
+        local link = { slot = 1, send = function() end }
+
+        Core:handleMessage(link, { type = "TURN", dir = "1", id = "abc" })
+        Core:handleMessage(link, { type = "TURN", dir = "1", id = "abc" })
+        T.assertEquals(moved, 1, "asking twice moved the pair twice")
+        T.assertEquals(answered, 1, "the repeat went unanswered, so it will be asked a third time")
+
+        -- A refused turn is answered too: silence is indistinguishable from
+        -- a turn the line ate, and had the follower asking twice more for
+        -- something that was never going to happen.
+        Core.applyRelativeTurn = function() return false end
+        answered = 0
+        Core:handleMessage(link, { type = "TURN", dir = "1", id = "def" })
+        T.assertEquals(answered, 1, "a refusal was answered with silence")
+
+        Core.applyRelativeTurn = real_apply
+        Core.sendStateTo = real_send
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("leaving a book", function()
     T.it("says so before tearing the reader down, not after arriving", function()
         --[[

@@ -445,7 +445,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-584 tests, with the interesting parts unmocked: two and three device
+591 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -721,6 +721,51 @@ cannot show is anything electrical: baud rates, framing errors, a full FIFO,
 or whether flow control does what it says on this driver. Those wait for a
 real wire, which is what the measurement in **Call down the wire** is for.
 
+## What happens when the line eats a message
+
+Over Wi-Fi, nothing: TCP checksums what it carries and retransmits what it
+loses, and 802.11 adds a CRC under that. Corruption never reaches Duo and
+loss is repaired below it.
+
+A wire has none of that. Three soldered pads carry no parity, no CRC and no
+acknowledgement, so a message the line eats is gone and nothing underneath
+will bring it back. Duo does not add a retransmit layer for it — that would
+be re-implementing TCP, badly, over a link that mostly does not need one.
+Three cheaper things cover it instead.
+
+**Detection is already there, and it is strong.** Every message after the
+handshake carries a 64-bit truncated HMAC, built to stop injection and
+doubling as an integrity check: a message with a byte missing fails it
+essentially always. Newline framing contains the damage to one line, and
+the grammar rejects most of the rest before the tag is reached. On a wire a
+failed tag means a damaged message rather than an attacker, so the message
+is dropped and reading goes on.
+
+**Correction is the heartbeat.** Everything Duo shares is a statement about
+the world rather than an instruction — "you are on page 12", not "advance
+one" — so nothing needs replaying in order and nothing needs a sequence
+number. The leader's heartbeat carries where it stands and an eight-character
+fingerprint of the settings, typography and light the two are supposed to
+share; a follower that disagrees asks for the state again and is sent
+everything. Any lost STATE, BROWSE, CONF, TYPO or LIGHT therefore puts
+itself right within about two seconds, at a cost of a few bytes on a message
+that was already being sent.
+
+**A page turn is the exception**, because it is the one message that is an
+instruction. It carries a name; the follower asks again if nothing comes
+back within a second or so, and the leader ignores a repeat it has already
+served rather than turning twice. A refused turn — the end of the book — is
+answered rather than met with silence, which from the other end is
+indistinguishable from a turn the line ate.
+
+**Books are checked with a CRC-32.** Chunks are the one thing here that
+carries no signature: an HMAC over every kilobyte of a several-megabyte file
+is more than a reader's processor should be asked for. The byte count
+already catches a chunk the line ate; the digest catches a chunk that
+arrived the right length and wrong. A book that does not match is thrown
+away rather than kept, because a book with a bad byte in it is worse than no
+book — nothing will ever look at it again.
+
 ## Reconnecting the plain way
 
 **Duo → Reconnect the plain way** is on by default: a fixed second between
@@ -833,6 +878,7 @@ duo.koplugin/
     directlink.lua          the router-free link: probe, host, join
     netutil.lua             local address, Kindle firewall, radio power saving
     sha256.lua              for the pairing proof
+    checksum.lua            CRC-32, for the one thing that is not signed
     log.lua                 Duo's own log file
     util.lua
   tools/
