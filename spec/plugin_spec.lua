@@ -3332,6 +3332,55 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("leaving one list for another", function()
+    T.it("tells the other device when the list itself changes, not only the page", function()
+        --[[
+        Reported from a pair: browse Favourites, come back to the library,
+        and both readers sit on page one until somebody turns a page.
+
+        Favourites, History and a collection are not folders. They carry the
+        same path as whatever the reader was last in, or none at all, so
+        leaving one for the library changed nothing the check looked at --
+        it compared the page, the path and the count and not which list it
+        was. Turning a page then broadcast and put the two right, which is
+        what made paging look like the only thing that worked.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.settings.share_browser = true
+        local told = 0
+        local real_broadcast = Core.broadcastBrowser
+        Core.broadcastBrowser = function() told = told + 1 end
+        local real_connected = Core.isConnected
+        Core.isConnected = function() return true end
+
+        local listing = { page = 1, path = "/books", view = "favorites",
+                          count = 12, perpage = 6, pages = 2 }
+        local real_state = Core.browserState
+        Core.browserState = function() return listing end
+
+        Core.browser = Core.browser or { getState = function() return listing end }
+        Core.browser_state = { page = 1, path = "/books", view = "favorites",
+                               count = 12, perpage = 6 }
+        Core:checkBrowser()
+        T.assertEquals(told, 0, "it announced a listing that had not moved")
+
+        -- The same folder, the same page, the same number of books, and a
+        -- different list.
+        listing.view = "folder:/books"
+        Core:checkBrowser()
+        T.assertEquals(told, 1, "it left the other device in a list nobody was in")
+
+        Core.browserState = real_state
+        Core.broadcastBrowser = real_broadcast
+        Core.isConnected = real_connected
+        Core.browser = nil
+        Core.browser_state = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("the menu Duo redraws", function()
     T.it("does not redraw a menu that is no longer on screen", function()
         --[[
@@ -3794,7 +3843,10 @@ T.describe("coming back to a book", function()
         Core.settings.share_browser = true
         local here = Core:browserState()
 
-        -- It was on the fourth screenful when it left.
+        -- It was on the fourth screenful when it left, and going back there
+        -- happens as the browser is attached rather than a poll later: a
+        -- listing is not a document, nothing is half-built, and waiting is
+        -- exactly what leaves the first screenful painted and then replaced.
         Core.resume_listing = { path = here.path, view = here.view, page = 4 }
         Core:resumeListingWhereItStood()
         T.assertEquals(Core:browserState().page, 4,

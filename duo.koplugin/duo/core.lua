@@ -2254,10 +2254,6 @@ function Core:pollOnce()
         self.resume_wanted = nil
         pcall(function() self:resumeWhereItStood() end)
     end
-    if self.resume_listing_wanted then
-        self.resume_listing_wanted = nil
-        pcall(function() self:resumeListingWhereItStood() end)
-    end
     self:checkTurnAnswered()
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
@@ -3656,9 +3652,17 @@ function Core:attachBrowser(binding)
         The leader answers SYNC with the listing among everything else, so
         one line here closes the gap for good.
         ]]
-        -- On the next turn, for the reason above: the file manager is still
-        -- being built when this runs.
-        self.resume_listing_wanted = true
+        --[[
+        Now, not on the next turn of the loop.
+
+        The reader's version of this waits, because it runs while KOReader
+        is still standing a document up and moving a page from inside a
+        half-built view took a device down. A listing is not a document:
+        there is nothing being built here that a page number reaches into,
+        and waiting is what leaves the first screenful painted and then
+        replaced -- which is the whole thing this exists to avoid.
+        ]]
+        pcall(function() self:resumeListingWhereItStood() end)
         local link = self:getReadyLinks()[1]
         if link then link:send(Protocol.SYNC, {}) end
         --[[
@@ -3693,7 +3697,6 @@ function Core:detachBrowser(binding)
     if binding and self.browser and self.browser ~= binding then return end
     self.browser = nil
     self.browser_state = nil
-    self.resume_listing_wanted = nil
     self:changed()
 end
 
@@ -4216,9 +4219,20 @@ function Core:checkBrowser()
     if self.applying_remote then return end
     local state = self:browserState()
     if not state then return end
+    --[[
+    The view as well as the folder, which is what this used to miss.
+
+    Favourites, History and a collection are not folders: they have the same
+    path as whatever the reader was last in, or none at all, so leaving one
+    for the library changed nothing this comparison looked at. Both devices
+    then sat on page one of a listing neither had been told about, and
+    stayed there until somebody turned a page -- which broadcast, and put
+    them right, and made it look like paging was the only thing that worked.
+    ]]
     local previous = self.browser_state
     if previous and previous.page == state.page and previous.path == state.path
-            and previous.count == state.count then
+            and previous.view == state.view and previous.count == state.count
+            and previous.perpage == state.perpage then
         return
     end
     self:broadcastBrowser()
