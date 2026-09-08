@@ -3900,10 +3900,47 @@ function Duo:onCoreChanged()
     self:refreshMenu()
 end
 
-function Duo:refreshMenu()
-    if self.menu_container and self.menu_container.updateItems then
-        pcall(function() self.menu_container:updateItems() end)
+--[[--
+True when the menu Duo last drew into is still the menu on screen.
+
+The container is remembered from the callback that opened it and nothing
+ever handed it back, so it outlived the menu, the document and the plugin
+instance. Redrawing a menu that is no longer there is not a no-op: asking a
+TouchMenu to update its items paints it, which is how opening a book on the
+follower flashed the top menu across the screen before the book appeared.
+
+Asked of the window stack rather than remembered, because there is no event
+that says "this menu has gone" -- the reader tears widgets down without
+telling a plugin whose widget it was.
+--]]--
+function Duo:menuIsOnScreen()
+    local container = self.menu_container
+    if not container or not container.updateItems then return false end
+    -- Different KOReaders keep it under different names, and one of them is
+    -- a set rather than a list.
+    local stack = UIManager._window_stack or UIManager.window_stack
+    if type(stack) == "table" then
+        for index = 1, #stack do
+            local entry = stack[index]
+            if entry == container or (type(entry) == "table" and entry.widget == container) then
+                return true
+            end
+        end
+        if #stack > 0 then return false end
     end
+    if type(UIManager.shown) == "table" then return UIManager.shown[container] == true end
+    -- Nothing to ask. Better to redraw a menu that has gone than to stop
+    -- redrawing one that has not, on a reader whose internals differ.
+    return true
+end
+
+function Duo:refreshMenu()
+    if not self:menuIsOnScreen() then
+        -- Let go of it, so the next look is not this same question again.
+        self.menu_container = nil
+        return
+    end
+    pcall(function() self.menu_container:updateItems() end)
 end
 
 function Duo:addToMainMenu(menu_items)

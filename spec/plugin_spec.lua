@@ -3332,6 +3332,42 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("the menu Duo redraws", function()
+    T.it("does not redraw a menu that is no longer on screen", function()
+        --[[
+        Reported from a pair: opening a book flashed the top menu across the
+        follower before the book appeared.
+
+        The container is remembered from the callback that opened it and
+        nothing ever hands it back, so it outlives the menu, the document
+        and the plugin instance. Redrawing one that has gone is not a
+        no-op -- asking a TouchMenu to update its items paints it -- and
+        opening a book runs through enough state changes to ask for a
+        redraw several times.
+        ]]
+        reset()
+        local drawn = 0
+        local menu = { updateItems = function() drawn = drawn + 1 end }
+        device.plugin.menu_container = menu
+
+        -- Not on screen: not redrawn, and let go of.
+        device.plugin:refreshMenu()
+        T.assertEquals(drawn, 0, "it painted a menu nobody had open")
+        T.assertNil(device.plugin.menu_container,
+            "it kept hold of a menu that had gone, and will ask again")
+
+        -- On screen: redrawn, which is the whole point of remembering it.
+        device.plugin.menu_container = menu
+        device.UIManager.shown[menu] = true
+        device.plugin:refreshMenu()
+        T.assertEquals(drawn, 1, "it stopped keeping an open menu up to date")
+
+        device.UIManager.shown[menu] = nil
+        device.plugin.menu_container = nil
+        reset()
+    end)
+end)
+
 T.describe("saying what it is doing, or not", function()
     T.it("silences every notice at once, and none of the alerts", function()
         --[[
