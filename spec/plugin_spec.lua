@@ -3777,6 +3777,39 @@ T.describe("leaving a book", function()
         Core.role = Core.ROLE_OFF
         reset()
     end)
+
+    T.it("says it once, from whichever of the reader's events arrives first", function()
+        --[[
+        Leaving a book reaches a plugin through more than one of the
+        reader's events, and which of them comes first differs between
+        builds and between the ways out of a book -- a gesture, the menu,
+        the back button. Picking one and hoping is how the other device came
+        to be told after this one had already drawn its file list. Both
+        announce, and the second is a no-op.
+        ]]
+        reset()
+        Core.role = Core.ROLE_LEADER
+        Core.settings.follow_document = true
+        local sent = 0
+        local real_links = Core.getReadyLinks
+        Core.getReadyLinks = function()
+            return {{ slot = 1, send = function() sent = sent + 1 end,
+                      isReady = function() return true end }}
+        end
+
+        Core.leaving_said_at = nil
+        T.assertTrue(Core:announceLeavingBook())
+        T.assertTrue(not Core:announceLeavingBook(), "it told the other device twice")
+        T.assertEquals(sent, 1)
+
+        -- And being in a book again re-arms it, so the next leaving is said.
+        Core:attachReader(device.plugin.reader_binding)
+        T.assertNil(Core.leaving_said_at, "leaving the next book would go unannounced")
+
+        Core.getReadyLinks = real_links
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
 end)
 
 T.describe("coming back to a book", function()

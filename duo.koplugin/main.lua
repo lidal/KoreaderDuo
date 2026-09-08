@@ -1810,6 +1810,16 @@ function Duo:onCloseWidget()
     self:unwrapPageTurns()
     self:unwrapBrowserTurns()
     self:unwrapFileOpening()
+    --[[
+    Here as well as in onCloseDocument, and whichever arrives first wins.
+
+    Leaving a book reaches a plugin through more than one of the reader's
+    events, and which of them comes first differs between builds and between
+    the ways out of a book -- a gesture, the menu, the back button. Picking
+    one and hoping is how the other device came to be told after this one
+    had already drawn its file list. Announcing from both costs a no-op.
+    ]]
+    if Core:hasReader() then Core:announceLeavingBook() end
     Core:detachReader(self.reader_binding)
     Core:detachBrowser(self.browser_binding)
 end

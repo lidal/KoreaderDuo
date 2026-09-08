@@ -873,6 +873,8 @@ function Core:attachReader(binding)
     self.warned_pagination = false
     self.warned_short_book = false
     self.opening_file = nil -- whatever we were opening has now arrived
+    -- In a book again, so the next time it is left is worth saying.
+    self.leaving_said_at = nil
     -- A different document has its own typography; nothing carries over.
     self.typography_snapshot = nil
     self.typography_checked_at = nil
@@ -2865,12 +2867,29 @@ open. So this says nothing while a book is on its way. Anything it does get
 wrong is corrected by the DOC that follows, which is the same bargain the
 opening announcement already makes.
 --]]--
+--- How long one announcement of leaving covers, in seconds.
+Core.LEAVING_COVERS = 3
+
 function Core:announceLeavingBook()
     if not self:isLeader() or not self:isConnected() then return false end
     if not self:get("follow_document") then return false end
     -- Not while another book is being opened: that tears the reader down
     -- as well, and looks exactly like this from here.
     if self.opening_file then return false end
+    --[[
+    Said once, from whichever hook gets there first.
+
+    Leaving a book reaches the plugin through more than one of the reader's
+    events, and which of them arrives -- and in which order -- differs
+    between builds and between the ways out of a book. So both call this and
+    the second one is a no-op, rather than picking one and being late on the
+    reader where that one is not the first.
+    ]]
+    local now = Util.now()
+    if self.leaving_said_at and now - self.leaving_said_at < Core.LEAVING_COVERS then
+        return false
+    end
+    self.leaving_said_at = now
     self:log("leaving the book - telling the other device now")
     for _, link in ipairs(self:getReadyLinks()) do
         -- Both ends are about to go quiet while they build a listing.
