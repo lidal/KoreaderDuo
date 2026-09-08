@@ -3359,6 +3359,15 @@ T.describe("saying what it is doing, or not", function()
         Core:alert("the leader refused that pairing code")
         T.assertEquals(#warned, 1, "it swallowed something that needed an answer")
 
+        --[[
+        And a book being copied still says how far it has got. That is not
+        Duo narrating itself: it is minutes of a reader doing nothing
+        visible, and the percentage is the only evidence the wait is a
+        transfer rather than a fault.
+        ]]
+        Core:report("Duo: sending Nemesis Games · 40%")
+        T.assertEquals(#said, 2, "a reader was left watching a frozen device")
+
         Core.hooks.notify, Core.hooks.alert = real_notify, real_alert
         Core.settings.notices = true
         reset()

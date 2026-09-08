@@ -576,6 +576,26 @@ function Core:notify(text)
     if self.hooks and self.hooks.notify then self.hooks.notify(text) end
 end
 
+--[[--
+Says something about a wait the reader is in the middle of.
+
+The same thing on screen as a notice, and deliberately not the same thing
+underneath. Notices are Duo narrating itself -- connected, matched the font
+size -- and somebody who has read them once is entitled to switch them off.
+A transfer is not narration: it is minutes of a reader doing nothing
+visible, and "sending Nemesis Games · 40%" is the only evidence that the
+wait is a transfer rather than a fault. Silencing that leaves somebody
+watching a frozen device with no way to tell.
+
+So these ignore the setting. There are a dozen of them and they all belong
+to the same handful of minutes: a copy starting, how far it has got, what
+became of it.
+--]]--
+function Core:report(text)
+    self:log("report:", text)
+    if self.hooks and self.hooks.notify then self.hooks.notify(text) end
+end
+
 function Core:alert(text)
     self:log("alert:", text)
     if self.hooks and self.hooks.alert then self.hooks.alert(text) end
@@ -4373,7 +4393,7 @@ whether to do it at all happens first.
 function Core:beginLibraryFetch(pending)
     if not pending then return end
     self.library = pending
-    self:notify(("Duo: fetching %d book%s (%.1f MB)"):format(
+    self:report(("Duo: fetching %d book%s (%.1f MB)"):format(
         pending.total, pending.total == 1 and "" or "s", (pending.bytes or 0) / 1048576))
     self:changed()
     self:pumpLibrary()
@@ -4408,7 +4428,7 @@ function Core:pumpLibrary()
                 failed, failed == 1 and "" or "s"))
             if self.browser then self.browser.refresh() end
         elseif total > 0 then
-            self:notify(("Duo: the library is in step (%d book%s)"):format(
+            self:report(("Duo: the library is in step (%d book%s)"):format(
                 total, total == 1 and "" or "s"))
             if self.browser then self.browser.refresh() end
             -- The list is a different length than it was a moment ago, so
@@ -4539,7 +4559,7 @@ function Core:fetchBookFor(path, title)
     }
     if link.allowSilence then link:allowSilence() end
     link:send(Protocol.BOOK_REQ, { file = path, digest = "", lib = 1 })
-    self:notify(("Duo: fetching %s"):format(self.book_request.title))
+    self:report(("Duo: fetching %s"):format(self.book_request.title))
     self:changed()
     return true
 end
@@ -4557,7 +4577,7 @@ function Core:stopLibrarySync(reason)
     -- everything up over it.
     self.shelf_pending = nil
     self:setShelfGate(nil)
-    self:notify(("Duo: stopped fetching books%s"):format(reason and (" (" .. reason .. ")") or ""))
+    self:report(("Duo: stopped fetching books%s"):format(reason and (" (" .. reason .. ")") or ""))
     self:changed()
     return true
 end
@@ -4592,7 +4612,7 @@ function Core:requestBook(msg)
     }
     if link.allowSilence then link:allowSilence() end
     link:send(Protocol.BOOK_REQ, { file = msg.file, digest = msg.digest or "" })
-    self:notify(("Duo: asking for %s"):format(msg.title ~= "" and msg.title or "the book"))
+    self:report(("Duo: asking for %s"):format(msg.title ~= "" and msg.title or "the book"))
     return true
 end
 
@@ -4730,7 +4750,7 @@ function Core:handleBookRequest(link, msg)
         title = (not Protocol.bool(msg, "lib") and self.reader and self.reader.getDocument()
             and self.reader.getDocument().title) or "",
     })
-    self:notify(("Duo: sending %s (%.1f MB)"):format(self.book_sender.name, sender.size / 1048576))
+    self:report(("Duo: sending %s (%.1f MB)"):format(self.book_sender.name, sender.size / 1048576))
     self:changed()
 end
 
@@ -4803,7 +4823,7 @@ function Core:pumpBookSender()
             transfer.sender:close()
             self:clearTemporary(transfer)
             self.book_sender = nil
-            self:notify("Duo: the book has been sent")
+            self:report("Duo: the book has been sent")
             self:changed()
             return
         end
@@ -4834,7 +4854,7 @@ function Core:abortBookSend(reason)
         transfer.link:send(Protocol.BOOK_ERR, { reason = reason })
     end
     self:log("sending", transfer.name, "failed:", reason)
-    self:notify(("Duo: could not send %s"):format(transfer.name or "the book"))
+    self:report(("Duo: could not send %s"):format(transfer.name or "the book"))
     self:changed()
 end
 
@@ -4912,7 +4932,7 @@ function Core:handleBookDone(digest)
     self:rememberStub(path, request and request.arriving_stub)
     if request and request.open_when_done then
         -- The user asked for this one by opening it, so it opens.
-        self:notify(("Duo: %s is here"):format(request.title or "the book"))
+        self:report(("Duo: %s is here"):format(request.title or "the book"))
         if self.browser then self.browser.refresh() end
         if self.hooks and self.hooks.openDocument then
             self.opening_file = nil
@@ -4930,7 +4950,7 @@ function Core:handleBookDone(digest)
         return
     end
 
-    self:notify(("Duo: received %s"):format(self.book_title or "the book"))
+    self:report(("Duo: received %s"):format(self.book_title or "the book"))
     -- Straight into it, which is the whole point of having asked.
     if self.hooks and self.hooks.openDocument and request then
         self.opening_file = nil
@@ -5007,7 +5027,7 @@ function Core:reportTransferProgress()
         return
     end
     self.progress_reported = fraction
-    self:notify(("Duo: %s %s · %d%%"):format(
+    self:report(("Duo: %s %s · %d%%"):format(
         direction == "sending" and "sending" or "fetching",
         self.book_title or "the book", math.floor(fraction * 100)))
 end
@@ -5075,7 +5095,7 @@ function Core:cancelTransfer(reason)
     end
     if stopped then
         self.progress_reported = nil
-        self:notify(("Duo: %s"):format(reason or "transfer stopped"))
+        self:report(("Duo: %s"):format(reason or "transfer stopped"))
         self:changed()
     end
     return stopped

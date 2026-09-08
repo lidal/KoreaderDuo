@@ -328,7 +328,7 @@ is the live connection: role, peer, and the pages on show.
 | **Send the book if the other device lacks it** | Hand the file over the link. On. |
 | **Start Duo when KOReader starts** | Reconnect on launch in the last role. A wire always does. |
 | **Watch the link closely** | Look at the link every 20ms while connected, rather than when the loop offers. On; costs ~6ms of processor a second. |
-| **Debug → Say what Duo is doing** | The messages at the top of the screen — connected, matched the font size, the book has been sent. On. |
+| **Debug → Say what Duo is doing** | The messages at the top of the screen — connected, matched the font size, back to the book list. On. A copy in progress still reports itself either way. |
 | **Write a log file**, **Log everything** | See *Reporting something that went wrong*. Both off. |
 | **Pairing code** | Shared secret. Empty means any device may connect. |
 | **Device name**, **Port** | 9970 by default; UDP 9971 for the search. |
