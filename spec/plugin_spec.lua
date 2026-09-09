@@ -3426,6 +3426,66 @@ T.describe("a book being stood up again", function()
 end)
 
 T.describe("leaving one list for another", function()
+    T.it("notices when it is not showing the screenful it was given", function()
+        --[[
+        Everything else here compares the leader's heartbeat with the last
+        message this device was *sent*, so a listing that was set from that
+        message and then rebuilt underneath agrees with itself perfectly
+        while showing the wrong screen. That is what stepping into Favourites
+        and back out to the library did: both devices sat on page one, having
+        been told about the same list, with nothing disagreeing and so
+        nothing asking. Turning a page was the only thing that put it right.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.share_browser = true
+        Core.settings.mode = "spread"
+        Core.my_slot = 1
+        local sent = {}
+        local link = { slot = 1, send = function(_, kind) sent[#sent + 1] = kind end }
+
+        local showing = 1
+        Core.browser = { getState = function()
+            return { page = showing, pages = 10, view = "folder:/books" }
+        end }
+        Core.browser_leader_page = 1
+        Core.browser_leader_view = "folder:/books"
+        Core.resync_asked_at = nil
+
+        -- Told about page one, and showing page one, which for the device
+        -- next to the leader is the one page it must not be showing.
+        Core:heardHeartbeat(link, { bp = "1", bv = "folder:/books", cs = Core:sharedSignature() })
+        T.assertEquals(sent[1], "SYNC",
+            "it agreed with what it had been told while showing the wrong screen")
+
+        -- And when it is where it belongs, it has nothing to ask about.
+        sent = {}
+        showing = 2
+        Core.resync_asked_at = nil
+        Core:heardHeartbeat(link, { bp = "1", bv = "folder:/books", cs = Core:sharedSignature() })
+        T.assertEquals(#sent, 0, "it asked for a listing it was already showing")
+
+        --[[
+        And a device that has stayed in the library while the reader took the
+        other one into Favourites is not showing the wrong screen -- it is
+        showing the right screen of a different list, and Duo does not follow
+        anybody into a view.
+        ]]
+        sent = {}
+        showing = 1
+        Core.browser_leader_view = "favorites"
+        Core.resync_asked_at = nil
+        Core:heardHeartbeat(link, { bp = "1", bv = "favorites", cs = Core:sharedSignature() })
+        T.assertEquals(#sent, 0, "it asked to be moved into a list it is not in")
+
+        Core.browser = nil
+        Core.browser_leader_page = nil
+        Core.browser_leader_view = nil
+        Core.my_slot = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("notices from the heartbeat when the leader has changed list", function()
         --[[
         The check that watches the leader is one mechanism and it can miss:
@@ -3473,6 +3533,7 @@ T.describe("leaving one list for another", function()
         Core.browser = nil
         Core.browser_leader_page = nil
         Core.browser_leader_view = nil
+        Core.my_slot = nil
         Core.resync_asked_at = nil
         Core.role = Core.ROLE_OFF
         reset()

@@ -2930,6 +2930,37 @@ function Core:heardHeartbeat(link, msg)
             and msg.bs ~= self.browser_leader_sig then
             reason = "the leader's list no longer holds what this device was told it held"
         end
+        --[[
+        And last, what this device is actually showing -- which is a
+        different question from what it was told, and the one nothing here
+        used to ask.
+
+        Everything above compares the leader's heartbeat against the last
+        message this device was sent. A listing that was set from that
+        message and then rebuilt underneath agrees with itself perfectly
+        while showing the wrong screen, and that is exactly what stepping
+        into Favourites and back out to the library does: the answer arrives
+        while the file browser is still being stood up, is applied to a list
+        that is then thrown away, and both devices sit on page one of a
+        listing they have both been told about. Nothing disagreed, so nothing
+        asked, and turning a page was the only thing that put it right.
+
+        Only when the two are in the same list. A device that has stayed in
+        the library while the reader took the other one into Favourites is
+        not showing the wrong screen -- it is showing the right screen of a
+        different list, and Duo does not follow anybody into a view.
+        ]]
+        if not reason and listing and self.my_slot and self:sameBrowserView(msg.bv) then
+            local state = self:browserState()
+            local wanted = state and Spread.pageForSlot(listing, self.my_slot, {
+                mode = self:get("mode"),
+                reverse = self:get("reverse"),
+                page_count = state.pages,
+            })
+            if wanted and state.page and state.page ~= wanted then
+                reason = "this device is not on the screenful of the list it was given"
+            end
+        end
     end
     if not reason and msg.cs and msg.cs ~= "" and msg.cs ~= self:sharedSignature() then
         reason = "the two devices no longer agree on what they share"
