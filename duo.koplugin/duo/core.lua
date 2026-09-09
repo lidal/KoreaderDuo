@@ -6046,6 +6046,25 @@ function Core:handleRemoteHomeRequest()
     self.hooks.closeDocument()
 end
 
+--[[--
+Asks the leader to take the pair into a book this device has been tapped on.
+
+Said before opening it here, not instead of opening it here. The leader is
+still the one that decides what page everybody is on, and it says so in the
+announcement that follows -- but there is no reason for the device the
+reader is actually holding to sit in the file list until that arrives. It
+used to, and the pair opened one after the other: the far screen first, then
+the one under the reader's thumb, which is the wrong way round and the one
+order a reader is certain to notice.
+
+The book being opened is recorded here for the same reason the leader
+records it: the announcement will arrive while this device is still parsing,
+and what stops it opening the same book twice is knowing it is already on
+it.
+
+@treturn boolean true when the leader was asked, and this device should now
+open the book itself
+--]]--
 function Core:requestOpen(file, title)
     if not self:isActive() or self:isLeader() then return false end
     -- Going back into a book is the opposite of asking to come out of one.
@@ -6055,7 +6074,12 @@ function Core:requestOpen(file, title)
     local link = self:getReadyLinks()[1]
     if not link then return false end
     link:send(Protocol.OPEN, { file = file, title = title or "" })
-    self:log("asked the leader to open", file)
+    -- Both ends are about to go quiet while they parse it, and neither
+    -- should take the other's silence for a peer that has gone away.
+    if link.allowSilence then link:allowSilence() end
+    self.opening_file = file
+    self.opening_since = Util.now()
+    self:log("asked the leader to open", file, "- and opening it here now")
     return true
 end
 

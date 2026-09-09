@@ -2394,17 +2394,20 @@ function Duo:fetchBeforeOpening(file)
     if not Core:isConnected() or Core:isLeader() then return false end
 
     if not file:lower():match("%.epub$") or not Core:isStub(file) then
-        -- A book both devices can open: let the leader lead the way in, so
-        -- it stays the one deciding what page everybody is on.
+        --[[
+        A book both devices can open. The leader is told first, so it starts
+        on its own copy at the same moment and stays the one deciding what
+        page everybody is on -- and then the tap is handed straight back to
+        the file manager, so this device opens the book now rather than when
+        the leader's announcement comes back.
+
+        Waiting for that answer is what had the pair open one after the
+        other, far screen first. There is nothing to say in the meantime any
+        more, so the message that used to fill the gap has gone with it.
+        ]]
         local name = select(2, util.splitFilePathName(file))
-        if not Core:requestOpen(file, name) then return false end
-        -- The book opens when the leader's answer comes back, a moment
-        -- later. Saying so means the tap is never silent in between.
-        UIManager:show(InfoMessage:new{
-            text = T(_("Opening %1 on both devices…"), name),
-            timeout = 2,
-        })
-        return true
+        Core:requestOpen(file, name)
+        return false
     end
 
     local name = file:gsub("^.*/", "")

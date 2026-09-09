@@ -447,7 +447,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-613 tests, with the interesting parts unmocked: two and three device
+614 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -787,6 +787,14 @@ the next turn of the loop. The only thing given up for it is that a follower
 will not guess ahead on a page turn taken inside that window, because there
 is no end of the book to check the guess against; the turn still happens, by
 the round trip it took before guessing was added.
+
+A tap on a book gets the same treatment from whichever device it lands on.
+The device the reader touched opens the book straight away and tells the
+other one first, so both are parsing at the same moment. Tapping the
+follower used to ask the leader and then wait for its announcement to come
+back — so the far screen opened, and the one under the reader's thumb opened
+after it. The leader still decides what page the pair stands on; it says so
+in the announcement, which arrives while the follower is still parsing.
 
 The same window covers matching typography, for the same reason and a
 bigger one. Duo applies each setting by handing KOReader the event that

@@ -4975,6 +4975,53 @@ T.describe("the log the reader can send on", function()
 end)
 
 T.describe("opening a book on both devices at once", function()
+    T.it("opens it here as well as asking the leader, rather than instead", function()
+        --[[
+        The leader decides what page the pair stands on, which is why it is
+        told first -- but there is no reason for the device the reader is
+        holding to sit in the file list until the answer arrives. Waiting for
+        it had the two open one after the other, far screen first, which is
+        the wrong way round and the order a reader is certain to notice.
+        ]]
+        reset()
+        local sent = {}
+        Core.links = { {
+            slot = 1,
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            poll = function() end,
+            allowSilence = function() end,
+            send = function(_self, kind, fields) sent[#sent+1] = { kind, fields } return true end,
+        } }
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.follow_document = true
+        Core.settings.follower_can_turn = true
+        Core.opening_file = nil
+
+        local book = "/books/real.epub"
+        Core.settings.stubs = { [book] = false }
+        local took = device.Duo:fetchBeforeOpening(book)
+        T.assertTrue(not took,
+            "the tap was swallowed, so this device waited for the far one to open first")
+        T.assertEquals(#sent, 1, "the leader was never asked to come along")
+        T.assertEquals(sent[1][1], "OPEN")
+        T.assertEquals(sent[1][2].file, book)
+
+        --[[
+        And the book is written down as the one being opened, so the
+        leader's announcement -- which arrives while this device is still
+        parsing -- is recognised as the book it is already on rather than a
+        second one to open.
+        ]]
+        T.assertEquals(Core.opening_file, book)
+
+        Core.settings.stubs = nil
+        Core.opening_file = nil
+        Core.links = {}
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("does not report the page a book opens on as a jump", function()
         --[[
         Seen in a real reader's log: "jumped to 1 - asking the leader to

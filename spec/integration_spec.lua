@@ -1342,9 +1342,23 @@ T.describe("two devices, when things go wrong", function()
         callFollower("D:openFileManager{ path = '/books' }")
         callLeader("UIManager.shown_log = {}")
 
+        callFollower("UIManager.shown_log = {}")
+
         callFollower(("D:openFile(%q)"):format(book))
-        controller:assertEventually(leader,
-            ("(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' and m.text == %q then return true end end return false end)()"):format(book),
+        local opened = ("(function() for _, m in ipairs(UIManager.shown_log) do if m.class == 'ShowReader' and m.text == %q then return true end end return false end)()"):format(book)
+
+        --[[
+        Read without waiting, and that is the point of it. The tap has
+        returned and the leader has not answered yet -- it has not been given
+        a turn of its loop -- so a device that is in the book by now is one
+        that did not wait to be told. Waiting is what had the pair open one
+        after the other, far screen first, which is the order a reader is
+        certain to notice.
+        ]]
+        T.assertEquals(controller:call(follower, opened), "true",
+            "the device the reader tapped stayed in the file list")
+
+        controller:assertEventually(leader, opened,
             true, "the leader never opened the book the follower was tapped on")
         os.remove(book)
         callFollower("D:openDocument{ page_count = 300 }")
