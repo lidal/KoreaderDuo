@@ -924,12 +924,18 @@ tag that disagrees with `_meta.lua`, because a plugin store compares those
 two numbers to decide whether a device needs updating, and one that lies
 means a device that never updates or one that updates forever.
 
+Published as a **pre-release**, and it stays one until the wire transport and
+the Debug menu are finished. Drop `--prerelease` from the workflow when that
+is no longer true — until then it is what GitHub's "latest release" and a
+plugin store both read, which is a better place to say it than a paragraph
+somebody has to scroll to.
+
 The archive holds a single `duo.koplugin/` folder and nothing of the tests
 or the Makefile — the folder as KOReader wants it, ready to unzip into
 `plugins/`.
 
-For the stores to find the repository at all it needs the `koreader-plugin`
-topic, which is set in GitHub's repository settings rather than here.
+The `koreader-plugin` topic is set on the repository, so the stores can find
+it.
 
 ## What has not been verified
 

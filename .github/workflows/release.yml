@@ -80,6 +80,11 @@ jobs:
             echo
             echo "\`sha256\` \`${sha}\`"
           } > "$notes"
+          # Marked a pre-release, and it stays one until the wire transport
+          # and the Debug menu are finished. The caution in the notes says so
+          # in words; this is the same thing said in the one place a plugin
+          # store and GitHub's own "latest release" both read.
           gh release create "$GITHUB_REF_NAME" "$archive" \
             --title "Duo $version" \
+            --prerelease \
             --notes-file "$notes"
