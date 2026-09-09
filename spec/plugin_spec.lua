@@ -3332,6 +3332,43 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("a book taking a long time to open", function()
+    T.it("is not mistaken for a night", function()
+        --[[
+        From the log, opening one book: "the loop stopped for 13s - taking
+        that as a sleep nobody announced". It was not a sleep. Crengine was
+        laying out a large EPUB, which on these readers is twelve or
+        thirteen seconds of a device that answers nothing -- and calling
+        that a wake ran the whole waking-up machinery on a device that had
+        never been asleep: everything resent, everything announced again,
+        the connection reported afresh, on top of a reader that was already
+        busy. Then again after the relayout that applying typography causes.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        local woke = 0
+        local real_resume = Core.resume
+        Core.resume = function() woke = woke + 1 end
+
+        -- A freeze longer than a night, with nothing to explain it.
+        Core.opening_file = nil
+        Core.last_poll_at = require("duo/util").now() - 40
+        Core:noticeFrozenLoop(require("duo/util").now())
+        T.assertEquals(woke, 1, "a real gap should still be taken for a sleep")
+
+        -- The same freeze, with a book on its way.
+        Core.opening_file = "/books/big.epub"
+        Core.last_poll_at = require("duo/util").now() - 40
+        Core:noticeFrozenLoop(require("duo/util").now())
+        T.assertEquals(woke, 1, "it woke up a device that was only opening a book")
+
+        Core.opening_file = nil
+        Core.resume = real_resume
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("a book being stood up again", function()
     T.it("keeps what it has learned about the same book", function()
         --[[
@@ -3407,6 +3444,24 @@ T.describe("leaving one list for another", function()
         Core:heardHeartbeat(link, { bp = "1", bv = "folder:/books", cs = Core:sharedSignature() })
         T.assertEquals(sent[1], "SYNC",
             "both devices sat on page one of a list neither had been told about")
+
+        --[[
+        And when the reader calls both lists the same thing, which is what
+        happens on some builds, what the list *holds* still differs. Two
+        different lists hold different things whatever they are called.
+        ]]
+        sent = {}
+        Core.browser_leader_view = "folder:/books"
+        Core.browser_leader_sig = "aaaa1111"
+        Core.resync_asked_at = nil
+        Core:heardHeartbeat(link, { bp = "1", bv = "folder:/books",
+            bs = "aaaa1111", cs = Core:sharedSignature() })
+        T.assertEquals(#sent, 0, "it asked about a list that had not changed")
+        Core:heardHeartbeat(link, { bp = "1", bv = "folder:/books",
+            bs = "bbbb2222", cs = Core:sharedSignature() })
+        T.assertEquals(sent[1], "SYNC",
+            "the two lists were called the same and nothing noticed the difference")
+        Core.browser_leader_sig = nil
 
         Core.browser = nil
         Core.browser_leader_page = nil

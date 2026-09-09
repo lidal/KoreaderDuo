@@ -2138,9 +2138,27 @@ function Core:noticeFrozenLoop(now)
     if not last then return end
     local gap = now - last
     if gap < Core.FROZEN_LOOP then return end
+    --[[
+    A book being opened is not a night, however long it takes.
+
+    From the log, opening one book: "the loop stopped for 13s - taking that
+    as a sleep nobody announced". It was not a sleep. Crengine was laying
+    out a large EPUB, which on these readers is twelve or thirteen seconds
+    of a device that answers nothing -- and calling that a wake ran the
+    whole waking-up machinery on a device that had never been asleep:
+    everything resent, everything announced again, the connection reported
+    afresh. All of it on top of a reader that was already busy, and then
+    again after the relayout that applying typography causes.
+
+    This device knows perfectly well what it was doing. A freeze with a book
+    on its way is forgiven as a freeze and nothing more.
+    ]]
+    local opening = self.opening_file ~= nil
     self:log(("the loop stopped for %.0fs"):format(gap),
-        gap >= Core.SLEPT_THROUGH and "- taking that as a sleep nobody announced"
-            or "- forgiving the time it was not running")
+        (gap >= Core.SLEPT_THROUGH and not opening)
+            and "- taking that as a sleep nobody announced"
+            or (opening and "- forgiving it: a book is being opened"
+                or "- forgiving the time it was not running"))
     --[[
     Every clock that was running while nothing was, moved forward by exactly
     as much. None of this time was anybody's fault and none of it is
@@ -2183,7 +2201,7 @@ function Core:noticeFrozenLoop(now)
     back calling down the line, and hearing it is what starts a new session.
     The evidence arrives instead of being inferred from silence.
     ]]
-    if gap < Core.SLEPT_THROUGH or self:usesSerial() then
+    if gap < Core.SLEPT_THROUGH or opening or self:usesSerial() then
         for _, link in ipairs(self.links) do
             if link.forgive then link:forgive(gap, last) end
         end
@@ -2215,7 +2233,7 @@ function Core:noticeFrozenLoop(now)
             self[field] = self[field] + gap
         end
     end
-    if gap < Core.SLEPT_THROUGH then return end
+    if gap < Core.SLEPT_THROUGH or opening then return end
     self.sleeps_noticed = (self.sleeps_noticed or 0) + 1
     -- And only then is it a sleep. Saying so twice is resume's own business
     -- to refuse, because the reader may say it either side of this.
@@ -2801,13 +2819,22 @@ function Core:heartbeatFields()
         if state then
             fields.bp = state.page
             --[[
-            And which list it is. Two lists have a page one each, so a page
-            number alone says nothing about the leader having left Favourites
-            for the library -- which is exactly the move that left both
-            devices sitting on page one of a listing neither had been told
-            about, until somebody turned a page.
+            And what the listing *is*, not what the reader calls it.
+
+            Two lists have a page one each, so a page number alone says
+            nothing about the leader having left Favourites for the library.
+            The name of the view was the first answer to that and it is not
+            enough either: which list a reader considers itself in comes from
+            the reader's own idea of it, and on some builds that string does
+            not change between tabs at all -- so nothing noticed, and both
+            devices sat on page one of a listing neither had been told about
+            until somebody turned a page.
+
+            The signature is of the entries themselves. Two different lists
+            hold different things, whatever they are called.
             ]]
             fields.bv = state.view or ""
+            fields.bs = state.signature or ""
         end
     end
     return fields
@@ -2841,6 +2868,9 @@ function Core:heardHeartbeat(link, msg)
         elseif msg.bv and self.browser_leader_view
             and msg.bv ~= self.browser_leader_view then
             reason = "the leader is looking at a list this device was never told about"
+        elseif msg.bs and msg.bs ~= "" and self.browser_leader_sig
+            and msg.bs ~= self.browser_leader_sig then
+            reason = "the leader's list no longer holds what this device was told it held"
         end
     end
     if not reason and msg.cs and msg.cs ~= "" and msg.cs ~= self:sharedSignature() then
@@ -2967,6 +2997,14 @@ function Core:announceOpening(file)
     if not file or file == "" then return false end
     if self:isShelfGated() then return false end
     self:log("opening", file, "- telling the other device now")
+    --[[
+    Recorded here too, and not only on the device being told. Laying a large
+    book out is twelve or thirteen seconds of a reader that answers nothing,
+    and a freeze that long is otherwise taken for a night. The leader's open
+    is exactly as long as the follower's.
+    ]]
+    self.opening_file = file
+    self.opening_since = Util.now()
     for _, link in ipairs(self:getReadyLinks()) do
         -- Both ends are about to go quiet while they parse it, and neither
         -- should take the other's silence for a peer that has gone away.
@@ -3918,6 +3956,7 @@ function Core:applyBrowser(msg)
     -- screenful, not this device's half of the spread.
     self.browser_leader_page = Protocol.num(msg, "leader_page")
     self.browser_leader_view = msg.view or ""
+    self.browser_leader_sig = msg.sig or ""
     self.browser.goToPage(page)
     self.applying_remote = false
     --[[
@@ -4316,7 +4355,8 @@ function Core:checkBrowser()
     local previous = self.browser_state
     if previous and previous.page == state.page and previous.path == state.path
             and previous.view == state.view and previous.count == state.count
-            and previous.perpage == state.perpage then
+            and previous.perpage == state.perpage
+            and previous.signature == state.signature then
         return
     end
     self:broadcastBrowser()
