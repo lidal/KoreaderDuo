@@ -452,6 +452,11 @@ processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
 
+Which is why **luasocket** is needed to run them — `apt install lua-socket`,
+or your platform's equivalent. It is the only thing outside KOReader the
+tests want; everything with a KOReader path is stubbed by the harness. Nine
+of the fifteen suites will not load without it.
+
 `make real` runs two KOReader processes under `xvfb-run`, each with its own
 `KO_HOME` and a small control plugin, driven by the same controller as the
 simulated devices. It exists for what the harness cannot model: how crengine

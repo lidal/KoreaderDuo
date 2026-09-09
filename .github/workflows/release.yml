@@ -28,10 +28,20 @@ jobs:
       # LuaJIT because that is what KOReader runs. The suite also passes on
       # plain lua5.1, and both are here so that `make check` has its
       # fallback syntax checker.
+      #
+      # luasocket is the one module outside KOReader that the tests need --
+      # everything else with a KOReader path is stubbed by the harness --
+      # and without it nine of the fifteen suites do not load at all: the
+      # two-device harness talks over real sockets, and the specs that drive
+      # it say so at the top of the file. The first attempt at a release ran
+      # the six that need nothing, failed the rest on `module 'socket' not
+      # found`, and refused to publish, which is the build doing its job and
+      # not a reason to loosen it.
       - name: Install Lua
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends luajit lua5.1 zip
+          sudo apt-get install -y --no-install-recommends \
+            luajit lua5.1 lua-socket zip
 
       - name: Check the tag says what _meta.lua says
         run: |
@@ -74,7 +84,7 @@ jobs:
             echo "unzip duo.koplugin-${version}.zip -d /mnt/us/koreader/plugins/"
             echo '```'
             echo
-            echo "The archive holds a single \`duo.koplugin/\` folder, which is the folder KOReader wants."
+            echo "The archive holds a single \`duo.koplugin/\` folder, which is the folder KOReader wants. **Source code** below is the whole repository -- the tests, the harness and the tools -- and is not what goes on a device."
             echo
             echo "The Wi-Fi and direct-link spread is what this is for. **The serial/wire transport and the Debug menu are unfinished** -- read the caution in the README before touching either."
             echo
