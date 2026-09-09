@@ -916,7 +916,7 @@ Set the version in `duo.koplugin/_meta.lua`, then tag it:
 
 ```sh
 make dist                 # dist/duo.koplugin-<version>.zip, and its sha256
-git tag v0.9.0 && git push origin v0.9.0
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 The tag runs the suite, builds the archive and publishes it. It refuses a

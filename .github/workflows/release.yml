@@ -76,6 +76,8 @@ jobs:
             echo
             echo "The archive holds a single \`duo.koplugin/\` folder, which is the folder KOReader wants."
             echo
+            echo "The Wi-Fi and direct-link spread is what this is for. **The serial/wire transport and the Debug menu are unfinished** -- read the caution in the README before touching either."
+            echo
             echo "\`sha256\` \`${sha}\`"
           } > "$notes"
           gh release create "$GITHUB_REF_NAME" "$archive" \
