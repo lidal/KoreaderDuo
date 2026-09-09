@@ -865,6 +865,30 @@ Attaches the currently open document.
     openDocument(f)  open another file
 --]]--
 function Core:attachReader(binding)
+    --[[
+    Which book is this?
+
+    Asked because some typography settings make the engine reload the
+    document, and a reload comes back through here looking exactly like
+    opening a book -- so everything this clears got cleared, including the
+    count of how many times a setting has been asked for. That count is the
+    only thing bounding a setting the reload puts back, so wiping it made
+    the loop it was written to stop unbounded: from the log, DOC, TYPO,
+    "matched block rendering mode, embedded styles, font size and 1 more",
+    and round again for as long as anybody watched.
+
+    Answered by the file and nothing else. Telling a reload apart from an
+    opening was the first attempt and it was a guess with a clock in it: a
+    book genuinely opened a moment after the pair matched a font size looks
+    identical, and then arrives with none of the settings it was supposed to
+    get. The file is exact, and it is also the right question -- what
+    carries over is what belongs to this book, and a book that is opened
+    twice is the same book both times.
+    ]]
+    local document = binding and binding.getDocument and binding.getDocument()
+    local file = document and document.file or nil
+    local same_book = file ~= nil and file == self.attached_file
+    self.attached_file = file
     self.reader = binding
     -- This device is done opening, so it is answering again too.
     for _, link in ipairs(self.links) do
@@ -875,13 +899,20 @@ function Core:attachReader(binding)
     self.opening_file = nil -- whatever we were opening has now arrived
     -- In a book again, so the next time it is left is worth saying.
     self.leaving_said_at = nil
-    -- A different document has its own typography; nothing carries over.
-    self.typography_snapshot = nil
-    self.typography_checked_at = nil
-    self.typography_backup = nil
-    -- Including what the last book would not accept: a different book may
-    -- well take what that one refused.
-    self.typography_refused = nil
+    --[[
+    A different document has its own typography and nothing carries over. A
+    relayout of the same one carries all of it, and above all the count of
+    what has already been asked for -- which is what stops a setting the
+    reload puts back from being set again for ever.
+    ]]
+    if not same_book then
+        self.typography_snapshot = nil
+        self.typography_checked_at = nil
+        self.typography_backup = nil
+        self.typography_refused = nil
+    end
+    -- Sent again either way: standing a book up again is exactly when the
+    -- count changes.
     self.told_pages = nil
     self:changed()
     if not self:isActive() then return end
@@ -903,13 +934,20 @@ function Core:attachReader(binding)
         self.resume_wanted = true
         local link = self:getReadyLinks()[1]
         if link then
-            -- We may have been reopened on a different book; ask where we
-            -- should be rather than sitting on whatever page we landed on.
+            --[[
+            We may have been reopened on a different book; ask where we
+            should be rather than sitting on whatever page we landed on.
+
+            Everything, including the typography, and that is deliberate
+            even though the typography is what relaid the book out: a book
+            opened a moment after the pair matched a font size needs those
+            settings as much as any other, and the count of what has already
+            been asked for is what stops the second round becoming a third.
+            ]]
             link:send(Protocol.SYNC, {})
         end
         -- And the book is now really open, which is the answer the leader
         -- has been waiting for rather than the promise it got earlier.
-        local document = binding and binding.getDocument and binding.getDocument()
         if document and document.file then
             self:sendDocumentAck("open", document.file)
         end
@@ -2760,7 +2798,17 @@ function Core:heartbeatFields()
     end
     if self.browser and self:get("share_browser") then
         local state = self:browserState()
-        if state then fields.bp = state.page end
+        if state then
+            fields.bp = state.page
+            --[[
+            And which list it is. Two lists have a page one each, so a page
+            number alone says nothing about the leader having left Favourites
+            for the library -- which is exactly the move that left both
+            devices sitting on page one of a listing neither had been told
+            about, until somebody turned a page.
+            ]]
+            fields.bv = state.view or ""
+        end
     end
     return fields
 end
@@ -2786,11 +2834,13 @@ function Core:heardHeartbeat(link, msg)
     if leader_page and self.leader_page and leader_page ~= self.leader_page then
         reason = "the leader is on a page this device was never told about"
     end
-    local listing = Protocol.num(msg, "bp")
-    if not reason and listing and self.browser and self:get("share_browser") then
-        local state = self:browserState()
-        if state and self.browser_leader_page and listing ~= self.browser_leader_page then
+    if not reason and self.browser and self:get("share_browser") then
+        local listing = Protocol.num(msg, "bp")
+        if listing and self.browser_leader_page and listing ~= self.browser_leader_page then
             reason = "the leader is on a screenful of the list this device was never told about"
+        elseif msg.bv and self.browser_leader_view
+            and msg.bv ~= self.browser_leader_view then
+            reason = "the leader is looking at a list this device was never told about"
         end
     end
     if not reason and msg.cs and msg.cs ~= "" and msg.cs ~= self:sharedSignature() then
@@ -3696,6 +3746,9 @@ function Core:attachBrowser(binding)
         self:requestHome()
     end
     if self:isActive() and self:isLeader() then
+        -- Back to the screenful this device left, before saying anything
+        -- about it, so that what is announced is where it really is.
+        pcall(function() self:resumeListingWhereItStood() end)
         --[[
         The file manager appearing on the leader is the moment the book was
         closed, and a better signal than the reader going away: switching
@@ -3732,20 +3785,24 @@ with a different answer -- see `sharedFolder` -- and the two were tangled
 together for far too long.
 --]]--
 --[[--
-Puts a follower back on the screenful of the listing it was showing, before
-it asks anybody.
+Puts a device back on the screenful of the listing it was showing.
 
-The same wait as coming back into a book, on the other screen. Leaving a
-book puts both devices in the file manager at once, and the follower cannot
-be told which screenful is its until the leader has finished getting there
-too -- so it paints the first one and holds it long enough to be read.
+Both devices, which is the part that took a second attempt to get right.
+The follower alone was not enough: the reader takes a file manager back to
+the top of the list, so the leader came back to page one while the follower
+came back to the fourth screenful it had been on -- and was then told to
+show the second, in front of somebody watching. Two jumps where the
+complaint was about one.
 
-Where it was is where it is about to be told, so it goes there now. Only
-for the same listing: a guess that is wrong would be a visible jump, which
-is the thing being got rid of.
+The pair goes back to where the pair was. The leader lands on the screenful
+it left, the follower on the one beside it, and the message that follows
+agrees with what both are already showing.
+
+Only for the same listing: a guess that is wrong would be a visible jump,
+which is the thing being got rid of.
 --]]--
 function Core:resumeListingWhereItStood()
-    if self:isLeader() or not self.browser then return end
+    if not self.browser then return end
     local last = self.resume_listing
     if not last or not last.page or last.page <= 1 then return end
     local state = self:browserState()
@@ -3776,6 +3833,13 @@ function Core:sendBrowserTo(link, as_if)
     if not state then return end
     if as_if then state.page = as_if end
     self.browser_state = state
+    -- Where this device stands, so that coming back to the listing lands
+    -- here rather than at the top of it. See resumeListingWhereItStood.
+    self.resume_listing = {
+        path = state.path or "",
+        view = state.view or "",
+        page = state.page,
+    }
 
     local page = Spread.pageForSlot(state.page, link.slot, {
         mode = self:get("mode"),
@@ -3853,6 +3917,7 @@ function Core:applyBrowser(msg)
     -- Kept so a heartbeat can be compared with it: the leader's own
     -- screenful, not this device's half of the spread.
     self.browser_leader_page = Protocol.num(msg, "leader_page")
+    self.browser_leader_view = msg.view or ""
     self.browser.goToPage(page)
     self.applying_remote = false
     --[[

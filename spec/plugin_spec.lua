@@ -3332,7 +3332,90 @@ T.describe("the verbose log", function()
     end)
 end)
 
+T.describe("a book being stood up again", function()
+    T.it("keeps what it has learned about the same book", function()
+        --[[
+        Some typography settings make the engine reload the document, and a
+        reload comes back through attachReader looking exactly like opening
+        a book. So everything that clears got cleared -- including the count
+        of how many times a setting has been asked for, which is the only
+        thing bounding a setting the reload puts back. Wiping it made the
+        loop it was written to stop unbounded: from the log, DOC, TYPO,
+        "matched block rendering mode, embedded styles, font size and 1
+        more", and round again for as long as anybody watched.
+
+        Answered by the file and nothing else. Telling a reload apart from
+        an opening by the clock was the first attempt, and a book genuinely
+        opened a moment after the pair matched a font size looks identical
+        under that rule -- and then arrives with none of the settings it was
+        supposed to get.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        local real_links = Core.getReadyLinks
+        Core.getReadyLinks = function() return {} end
+
+        Core.attached_file = nil
+        Core:attachReader(device.plugin.reader_binding)
+        local file = Core.attached_file
+        T.assertTrue(file ~= nil, "it did not notice which book this is")
+
+        -- The same book again, however it got here.
+        Core.typography_refused = { font_size = { value = "29", n = 2 } }
+        Core:attachReader(device.plugin.reader_binding)
+        T.assertTrue(Core.typography_refused ~= nil
+            and Core.typography_refused.font_size ~= nil,
+            "standing the same book up again wiped the count that bounds the loop")
+
+        -- A different book starts fresh: what one book refused says nothing
+        -- about another.
+        Core.attached_file = "/books/something-else.epub"
+        Core:attachReader(device.plugin.reader_binding)
+        T.assertNil(Core.typography_refused,
+            "a different book inherited the last one's refusals")
+
+        Core.attached_file = nil
+        Core.getReadyLinks = real_links
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+end)
+
 T.describe("leaving one list for another", function()
+    T.it("notices from the heartbeat when the leader has changed list", function()
+        --[[
+        The check that watches the leader is one mechanism and it can miss:
+        which list a reader is in comes from the reader's own idea of it, and
+        that differs between builds. The heartbeat is the other, and it does
+        not depend on noticing a change -- it carries where the leader is,
+        and disagreeing with it is enough.
+        ]]
+        reset()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.share_browser = true
+        local sent = {}
+        local link = { slot = 1, send = function(_, kind) sent[#sent + 1] = kind end }
+        Core.browser = { getState = function() return { page = 1, view = "favorites" } end }
+
+        Core.browser_leader_page = 1
+        Core.browser_leader_view = "favorites"
+        Core.resync_asked_at = nil
+        Core:heardHeartbeat(link, { bp = "1", bv = "favorites", cs = Core:sharedSignature() })
+        T.assertEquals(#sent, 0, "it asked about a list it was already in")
+
+        -- The same page number, in a different list.
+        Core:heardHeartbeat(link, { bp = "1", bv = "folder:/books", cs = Core:sharedSignature() })
+        T.assertEquals(sent[1], "SYNC",
+            "both devices sat on page one of a list neither had been told about")
+
+        Core.browser = nil
+        Core.browser_leader_page = nil
+        Core.browser_leader_view = nil
+        Core.resync_asked_at = nil
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
     T.it("tells the other device when the list itself changes, not only the page", function()
         --[[
         Reported from a pair: browse Favourites, come back to the library,
@@ -3872,7 +3955,6 @@ T.describe("coming back to a book", function()
         local many = {}
         for index = 1, 40 do many[index] = ("book%02d.epub"):format(index) end
         device:openFileManager{ path = "/books", perpage = 4, items = many }
-        Core.role = Core.ROLE_FOLLOWER
         Core.settings.share_browser = true
         local here = Core:browserState()
 
