@@ -447,7 +447,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-604 tests, with the interesting parts unmocked: two and three device
+610 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -763,6 +763,30 @@ back, and the device that asked has already moved its own screen and is
 busy drawing it — it cannot read the reply until that finishes, so its own
 refresh is inside the number. The gap between the two screens is a poll,
 not half a second.
+
+## What opening a book waits for
+
+Also not the link, and for a while it was Duo.
+
+Asking a document engine how many pages a book has is not a question, it is
+an instruction. crengine has to lay the whole book out before it can answer,
+and left to itself it does that in the background while the reader is
+already looking at page one — so the wait exists but nobody is standing in
+it. Ask during the open and it happens *now*, in front of the reader, and on
+a long book the device sits on a loading bar for several seconds.
+
+Duo asked on every open, from inside the hook that says a book has been
+stood up, because the page count goes out with the announcement to the other
+device. That is why the freeze arrived with Duo installed and why it was
+worse the longer the book was.
+
+Nothing asks for the first two and a half seconds now. What is sent during
+the open carries a zero, which is the honest answer — this device does not
+know yet either — and when the hold runs out the pair is told properly, on
+the next turn of the loop. The only thing given up for it is that a follower
+will not guess ahead on a page turn taken inside that window, because there
+is no end of the book to check the guess against; the turn still happens, by
+the round trip it took before guessing was added.
 
 ## What happens when the line eats a message
 

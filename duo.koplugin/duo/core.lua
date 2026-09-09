@@ -890,6 +890,14 @@ function Core:attachReader(binding)
     local same_book = file ~= nil and file == self.attached_file
     self.attached_file = file
     self.reader = binding
+    --[[
+    And nothing asks how long it is for a moment. Everything below this
+    line announces the book to the other device, and every announcement
+    used to carry a page count -- which is the one question that makes the
+    engine stop and lay the whole book out before it will answer. See
+    pageCount, and tellThemTheLength for the other half of it.
+    ]]
+    self.counting_held_until = Util.now() + Core.COUNTING_HELD_FOR
     -- This device is done opening, so it is answering again too.
     for _, link in ipairs(self.links) do
         if link.expectAnswers then link:expectAnswers() end
@@ -976,7 +984,7 @@ function Core:resumeWhereItStood()
     if not page or page <= 0 or not file or file == "" then return end
     local document = self.reader.getDocument and self.reader.getDocument()
     if not document or document.file ~= file then return end
-    local count = self.reader.getPageCount()
+    local count = self:pageCount()
     if count and count > 0 and page > count then return end
     if self.reader.getPage() == page then return end
     self:log("back in", file, "- going to page", page, "rather than waiting to be told")
@@ -1008,6 +1016,7 @@ function Core:detachReader(binding)
     self.resume_wanted = nil
     self.reader = nil
     -- Page numbers mean nothing once the book they counted is gone.
+    self.counting_held_until = nil
     self.assigned_page = nil
     self.assigned_pages = nil
     self.pending_page = nil
@@ -1395,6 +1404,41 @@ function Core:checkRadioSetting()
 end
 
 --[[--
+How long to leave a freshly opened book alone before asking how long it is,
+in seconds.
+
+Long enough for the engine to have finished on its own terms, short enough
+that the pair is in step before anybody turns a page.
+--]]--
+Core.COUNTING_HELD_FOR = 2.5
+
+--[[--
+How long this book is, or nil while it is still being stood up.
+
+Asking a document engine for a page count is not a question, it is an
+instruction: crengine lays the whole book out to answer it. Left alone it
+does that in its own time, in the background, while the reader is already
+showing page one -- so nobody waits. Asked during the open it does it now,
+in front of the reader, and the device stops.
+
+Duo asked, on every open, from inside attachReader. On a short book nobody
+would notice; on a long one it is the difference between a book that opens
+and a book that hangs, which is why it was worse on some books than others
+and why it had never happened before Duo was installed.
+
+So nothing asks for a couple of seconds. What is sent in the meantime says
+nothing about the length, which is the honest answer to a question this
+device cannot answer yet either.
+--]]--
+function Core:pageCount()
+    if not self.reader or not self.reader.getPageCount then return nil end
+    if self.counting_held_until and Util.now() < self.counting_held_until then
+        return nil
+    end
+    return self.reader.getPageCount()
+end
+
+--[[--
 How many pages the spread has, which is not the same as how many this
 device has.
 
@@ -1409,7 +1453,7 @@ Only ever shorter, never longer: a follower that has not said yet, or is
 not there, leaves this device's own count alone.
 --]]--
 function Core:spreadPageCount()
-    local mine = self.reader and self.reader.getPageCount() or nil
+    local mine = self:pageCount()
     if not mine or not self:isLeader() then return mine end
     for _, link in ipairs(self:getReadyLinks()) do
         local theirs = link.peer_pages
@@ -2313,6 +2357,7 @@ function Core:pollOnce()
         pcall(function() self:resumeWhereItStood() end)
     end
     self:checkTurnAnswered()
+    self:tellThemTheLength()
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
     self:checkLink()   -- and this is how the network under it is
@@ -2907,7 +2952,8 @@ function Core:sendStateTo(link, as_if)
     link:send(Protocol.STATE, {
         page = page,
         leader_page = leader_page,
-        pages = self.reader.getPageCount() or 0,
+        -- Zero while the book is still being stood up. See pageCount.
+        pages = self:pageCount() or 0,
         slot = link.slot,
         mode = options.mode,
         -- What one turn moves the leader by. The follower needs it to work
@@ -3118,7 +3164,7 @@ function Core:sendDocumentTo(link)
         file = document.file,
         title = document.title or "",
         digest = document.digest or "",
-        pages = self.reader.getPageCount() or 0,
+        pages = self:pageCount() or 0,
         typo = self:typographySignature(),
     })
 end
@@ -3281,7 +3327,7 @@ function Core:turnAhead(diff)
     if not self.reader or not self.reader.gotoPage then return end
     local page = self.reader.getPage()
     if not page then return end
-    local count = self.reader.getPageCount()
+    local count = self:pageCount()
     local options = self:getSpreadOptions()
 
     --[[
@@ -3309,7 +3355,14 @@ function Core:turnAhead(diff)
     notice more than the wait this is here to remove.
     ]]
     if wanted < 1 then return end
-    if count and wanted > count then return end
+    --[[
+    And left alone while the book is still being stood up, when the length
+    is deliberately not being asked for. A guess with no end of the book to
+    check it against is exactly the one that would have to be taken back,
+    and the round trip it saves is a round trip nobody is waiting on: the
+    reader has had the book in front of them for under two seconds.
+    ]]
+    if not count or wanted > count then return end
 
     --[[
     Under `applying_remote`, which stops this being reported back to the
@@ -3524,7 +3577,7 @@ function Core:reportJump(page)
         self.relayout_at = Util.now()
         return
     end
-    local pages = self.reader.getPageCount()
+    local pages = self:pageCount()
     -- Only a page count that has *moved* says a relayout happened. The
     -- first one seen says nothing at all, and treating it as a change
     -- opened a quiet spell over the first tap of every session.
@@ -3576,7 +3629,7 @@ function Core:applyRemoteJump(link, wanted)
     if not wanted or not self.reader then return end
     local options = self:getSpreadOptions()
     local page = Spread.leaderPageForSlot(wanted, link.slot, options)
-    local count = self.reader.getPageCount()
+    local count = self:pageCount()
     local followers = self:followerCount()
     local floor = Spread.leaderFloor(count, followers, options) or 1
     local ceiling = Spread.leaderCeiling(count, followers, options)
@@ -3635,7 +3688,7 @@ function Core:pageUnderOwnLayout(page, leader_pages, leader_typo)
     end
     if Util.now() - since < PAGINATION_SETTLE then return nil end
 
-    local own_pages = self.reader and self.reader.getPageCount()
+    local own_pages = self:pageCount()
     if not own_pages or own_pages <= 0 or not leader_pages or leader_pages <= 0 then
         return page
     end
@@ -3708,7 +3761,7 @@ function Core:applyRemotePage(page, leader_pages, leader_typo)
     -- page it has been *sent*, and it is what tells a jump made here from
     -- the leader's own idea of where this screen belongs.
     self.assigned_page = wanted
-    self.assigned_pages = self.reader.getPageCount()
+    self.assigned_pages = self:pageCount()
     if self.reader.getPage() == wanted then return end
     self.applying_remote = true
     local ok, err = pcall(self.reader.gotoPage, wanted)
@@ -5769,8 +5822,7 @@ function Core:sendDocumentAck(state, file, reason)
         the end of the *shorter* one. Without this the leader counted only
         its own pages and let the pair walk off the end of the other's.
         ]]
-        pages = (self.reader and self.reader.getPageCount and
-            self.reader.getPageCount()) or 0,
+        pages = self:pageCount() or 0,
     })
 end
 
@@ -6063,8 +6115,8 @@ it is said whenever the number the leader quotes is not this device's own,
 and said once per number rather than once per page turn.
 --]]--
 function Core:reportOwnPageCount(link, leader_pages)
-    if not link or not self.reader or not self.reader.getPageCount then return end
-    local mine = self.reader.getPageCount()
+    if not link then return end
+    local mine = self:pageCount()
     if not mine or mine <= 0 then return end
     if mine == leader_pages then
         -- Agreed. Said again if they ever diverge.
@@ -6076,10 +6128,42 @@ function Core:reportOwnPageCount(link, leader_pages)
     link:send(Protocol.PAGES, { pages = mine })
 end
 
+--[[--
+Says how long the book is, once the engine has had time to work it out.
+
+The other half of the hold in pageCount. While a book is being stood up
+nothing asks for its length, so everything sent during the open -- the
+document, the state, the acknowledgement -- says nothing about it. This is
+what fills that in: when the hold runs out, on the next turn of the loop,
+the pair is told properly.
+
+From whichever side this device is on. The leader's state carries the count
+and the follower answers with its own only when the two disagree, which is
+the same conversation they would have had during the open, held back by a
+couple of seconds and out of the reader's way.
+
+Once per book: the leader's state goes out with every page turn afterwards
+anyway, and told_pages, cleared when the book was stood up, stops a
+follower repeating itself.
+--]]--
+function Core:tellThemTheLength()
+    if not self.counting_held_until then return end
+    if Util.now() < self.counting_held_until then return end
+    self.counting_held_until = nil
+    if not self.reader or not self:isActive() then return end
+    if self:isLeader() then
+        self:broadcastState()
+    else
+        -- Nothing to compare against here, so it is sent and the leader
+        -- decides: a count that matches costs one message and ends there.
+        self:reportOwnPageCount(self:getReadyLinks()[1], nil)
+    end
+end
+
 function Core:checkPagination(leader_pages, leader_typo)
     if self.warned_pagination or not leader_pages or leader_pages == 0 then return end
     if not self.reader then return end
-    local own_pages = self.reader.getPageCount()
+    local own_pages = self:pageCount()
     if not own_pages or own_pages == leader_pages then return end
 
     if self:get("match_typography") then

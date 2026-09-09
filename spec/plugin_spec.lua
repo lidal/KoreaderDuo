@@ -20,6 +20,13 @@ local function reset()
     -- A side is remembered once it has been picked, and a test that picked
     -- one would otherwise stop every later test from being asked.
     Core.settings.side = ""
+    --[[
+    And the book has been open for a while, which is what every test here
+    assumes. Duo holds off asking how long a book is for a couple of seconds
+    after it is stood up -- see Core:pageCount -- and that window is longer
+    than the whole suite takes to run.
+    ]]
+    Core.counting_held_until = nil
     device:drainMessages()
 end
 
@@ -5809,6 +5816,8 @@ T.describe("a follower's own page turn", function()
             send = function(_, kind, fields) sent[#sent+1] = { kind, fields } return true end,
         } }
         unit:openDocument{ page_count = 300 }
+        -- Open long enough to have been counted; the hold is its own test.
+        core.counting_held_until = nil
         core.reader.gotoPage(page)
         -- What the leader last told it: where the leader stands, which half
         -- of the spread this is, and what one turn moves the pair by.
@@ -5834,6 +5843,25 @@ T.describe("a follower's own page turn", function()
         T.assertEquals(core.reader.getPage(), 13,
             "the device the reader tapped did not move")
         T.assertEquals(count(sent, Protocol.TURN), 1, "the leader was not asked to follow")
+        core.role = core.ROLE_OFF
+    end)
+
+    T.it("does not guess while the book is still being stood up", function()
+        --[[
+        The end of the book is not known during the hold -- see
+        Core:pageCount -- and a guess with nothing to check it against is
+        the one that would have to be taken back. The turn still happens,
+        by the round trip it was always going to take before the guess was
+        written, and the window is under two seconds wide.
+        ]]
+        local unit, core, sent = follower(11)
+        core.counting_held_until = Util.now() + 60
+        T.assertTrue(core:handleRelativeTurn(1))
+        T.assertEquals(core.reader.getPage(), 11,
+            "it guessed a page with no end of the book to check it against")
+        T.assertEquals(count(sent, Protocol.TURN), 1,
+            "and it did not ask the leader either, so nothing moves at all")
+        core.counting_held_until = nil
         core.role = core.ROLE_OFF
     end)
 
@@ -5941,6 +5969,146 @@ T.describe("a book asked for over a link that goes", function()
         Core:checkBookRequest()
         Core.hooks.log = was_log
         T.assertMatch(table.concat(lines, " | "), "gave up on /books/big%.epub")
+    end)
+end)
+
+T.describe("how long a book is, asked at the right moment", function()
+    local Protocol = require("duo/protocol")
+
+    --[[
+    Asking a document engine for a page count is not a question, it is an
+    instruction: crengine lays the whole book out before it will answer.
+    Left alone it does that in the background while the reader is already
+    reading; asked during the open it does it in front of them, and on a
+    long book the device simply stops for several seconds.
+
+    Duo asked on every open, from inside attachReader, which is why the
+    freeze arrived with Duo and got worse the longer the book was.
+    --]]
+
+    --- A reader binding that counts how often it is asked for the length.
+    local function binding(file)
+        local asked = 0
+        local self = {
+            getPage = function() return 1 end,
+            getPageCount = function() asked = asked + 1 return 300 end,
+            getDocument = function()
+                return { file = file or "/books/nemesis.epub", title = "Nemesis Games" }
+            end,
+            gotoPage = function() end,
+            turnRelative = function() end,
+        }
+        return self, function() return asked end
+    end
+
+    local function leaderWithALink()
+        reset()
+        Core.role = Core.ROLE_LEADER
+        local sent = {}
+        local link = {
+            slot = 1,
+            state = "ready",
+            isReady = function() return true end,
+            isClosed = function() return false end,
+            allowSilence = function() end,
+            expectAnswers = function() end,
+            close = function() end,
+            send = function(_, kind, fields) sent[#sent+1] = { kind, fields } return true end,
+        }
+        Core.links = { link }
+        return link, sent
+    end
+
+    --- The fields of the first message of a kind, or nil.
+    local function firstOf(sent, kind)
+        for _, message in ipairs(sent) do
+            if message[1] == kind then return message[2] end
+        end
+    end
+
+    T.it("does not ask the engine while the book is being stood up", function()
+        local link, sent = leaderWithALink()
+        local reader, asked = binding()
+        Core:attachReader(reader)
+        T.assertEquals(asked(), 0,
+            "the engine was made to paginate the whole book during the open")
+        T.assertEquals(Core:pageCount(), nil)
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("says nothing about the length in what it sends during the open", function()
+        local link, sent = leaderWithALink()
+        local reader = binding()
+        Core:attachReader(reader)
+        local document = firstOf(sent, Protocol.DOC)
+        T.assertTrue(document ~= nil, "the book was never announced")
+        T.assertEquals(document.pages, 0, "a length was quoted before it was known")
+        local state = firstOf(sent, Protocol.STATE)
+        T.assertTrue(state ~= nil, "the state was never sent")
+        T.assertEquals(state.pages, 0)
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("tells the other device once the engine has had its moment", function()
+        local link, sent = leaderWithALink()
+        local reader, asked = binding()
+        Core:attachReader(reader)
+        for _ = 1, #sent do table.remove(sent) end
+
+        -- Still held: nothing goes out and the engine is still left alone.
+        Core:tellThemTheLength()
+        T.assertEquals(#sent, 0, "it spoke up before the hold was over")
+        T.assertEquals(asked(), 0)
+
+        -- And when it is over, the pair gets the real number, once.
+        Core.counting_held_until = Util.now() - 0.01
+        Core:tellThemTheLength()
+        local state = firstOf(sent, Protocol.STATE)
+        T.assertTrue(state ~= nil, "the length was never sent at all")
+        T.assertEquals(state.pages, 300)
+        local before = #sent
+        Core:tellThemTheLength()
+        T.assertEquals(#sent, before, "it said it again on the next turn of the loop")
+
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("answers the leader with its own count when the hold is over", function()
+        local link, sent = leaderWithALink()
+        Core.role = Core.ROLE_FOLLOWER
+        local reader = binding()
+        Core:attachReader(reader)
+        for _ = 1, #sent do table.remove(sent) end
+        Core.told_pages = nil
+
+        Core.counting_held_until = Util.now() - 0.01
+        Core:tellThemTheLength()
+        local pages = firstOf(sent, Protocol.PAGES)
+        T.assertTrue(pages ~= nil, "the follower never said how long its own copy is")
+        T.assertEquals(pages.pages, 300)
+
+        Core.told_pages = nil
+        Core.links = {}
+        reset()
+    end)
+
+    T.it("starts the hold again for the next book, and for a relayout", function()
+        local link = leaderWithALink()
+        local reader = binding()
+        Core:attachReader(reader)
+        Core.counting_held_until = Util.now() - 0.01
+        T.assertEquals(Core:pageCount(), 300)
+
+        -- The same book stood up again -- which is what a relayout looks
+        -- like from here -- is counted again, and held again.
+        Core:attachReader(reader)
+        T.assertEquals(Core:pageCount(), nil)
+
+        Core.links = {}
+        reset()
     end)
 end)
 
