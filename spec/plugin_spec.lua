@@ -6001,8 +6001,20 @@ T.describe("how long a book is, asked at the right moment", function()
         return self, function() return asked end
     end
 
+    --[[
+    The engine's own binding back in place. Several tests here hand the
+    engine a hand-made one to count what it asks for, and reset() does not
+    put the real one back -- so without this the order tests run in decides
+    what they are testing.
+    ]]
+    local function freshBook()
+        device:openDocument{ page_count = 300, title = "Moby Dick" }
+        Core.counting_held_until = nil
+    end
+
     local function leaderWithALink()
         reset()
+        freshBook()
         Core.role = Core.ROLE_LEADER
         local sent = {}
         local link = {
@@ -6017,6 +6029,15 @@ T.describe("how long a book is, asked at the right moment", function()
         }
         Core.links = { link }
         return link, sent
+    end
+
+    --- How many of a kind were sent.
+    local function count(sent, kind)
+        local total = 0
+        for _, message in ipairs(sent) do
+            if message[1] == kind then total = total + 1 end
+        end
+        return total
     end
 
     --- The fields of the first message of a kind, or nil.
@@ -6058,18 +6079,18 @@ T.describe("how long a book is, asked at the right moment", function()
         for _ = 1, #sent do table.remove(sent) end
 
         -- Still held: nothing goes out and the engine is still left alone.
-        Core:tellThemTheLength()
+        Core:finishOpening()
         T.assertEquals(#sent, 0, "it spoke up before the hold was over")
         T.assertEquals(asked(), 0)
 
         -- And when it is over, the pair gets the real number, once.
         Core.counting_held_until = Util.now() - 0.01
-        Core:tellThemTheLength()
+        Core:finishOpening()
         local state = firstOf(sent, Protocol.STATE)
         T.assertTrue(state ~= nil, "the length was never sent at all")
         T.assertEquals(state.pages, 300)
         local before = #sent
-        Core:tellThemTheLength()
+        Core:finishOpening()
         T.assertEquals(#sent, before, "it said it again on the next turn of the loop")
 
         Core.links = {}
@@ -6085,13 +6106,115 @@ T.describe("how long a book is, asked at the right moment", function()
         Core.told_pages = nil
 
         Core.counting_held_until = Util.now() - 0.01
-        Core:tellThemTheLength()
+        Core:finishOpening()
         local pages = firstOf(sent, Protocol.PAGES)
         T.assertTrue(pages ~= nil, "the follower never said how long its own copy is")
         T.assertEquals(pages.pages, 300)
 
         Core.told_pages = nil
         Core.links = {}
+        reset()
+    end)
+
+    T.it("keeps the other device's settings until the book has settled", function()
+        --[[
+        Every setting in a TYPO is applied by handing KOReader an event, and
+        every one of those lays the whole book out again. Four settings that
+        disagree are four full paginations, one after another, on top of the
+        opening the reader is already waiting through -- which on a long
+        book is the loading bar that sits at almost-done and then changes
+        its mind about the font three times.
+        ]]
+        reset()
+        freshBook()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.match_typography = true
+        local relayouts = 0
+        local real = Core.reader
+        Core.reader = setmetatable({
+            applyTypography = function(...)
+                relayouts = relayouts + 1
+                return real.applyTypography(...)
+            end,
+        }, { __index = real })
+
+        Core.counting_held_until = Util.now() + 60
+        Core:applyTypography{ type = "TYPO", font_size = "26" }
+        T.assertEquals(relayouts, 0, "the book was relaid out while it was opening")
+        T.assertTrue(Core.typography_waiting ~= nil, "the settings were thrown away")
+
+        -- A second message during the same open replaces the first rather
+        -- than queueing behind it: one opening, one relayout.
+        Core:applyTypography{ type = "TYPO", font_size = "28" }
+        T.assertEquals(relayouts, 0)
+        T.assertEquals(Core.typography_waiting.msg.font_size, "28")
+
+        -- And when the book has settled it is applied, once.
+        Core.counting_held_until = Util.now() - 0.01
+        Core:finishOpening()
+        T.assertEquals(relayouts, 1, "the settings were never applied at all")
+        T.assertTrue(Core.typography_waiting == nil)
+
+        Core:finishOpening()
+        T.assertEquals(relayouts, 1, "it applied them again on the next turn of the loop")
+
+        Core.reader = real
+        Core.role = Core.ROLE_OFF
+        reset()
+    end)
+
+    T.it("does not advertise a book's own settings while it is opening", function()
+        --[[
+        Held settings are not applied yet, so this device is still holding
+        whatever the book was saved with -- and pushing that at the other
+        device while a message from it is waiting had the two swap in the
+        wrong direction: the follower took the leader's font size, and the
+        leader took the follower's.
+        ]]
+        local link, sent = leaderWithALink()
+        Core.role = Core.ROLE_FOLLOWER
+        Core.settings.match_typography = true
+        Core.typography_snapshot = { font_size = "22" }
+        Core.typography_checked_at = nil
+        device.ui.document.configurable.font_size = 30
+
+        Core.counting_held_until = Util.now() + 60
+        Core:checkTypography()
+        T.assertEquals(#sent, 0, "it told the other device what to look like mid-open")
+        T.assertTrue(Core.typography_checked_at == nil, "it did not even hold off properly")
+
+        -- And once the book has settled it speaks up as it always did.
+        Core.counting_held_until = nil
+        Core:checkTypography()
+        T.assertEquals(count(sent, Protocol.TYPO), 1,
+            "a change made by hand was never passed on")
+
+        device.ui.document.configurable.font_size = 22
+        Core.typography_snapshot = nil
+        Core.links = {}
+        Core.role = Core.ROLE_OFF
+        freshBook()
+        reset()
+    end)
+
+    T.it("throws away settings meant for a book that has been left", function()
+        reset()
+        freshBook()
+        Core.settings.match_typography = true
+        Core.counting_held_until = Util.now() + 60
+        Core.typography_waiting = { msg = { type = "TYPO", font_size = "26" } }
+
+        local reader = {
+            getPage = function() return 1 end,
+            getPageCount = function() return 100 end,
+            getDocument = function() return { file = "/books/other.epub", title = "Other" } end,
+            gotoPage = function() end,
+            turnRelative = function() end,
+        }
+        Core:attachReader(reader)
+        T.assertTrue(Core.typography_waiting == nil,
+            "another book's settings were left waiting for this one")
+        freshBook()
         reset()
     end)
 
@@ -6108,6 +6231,7 @@ T.describe("how long a book is, asked at the right moment", function()
         T.assertEquals(Core:pageCount(), nil)
 
         Core.links = {}
+        freshBook()
         reset()
     end)
 end)

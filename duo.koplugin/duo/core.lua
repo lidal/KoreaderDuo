@@ -898,6 +898,8 @@ function Core:attachReader(binding)
     pageCount, and tellThemTheLength for the other half of it.
     ]]
     self.counting_held_until = Util.now() + Core.COUNTING_HELD_FOR
+    -- Settings held for the book being left are not this book's settings.
+    if not same_book then self.typography_waiting = nil end
     -- This device is done opening, so it is answering again too.
     for _, link in ipairs(self.links) do
         if link.expectAnswers then link:expectAnswers() end
@@ -1017,6 +1019,8 @@ function Core:detachReader(binding)
     self.reader = nil
     -- Page numbers mean nothing once the book they counted is gone.
     self.counting_held_until = nil
+    -- Nor do settings meant for a book nobody is reading any more.
+    self.typography_waiting = nil
     self.assigned_page = nil
     self.assigned_pages = nil
     self.pending_page = nil
@@ -1432,10 +1436,19 @@ device cannot answer yet either.
 --]]--
 function Core:pageCount()
     if not self.reader or not self.reader.getPageCount then return nil end
-    if self.counting_held_until and Util.now() < self.counting_held_until then
-        return nil
-    end
+    if self:stillOpening() then return nil end
     return self.reader.getPageCount()
+end
+
+--[[--
+Whether the book on screen is still being stood up.
+
+The same window the page count is held over, asked as a question, because
+counting is not the only thing worth keeping off the opening path. See
+finishOpening.
+--]]--
+function Core:stillOpening()
+    return self.counting_held_until ~= nil and Util.now() < self.counting_held_until
 end
 
 --[[--
@@ -2357,7 +2370,7 @@ function Core:pollOnce()
         pcall(function() self:resumeWhereItStood() end)
     end
     self:checkTurnAnswered()
-    self:tellThemTheLength()
+    self:finishOpening()
     self:pollScanner() -- runs even while Duo is off: this is how pairing starts
     self:checkResume() -- also while off: this is how a sleep is recovered from
     self:checkLink()   -- and this is how the network under it is
@@ -5372,6 +5385,27 @@ The result is that both screens keep breaking lines in the same places.
 function Core:applyTypography(msg, from_link)
     if not self:typographyEnabled() then return end
 
+    --[[
+    Not while the book is being stood up.
+
+    Every setting in here is applied by handing KOReader an event, and every
+    one of those events lays the whole book out again -- so four settings
+    that disagree are four full paginations of the book, one after another,
+    on top of the opening the reader is already waiting through. On a long
+    one that is the difference between a book that opens and a loading bar
+    that sits at almost-done for ten seconds and then changes its mind about
+    the font three times.
+
+    Kept instead, and applied when the book has settled. Only the latest is
+    kept, which is a saving in itself: a book opening draws a TYPO from the
+    announcement and often a second from the answer to SYNC, and both used
+    to be applied in full.
+    ]]
+    if self:stillOpening() then
+        self.typography_waiting = { msg = msg, link = from_link }
+        return
+    end
+
     local settings = {}
     for key, value in pairs(msg) do
         if key ~= "type" then settings[key] = value end
@@ -5456,6 +5490,17 @@ end
 function Core:checkTypography()
     if not self:typographyEnabled() or not self:isConnected() then return end
     if self.applying_typography then return end
+    --[[
+    Nor while a book is still being stood up.
+
+    What this device holds at that moment is the book's own settings, which
+    is not a decision anybody just made -- and there may be a message from
+    the other device waiting to replace them. Advertised first, the two
+    devices swapped settings in the wrong direction: the follower took the
+    leader's font size, and the leader took the follower's, so a pair that
+    had agreed before the book was opened disagreed afterwards.
+    ]]
+    if self:stillOpening() then return end
     local now = Util.now()
     if self.typography_checked_at and now - self.typography_checked_at < TYPOGRAPHY_POLL then
         return
@@ -6146,10 +6191,34 @@ Once per book: the leader's state goes out with every page turn afterwards
 anyway, and told_pages, cleared when the book was stood up, stops a
 follower repeating itself.
 --]]--
-function Core:tellThemTheLength()
+function Core:finishOpening()
     if not self.counting_held_until then return end
     if Util.now() < self.counting_held_until then return end
     self.counting_held_until = nil
+    if not self.reader or not self:isActive() then
+        self.typography_waiting = nil
+        return
+    end
+    --[[
+    Settings first, length second, in that order and not the other way
+    round: applying a setting relays the book out, which changes the very
+    number about to be sent. Announced before, it would be a number that
+    was already wrong when it left.
+    ]]
+    local waiting = self.typography_waiting
+    self.typography_waiting = nil
+    if waiting then
+        local link = waiting.link
+        if link and link.isClosed and link:isClosed() then link = nil end
+        self:applyTypography(waiting.msg, link)
+    end
+    self:tellThemTheLength()
+end
+
+--[[--
+Tells the other device how long this book turned out to be.
+--]]--
+function Core:tellThemTheLength()
     if not self.reader or not self:isActive() then return end
     if self:isLeader() then
         self:broadcastState()

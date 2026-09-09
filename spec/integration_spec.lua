@@ -423,7 +423,16 @@ T.describe("matching typography", function()
 
         controller:assertEventually(follower, "UI.document.configurable.font_size", 26,
             "a book opened on the follower kept its own font size")
-        T.assertEquals(pageCount(follower), pageCount(leader),
+        --[[
+        Waited for rather than read straight off. The setting is written
+        before the event that acts on it is handed to the reader -- that is
+        deliberate, some handlers read it back rather than trusting their
+        argument -- so there is an instant where the size is the new one and
+        the pagination is still the old one. What is being asserted is where
+        the two devices end up, not which side of that instant this looked.
+        ]]
+        controller:assertEventually(follower, "UI.document:getPageCount()",
+            pageCount(leader),
             "the two devices still disagree about how long the book is")
     end)
 

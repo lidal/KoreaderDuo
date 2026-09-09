@@ -447,7 +447,7 @@ make test                                   # the fast suite
 make real KOREADER=/path/to/koreader        # two real KOReaders
 ```
 
-610 tests, with the interesting parts unmocked: two and three device
+613 tests, with the interesting parts unmocked: two and three device
 processes over real TCP, two network namespaces on a link-local /16 for the
 router-free link, and a follower in its own mount namespace with a different
 folder at the same path so books really have to travel.
@@ -787,6 +787,24 @@ the next turn of the loop. The only thing given up for it is that a follower
 will not guess ahead on a page turn taken inside that window, because there
 is no end of the book to check the guess against; the turn still happens, by
 the round trip it took before guessing was added.
+
+The same window covers matching typography, for the same reason and a
+bigger one. Duo applies each setting by handing KOReader the event that
+belongs to it, and every one of those events lays the whole book out again —
+so four settings that disagree are four full paginations of the book, one
+after another, on top of the opening. That is the loading bar that sits at
+almost-done and then changes its mind about the font two or three times.
+
+A message that arrives while a book is being stood up is kept rather than
+applied, and only the latest is kept: an opening draws one from the
+announcement and often a second from the answer that follows, and both used
+to be applied in full. Nothing this device is holding is advertised in that
+window either — the settings a book was saved with are not a decision
+anybody made, and pushing them at the other device while a message from it
+was still waiting had the two swap in the wrong direction.
+
+What is left, on a long book, is one relayout after the book is on screen
+rather than several before it is.
 
 ## What happens when the line eats a message
 
