@@ -5035,6 +5035,42 @@ T.describe("the log the reader can send on", function()
     end)
 end)
 
+T.describe("a book that arrives while the shelf is on screen", function()
+    T.it("draws the listing again, so the book and its cover are on it", function()
+        --[[
+        A listing holds what it read when it was built -- the row, the
+        title, the cover -- and nothing about a file appearing underneath it
+        makes it read again. Every other way a book arrives redraws: one of a
+        library sweep, one the reader asked for by opening it. A book the
+        other device pushed did not, and sat invisible until the reader left
+        the folder and came back.
+        ]]
+        reset()
+        local refreshes = 0
+        Core.browser = {
+            getState = function() return { page = 1, pages = 1, view = "folder:/books" } end,
+            refresh = function() refreshes = refreshes + 1 return true end,
+        }
+        Core.book_request = nil
+        Core.book_title = "A Pushed Book"
+        Core.book_receiver = {
+            finish = function() return "/books/pushed.epub" end,
+        }
+
+        Core:handleBookDone(nil)
+
+        -- Put back before the assertion, so a failure here is one failure
+        -- and not a stub left behind for everything that runs after it.
+        Core.browser = nil
+        Core.book_title = nil
+        Core.settings.stubs = nil
+        reset()
+
+        T.assertEquals(refreshes, 1,
+            "the book landed on a shelf that was never drawn again")
+    end)
+end)
+
 T.describe("opening a book on both devices at once", function()
     T.it("opens it here as well as asking the leader, rather than instead", function()
         --[[

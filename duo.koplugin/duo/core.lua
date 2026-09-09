@@ -5186,6 +5186,18 @@ function Core:handleBookDone(digest)
     end
 
     self:report(("Duo: received %s"):format(self.book_title or "the book"))
+    --[[
+    And the shelf is drawn again, because there is a book on it that was not
+    there a moment ago. A listing holds what it read when it was built --
+    the row, the title, the cover -- and nothing about a file appearing
+    underneath it makes it read again.
+
+    Every other way a book arrives does this already: one of a library
+    sweep, one the reader asked for by opening it. A book the other device
+    pushed did not, and sat invisible until the reader left the folder and
+    came back.
+    ]]
+    if self.browser then self.browser.refresh() end
     -- Straight into it, which is the whole point of having asked.
     if self.hooks and self.hooks.openDocument and request then
         self.opening_file = nil
