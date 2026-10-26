@@ -40,19 +40,58 @@ pass that means nothing:
 
 - **Nothing has run on a Kindle.** Not once. Two files are the whole of the
   gap, and both refuse cleanly off-device rather than pretending:
-  - `app/device/kobase.lua` — koreader-base's framebuffer, input and
-    blitbuffer
+  - `app/device/kobase.lua` — koreader-base's framebuffer and input
   - `app/engine/cre.lua` — CREngine
   Each lists what it needs in a `NEEDS` table and probes for it at `open()`,
   so the first run on a device names the symbol that has moved instead of
-  dying in C. Every name in them came from reading how KOReader drives the
-  same engine, and **every one of them should be assumed wrong until a
-  device says otherwise.**
-- **Whether CREngine can be driven from a frontend that is not KOReader's.**
-  This is Stage 2 of the study and the biggest unknown in the project.
-  koreader-base publishes itself as a framework for building document
-  readers, but nobody appears to have built one on it this way. If it needs
-  large parts of KOReader's Lua after all, the approach changes.
+  dying in C. See [INSTALL.md](INSTALL.md) for the build and the first run.
+- **`engine/cre.lua`'s call names are still read rather than run.** They
+  come from how KOReader's own `document/credocument.lua` drives the same
+  engine. Assume any of them may have moved.
+- **The touch decoding assumes protocol B.** `spec/touch_spec.lua` exercises
+  it hard against synthetic frames, which proves the arithmetic and nothing
+  about what a PW3's controller really emits.
+- **Anything electrical about the wire.** A pseudo-terminal proves the
+  framing, the handshake and the state machine, and nothing about baud
+  rates, framing errors, a full FIFO or flow control on a real driver.
+- **The KUAL scripts.** Syntax-checked and no more. `run.sh` stops
+  `lab126_gui`, which is the supported way to take the framebuffer and also
+  the step that makes a mistake here expensive.
+- **No fonts are shipped.** CREngine needs real font files; §3 of
+  INSTALL.md. A face offered but absent is a book that will not lay out,
+  and the two readers must carry the *same* files or they paginate
+  differently.
+
+## Stage 2, answered
+
+The study called this the project's biggest unknown: can koreader-base be
+driven from a frontend that is not KOReader's? Reading the source says yes,
+and names the price exactly.
+
+`ffi/framebuffer_mxcfb` does not want KOReader. It wants an object it can
+ask about twenty-odd predicates — `isKindle`, `isREAGL`, `isZelda`,
+`hasColorScreen`, `canHWDither` — plus `model`, `display_dpi` and `screen`.
+Every one is a constant for a given device. So the coupling is a *table*,
+not a framework, and that table is `app/device/pw3.lua`: 24 properties,
+read off KOReader's own `frontend/device/kindle/device.lua` rather than
+guessed.
+
+Three things in the first draft of `kobase.lua` were wrong, and reading the
+real sources is what found them:
+
+- There is **no `ffi/input`**. Input is a C module, `libs/libkoreader-input`,
+  built from `input/input.c` with `-DKINDLE`.
+- It hands back **raw evdev records** — `{type, code, value, fd, time}` —
+  not `{x, y}`. The whole touch protocol is the frontend's job, which is
+  what `Touch` in `kobase.lua` and `spec/touch_spec.lua` now are.
+- `waitForEvent` takes **seconds and microseconds**, and returns
+  `true, events` or `false, errno`.
+
+And two device facts that change behaviour rather than just names: a PW3
+**cannot turn its frontlight off** (it overrides the Kindle default, and
+`duo/frontlight` has a branch for exactly that), and its battery is a
+`wario_*` sysfs node — the first guess here was a Kobo path, which would
+have read as a missing feature rather than a wrong one.
 - **Anything electrical about the wire.** A pseudo-terminal proves the
   framing, the handshake and the state machine. It proves nothing about baud
   rates, framing errors, a full FIFO, or whether flow control does what it
@@ -95,7 +134,8 @@ native/
     device/
       api.lua         the device contract — read this one first
       fake.lua        headless, records drawing instead of rasterising
-      kobase.lua      the real panel, via koreader-base      [UNVERIFIED]
+      kobase.lua      the real panel and touchscreen          [UNVERIFIED]
+      pw3.lua         what a Paperwhite 3 is, as koreader-base must be told
     engine/
       api.lua         the document engine contract
       stub.lua        a deterministic paginator, for the suite
@@ -106,7 +146,9 @@ native/
       reader.lua      the book
       typography.lua  font, margins, spacing, embedded styles
   kual/duo/           the KUAL extension: menu.json and its scripts
+  tools/              build-toolchain.sh, build-base.sh, package.sh
   spec/               the suite, incl. the two-process spread test
+  INSTALL.md          how to build it and put it on a reader
 ```
 
 ### The one idea worth knowing
@@ -152,24 +194,30 @@ to do the noticing.
 
 ## Getting it onto a device
 
-Not possible yet. Stage 1 of the study, in order:
+**[INSTALL.md](INSTALL.md) is the step-by-step.** In outline:
 
-1. `koxtoolchain`: `./gen-tc.sh kindlepw2` → `arm-kindlepw2-linux-gnueabi`.
-   A prebuilt container image exists if a local build fights back.
-2. Build `koreader-base` for `kindlepw2`.
-3. `make dist` gives `dist/duo-kual.zip`, which is the Lua and the KUAL
-   scripts. The cross-built `luajit` and koreader-base's shared libraries
-   have to be added beside them — the archive is deliberately not pretending
-   to be complete.
-4. Unzip into `/mnt/us/extensions/`, and **have the UART wired and a
-   bootloader you can interrupt first.** `run.sh` stops the device's own
-   framework; a reader that will not start cannot be fixed from its own
-   menus.
+```sh
+./tools/build-toolchain.sh    # koxtoolchain, kindlepw2. Long. Not as root.
+export PATH="$HOME/x-tools/arm-kindlepw2-linux-gnueabi/bin:$PATH"
+./tools/build-base.sh         # CREngine, MuPDF, FreeType, LuaJIT. Long.
+# add font files -- see INSTALL.md section 3
+./tools/package.sh ~/duo-build/koreader-base/build/arm-kindlepw2-linux-gnueabi
+unzip dist/duo-kual.zip -d /mnt/us/extensions/
+```
 
-Charge both readers on a wall charger before any session that touches the
-UART or the framework. Two Paperwhites stopped booting during the plugin's
-development and the evidence pointed at a brownout; `run.sh` puts the
-frontlight back exactly as it found it for the same reason.
+Neither build script has been run — this container's sandbox declined to
+execute an external build script, and a toolchain could not have survived
+it anyway. They are written from the two repositories' own build systems
+rather than from memory, and they check their prerequisites and their
+output rather than failing late.
+
+**Read §0 of INSTALL.md before step 5.** Have the UART wired and a
+bootloader you can interrupt: `run.sh` stops the device's own framework,
+and a reader that will not start cannot be fixed from its own menus. Charge
+both readers on a wall charger first — two Paperwhites stopped booting
+during the plugin's development and the evidence pointed at a brownout.
+`run.sh` puts the frontlight back exactly as it found it for the same
+reason.
 
 ## Licence
 

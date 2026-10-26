@@ -53,13 +53,24 @@ function Light.shim(device, options)
         powerd.fl_warmth = warmth
     end
 
+    --[[
+    `canTurnFrontlightOff` is **false** on a Paperwhite 3, and this said
+    true until KOReader's own device table was consulted: the Kindle base
+    class says yes and a PW3 specifically overrides it to no.
+
+    It is not cosmetic. `Frontlight.differences` reads it, and on a device
+    that cannot go dark it asks for the lowest step instead of zero. With
+    it wrong, the other device saying "light off" would have set this one
+    to a brightness it cannot represent, and what reaches the panel then is
+    the driver's business rather than anybody's intent.
+    ]]
     local shim = {
         hasFrontlight = function() return true end,
         hasNaturalLight = function() return warmth ~= nil end,
-        -- Kindles can take their light to zero, so this is true. A device
-        -- that cannot would make the engine ask for the lowest step
-        -- instead of darkness, which is handled inside the module.
-        canTurnFrontlightOff = function() return true end,
+        canTurnFrontlightOff = function()
+            if options.can_turn_off == nil then return false end
+            return options.can_turn_off and true or false
+        end,
     }
     return powerd, shim
 end

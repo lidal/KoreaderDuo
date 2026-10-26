@@ -15,7 +15,7 @@ LUA ?= luajit
 # then the plugin's own modules — which are required unchanged.
 LUA_PATH_SETTING := ./?.lua;../?.lua;../duo.koplugin/?.lua;;
 
-SPECS := spec/engine_spec.lua spec/app_spec.lua spec/spread_spec.lua
+SPECS := spec/engine_spec.lua spec/touch_spec.lua spec/app_spec.lua spec/spread_spec.lua
 SOURCES := $(wildcard app/*.lua app/*/*.lua spec/*.lua)
 SHELLS := $(wildcard kual/duo/*.sh)
 

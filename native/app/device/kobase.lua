@@ -1,86 +1,194 @@
 --[[--
 The real device, through koreader-base.
 
-**Not yet run on a Paperwhite.** Everything else in this app is exercised
-by the suite against `device/fake.lua`; this file is the seam where the
-suite stops and the hardware starts, and it cannot be tested here. Treat
-every symbol name below as needing confirmation against the koreader-base
-revision actually built -- which is why `open()` probes for each one and
-says which is missing rather than failing somewhere deeper with a nil.
+**Not yet run on a Paperwhite.** This is the seam where the suite stops and
+the hardware starts. What is different from the first draft of this file is
+that its APIs are no longer guesses: they were read off koreader-base and
+KOReader itself, and three of them were wrong.
 
-What it needs from koreader-base:
+* Input is **not** `ffi/input`; there is no such module. It is a C module,
+  `libs/libkoreader-input`, built from `input/input.c` with `-DKINDLE`.
+* It does **not** hand back `{ x, y }`. It hands back raw evdev records --
+  `{ type, code, value, fd, time }` -- so the touch protocol is this
+  file's job. That is what `Touch` below is for.
+* `waitForEvent` takes **seconds and microseconds**, not microseconds, and
+  returns `true, events` or `false, errno` (`ETIME` on a timeout).
 
-* `ffi/blitbuffer`  -- the drawing target. A 4bpp grey buffer matching the
-  panel, which is what the display list is replayed into.
-* a framebuffer module -- `ffi/framebuffer_mxcfb` on an i.MX6 Kindle.
-  Provides `refreshPartialImp` / `refreshFullImp`, the two e-ink update
-  modes that matter.
-* `ffi/input` -- raw touch and key events off `/dev/input/*`.
-* `ffi/freetype` -- glyph rasterising, for the app's own chrome. The
-  *book's* text is drawn by CREngine itself and does not come through
-  here; this is for labels, the shelf and the typography panel.
+The framebuffer is instantiated exactly as `KindlePaperWhite3:init` does
+it: `require("ffi/framebuffer_mxcfb"):new{ device = ..., debug = ... }`,
+where `device` is the descriptor in `device/pw3.lua`. That descriptor is
+the whole of the coupling to KOReader's frontend, and it is a table of
+constants -- which is the answer to the study's biggest open question.
 
-The display list is replayed rather than drawn directly for the reason
-`device/api.lua` gives: it is what lets every view be tested without a
-framebuffer. The cost is one extra pass over a few hundred operations,
-which is nothing beside an e-ink refresh.
+`beforePaint` and `afterPaint` bracket every update. koreader-base's own
+comment says they must, and drivers rely on it to batch.
 
 @module duonative.device.kobase
 --]]--
 
 local Api = require("app/device/api")
+local Pw3 = require("app/device/pw3")
 
 local Kobase = {}
 
---[[--
-The modules this backend stands on, and what it wants from each.
-
-Probed by name so that a missing or renamed one produces "koreader-base
-has no ffi/framebuffer_mxcfb" on the first run rather than an arithmetic
-error on a nil three calls later. The names are the thing most likely to
-be wrong, and this is the cheapest way to find out which.
---]]--
-Kobase.NEEDS = {
-    { module = "ffi/blitbuffer", wants = { "new" } },
-    { module = "ffi/input", wants = { "open" } },
-}
+--- The C module that reads the input devices. Not a Lua `ffi/` module.
+Kobase.INPUT_LIBRARY = "libs/libkoreader-input"
 
 --- Framebuffer modules to try, best first. i.MX6 Kindles are mxcfb.
 Kobase.FRAMEBUFFERS = {
     "ffi/framebuffer_mxcfb",
     "ffi/framebuffer_linux",
-    "ffi/framebuffer",
 }
 
-local function probe()
-    local found, missing = {}, {}
-    for _, need in ipairs(Kobase.NEEDS) do
-        local ok, module = pcall(require, need.module)
-        if not ok or type(module) ~= "table" then
-            missing[#missing+1] = need.module
-        else
-            for _, want in ipairs(need.wants) do
-                if module[want] == nil then
-                    missing[#missing+1] = ("%s.%s"):format(need.module, want)
-                end
-            end
-            found[need.module] = module
-        end
-    end
-    for _, name in ipairs(Kobase.FRAMEBUFFERS) do
-        local ok, module = pcall(require, name)
-        if ok and type(module) == "table" then
-            found.framebuffer = module
-            found.framebuffer_name = name
-            break
-        end
-    end
-    if not found.framebuffer then
-        missing[#missing+1] = "a framebuffer module (tried "
-            .. table.concat(Kobase.FRAMEBUFFERS, ", ") .. ")"
-    end
-    return found, missing
+--[[--
+What must be present, and what is wanted from it.
+
+Probed by name so a rename upstream reads as "koreader-base has no
+libs/libkoreader-input.waitForEvent" on the first run, rather than an
+arithmetic-on-nil three calls later.
+--]]--
+Kobase.NEEDS = {
+    { module = "ffi/blitbuffer", wants = { "new" } },
+    { module = Kobase.INPUT_LIBRARY, wants = { "open", "waitForEvent" } },
+}
+
+--------------------------------------------------------------------------
+-- Linux input, as the kernel actually reports it
+--------------------------------------------------------------------------
+
+local EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+local SYN_REPORT = 0
+local ABS_X, ABS_Y = 0, 1
+local ABS_MT_SLOT = 0x2f
+local ABS_MT_POSITION_X, ABS_MT_POSITION_Y = 0x35, 0x36
+local ABS_MT_TRACKING_ID = 0x39
+
+--- Kindle key codes. A PW3 has only a power button; the rest are for later
+--- models and cost nothing to carry.
+local KEYS = {
+    [105] = "left", [106] = "right", [103] = "up", [108] = "down",
+    [139] = "menu", [158] = "back", [116] = "power",
+}
+
+--[[--
+Turns a stream of evdev records into taps and swipes.
+
+Protocol B is assumed -- `ABS_MT_SLOT` selecting a contact, position
+events filling it in, `ABS_MT_TRACKING_ID` of -1 ending it -- with single
+touch `ABS_X`/`ABS_Y` honoured as a fallback. A gesture is decided on
+*release* rather than on contact, because that is the only moment the
+distance travelled is known, and a reader needs to tell a tap from a swipe
+before it does either.
+
+Only the first contact is followed. This app has no use for a second
+finger, and a pinch interpreted as two taps would turn an accident into
+two page turns.
+
+The thresholds are in pixels on a 300dpi panel: 40px is about 3.4mm, which
+is comfortably more than a finger wobbles and comfortably less than
+anything meant as a swipe.
+--]]--
+local Touch = {}
+Touch.__index = Touch
+
+Touch.TAP_SLOP = 40
+Touch.SWIPE_MIN = 120
+
+local function newTouch()
+    return setmetatable({ slot = 0, x = nil, y = nil,
+                          start_x = nil, start_y = nil, down = false }, Touch)
 end
+
+--[[--
+Feeds one record in. Returns an event when a gesture completed.
+
+Nil the rest of the time, which is almost always: a single tap is a dozen
+records and only the last of them means anything.
+--]]--
+function Touch:feed(record)
+    local kind, code, value = record.type, record.code, record.value
+
+    if kind == EV_ABS then
+        if code == ABS_MT_SLOT then
+            self.slot = value
+            return nil
+        end
+        -- Contacts past the first are watched for their end and otherwise
+        -- ignored, so letting go of a second finger cannot emit anything.
+        if self.slot ~= 0 then return nil end
+        if code == ABS_MT_POSITION_X or code == ABS_X then
+            self.x = value
+        elseif code == ABS_MT_POSITION_Y or code == ABS_Y then
+            self.y = value
+        elseif code == ABS_MT_TRACKING_ID then
+            if value == -1 then
+                self.ending = true
+            elseif not self.down then
+                --[[
+                A new contact forgets where the last one was.
+
+                Without this the second tap in a frame starts from the
+                first one's position: two taps at opposite corners became
+                one 800px diagonal, which is neither a tap nor a swipe and
+                so was silently dropped. The suite caught it.
+
+                Only when not already down -- within one contact the
+                tracking id can be re-reported, and resetting then would
+                throw away the start that is being measured from.
+                ]]
+                self.down = true
+                self.x, self.y = nil, nil
+                self.start_x, self.start_y = nil, nil
+            end
+        end
+        return nil
+    end
+
+    if kind == EV_KEY and KEYS[code] then
+        -- Down only. A key that reported both would turn every press into
+        -- two page turns.
+        if value == 1 then return { kind = "key", key = KEYS[code] } end
+        return nil
+    end
+
+    if kind == EV_SYN and code == SYN_REPORT then
+        -- A contact's first position often arrives in the same frame as
+        -- its tracking id, so the start is taken here if it was not then.
+        if self.down and self.start_x == nil then
+            self.start_x, self.start_y = self.x, self.y
+        end
+        if self.ending then return self:release() end
+    end
+    return nil
+end
+
+function Touch:release()
+    local from_x, from_y = self.start_x, self.start_y
+    local to_x, to_y = self.x, self.y
+    self.ending, self.down = false, false
+    self.start_x, self.start_y = nil, nil
+    if not (from_x and from_y and to_x and to_y) then return nil end
+
+    local dx, dy = to_x - from_x, to_y - from_y
+    local adx, ady = math.abs(dx), math.abs(dy)
+
+    if adx < Touch.TAP_SLOP and ady < Touch.TAP_SLOP then
+        return { kind = "tap", x = to_x, y = to_y }
+    end
+    if adx >= Touch.SWIPE_MIN and adx > ady then
+        return { kind = "swipe", dir = dx < 0 and "left" or "right" }
+    end
+    if ady >= Touch.SWIPE_MIN and ady > adx then
+        return { kind = "swipe", dir = dy < 0 and "up" or "down" }
+    end
+    -- Travelled too far to be a tap and not far enough to be a swipe.
+    -- Deliberately nothing: a reader's thumb dragging across the page
+    -- should not turn it.
+    return nil
+end
+
+Kobase.Touch = Touch
+Kobase.newTouch = newTouch
 
 --------------------------------------------------------------------------
 -- The surface
@@ -90,11 +198,11 @@ local Surface = {}
 Surface.__index = Surface
 
 --[[--
-Records like the fake, then replays into a BlitBuffer on `commit`.
+Records like the fake, then replays into the BlitBuffer on `commit`.
 
-Identical recording behaviour to `device/fake.lua` on purpose: the suite
-asserts on the display list, so if this one recorded differently the suite
-would be testing something the device does not do.
+Identical recording behaviour to `device/fake.lua`, deliberately: the suite
+asserts on the display list, so a surface that recorded differently would
+make the suite test something the device does not do.
 --]]--
 local function newSurface(buffer, width, height, rasteriser)
     return setmetatable({
@@ -143,35 +251,34 @@ function Surface:clip(rect, fn)
 end
 
 --[[--
-Replays the display list into the blit buffer.
+4-bit grey, 0 black to 15 white, as this app's vocabulary.
 
-Grey runs 0 (black) to 15 (white) in this app's vocabulary, and
-BlitBuffer's 4bpp colour constructors take the same range -- but the sense
-of it is worth checking on the device before trusting it, since getting it
-inverted produces a readable screen in photographic negative rather than
-an error.
+BlitBuffer's `Color4` constructors take the same range and the same sense,
+but it is worth checking on the device before trusting it: inverted, the
+result is a perfectly readable screen in photographic negative rather than
+anything that looks like an error. One function, so fixing it is one edit.
 --]]--
+function Surface:grey(level)
+    local bb = self.blitbuffer_module
+    if bb and bb.Color4 then return bb.Color4(level) end
+    return level
+end
+
 function Surface:commit()
     local buffer = self.buffer
     for _, op in ipairs(self.recorded) do
         if op.op == "fill" then
-            buffer:paintRect(op.rect.x, op.rect.y, op.rect.w, op.rect.h,
-                self:grey(op.grey))
+            buffer:paintRect(op.rect.x, op.rect.y, op.rect.w, op.rect.h, self:grey(op.grey))
         elseif op.op == "rect" then
             buffer:paintBorder(op.rect.x, op.rect.y, op.rect.w, op.rect.h,
                 op.width, self:grey(op.grey))
         elseif op.op == "text" and self.rasteriser then
-            self.rasteriser(buffer, op)
+            self.rasteriser(buffer, op, self)
         elseif op.op == "image" and op.handle and op.handle.blitbuffer then
             buffer:blitFrom(op.handle.blitbuffer, op.rect.x, op.rect.y)
         end
     end
     return #self.recorded
-end
-
-function Surface:grey(level)
-    -- One place, so an inverted panel is one edit rather than a hunt.
-    return self.colour_for and self.colour_for(level) or level
 end
 
 --------------------------------------------------------------------------
@@ -181,14 +288,43 @@ end
 local Device = {}
 Device.__index = Device
 
+local function probe()
+    local found, missing = {}, {}
+    for _, need in ipairs(Kobase.NEEDS) do
+        local ok, module = pcall(require, need.module)
+        if not ok or type(module) ~= "table" then
+            missing[#missing+1] = need.module
+        else
+            for _, want in ipairs(need.wants) do
+                if module[want] == nil then
+                    missing[#missing+1] = ("%s.%s"):format(need.module, want)
+                end
+            end
+            found[need.module] = module
+        end
+    end
+    for _, name in ipairs(Kobase.FRAMEBUFFERS) do
+        local ok, module = pcall(require, name)
+        if ok and type(module) == "table" then
+            found.framebuffer, found.framebuffer_name = module, name
+            break
+        end
+    end
+    if not found.framebuffer then
+        missing[#missing+1] = "a framebuffer module (tried "
+            .. table.concat(Kobase.FRAMEBUFFERS, ", ") .. ")"
+    end
+    return found, missing
+end
+
 --[[--
-Opens the panel and the input devices.
+Opens the panel and the touchscreen.
 
 @tparam[opt] table options
-    rasteriser  function(blitbuffer, text_op) -- draws one string.
-                Supplied by the platform so this file need not decide how
-                fonts are found; see `platform.lua`.
-    light_path  sysfs node for the frontlight
+    descriptor  the device descriptor (default `device/pw3`)
+    rasteriser  function(blitbuffer, text_op, surface) -- draws one string
+    touch_dev   input device to read (default the descriptor's)
+    debug       where koreader-base's own chatter goes
 @treturn table device, or nil plus a reason naming what was missing
 --]]--
 function Kobase.open(options)
@@ -198,23 +334,50 @@ function Kobase.open(options)
         return nil, "koreader-base is missing: " .. table.concat(missing, ", ")
     end
 
-    local fb = found.framebuffer.open and found.framebuffer:open() or found.framebuffer
-    if not fb then return nil, "the framebuffer would not open" end
+    local descriptor = options.descriptor or Pw3.descriptor()
+    --[[
+    `device` in, `screen` out, in that order -- which is the order KOReader
+    uses, so `descriptor.screen` is nil while `init()` runs. That is not an
+    oversight to fix: koreader-base's own `init` does not read it, and the
+    two genuinely refer to each other.
+    ]]
+    local ok, fb = pcall(function()
+        return found.framebuffer:new{
+            device = descriptor,
+            -- Must be callable: framebuffer.lua calls self.debug(...)
+            -- unconditionally in a few places.
+            debug = options.debug or function() end,
+        }
+    end)
+    if not ok or not fb then
+        return nil, ("%s would not open: %s"):format(
+            tostring(found.framebuffer_name), tostring(fb))
+    end
+    descriptor.screen = fb
 
-    local buffer = fb.bb or fb.full_bb
-    if not buffer then return nil, "the framebuffer has no blit buffer" end
-    local width = buffer:getWidth()
-    local height = buffer:getHeight()
+    local buffer = fb.bb
+    if not buffer then
+        return nil, "the framebuffer came up with no blit buffer"
+    end
+    local width, height = buffer:getWidth(), buffer:getHeight()
 
-    local input = found["ffi/input"]
-    local ok_input = pcall(function() input.open() end)
+    local input = found[Kobase.INPUT_LIBRARY]
+    local touch_dev = options.touch_dev or Pw3.TOUCH_DEV
+    local opened = pcall(function() return input.open(touch_dev) end)
+
+    local surface = newSurface(buffer, width, height, options.rasteriser)
+    surface.blitbuffer_module = found["ffi/blitbuffer"]
 
     return setmetatable({
         fb = fb,
-        input = ok_input and input or nil,
-        surface = newSurface(buffer, width, height, options.rasteriser),
+        descriptor = descriptor,
+        input = opened and input or nil,
+        touch_dev = touch_dev,
+        touch = newTouch(),
+        pending = {},
+        surface = surface,
         w = width, h = height,
-        light_path = options.light_path,
+        light_path = options.light_path or Pw3.LIGHT_PATH,
         suspend_handlers = {},
         resume_handlers = {},
     }, Device)
@@ -226,78 +389,82 @@ function Device:size() return self.w, self.h end
 --[[--
 Draws and updates the panel.
 
-Partial by default. A full refresh clears the ghosting a long run of
-partial updates leaves behind, and costs a visible black flash -- so it is
-asked for at the points a reader expects a flash anyway: opening a book,
-coming back from sleep, leaving a dialogue.
+Partial by default; full where a reader expects a flash anyway -- opening a
+book, coming back from sleep, leaving a dialogue -- because a full refresh
+is what clears the ghosting a run of partial ones leaves behind.
+
+`beforePaint` before the blits and `afterPaint` after the refresh call,
+which koreader-base requires and uses to batch.
 --]]--
 function Device:refresh(rect, how)
+    local fb = self.fb
+    if fb.beforePaint then pcall(function() fb:beforePaint() end) end
     self.surface:commit()
     self.surface:reset()
-    local fb = self.fb
+
+    local x, y, w, h = rect.x, rect.y, rect.w, rect.h
     if how == Api.FULL then
-        if fb.refreshFull then fb:refreshFull(rect.x, rect.y, rect.w, rect.h) end
+        pcall(function() fb:refreshFull(x, y, w, h) end)
     elseif how == Api.FAST then
-        if fb.refreshFast then fb:refreshFast(rect.x, rect.y, rect.w, rect.h)
-        elseif fb.refreshPartial then fb:refreshPartial(rect.x, rect.y, rect.w, rect.h) end
+        pcall(function() fb:refreshFast(x, y, w, h) end)
     else
-        if fb.refreshPartial then fb:refreshPartial(rect.x, rect.y, rect.w, rect.h) end
+        pcall(function() fb:refreshPartial(x, y, w, h) end)
     end
+
+    if fb.afterPaint then pcall(function() fb:afterPaint() end) end
     return true
 end
 
 --[[--
-One input event, or nil.
+One gesture, or nil.
 
-koreader-base's input returns its own event shapes; this maps them onto the
-four this app knows about. The mapping is the second most likely thing in
-this file to be wrong, after the module names -- `EV_ABS` slots and key
-codes differ between Kindle generations, and a PW3's touch controller is
-not the same as a PW4's.
+A single `waitForEvent` yields a whole frame of records, which may contain
+no gesture or more than one, so decoded events are queued and handed out
+one per call. That keeps the app's loop shape -- one event, one repaint --
+and stops a frame holding two taps from losing one of them.
 --]]--
 function Device:poll(timeout_ms)
+    local queued = table.remove(self.pending, 1)
+    if queued then return queued end
     if not self.input then return nil end
-    local ok, event = pcall(self.input.waitForEvent, (timeout_ms or 50) * 1000)
-    if not ok or not event then return nil end
-    return self:translate(event)
-end
 
---- Where a raw event becomes one of this app's four kinds.
-function Device:translate(event)
-    if type(event) ~= "table" then return nil end
-    if event.x and event.y then
-        return { kind = "tap", x = event.x, y = event.y }
+    local milliseconds = timeout_ms or 50
+    local ok, result, records = pcall(self.input.waitForEvent,
+        math.floor(milliseconds / 1000), (milliseconds % 1000) * 1000)
+    -- `false, ETIME` is the ordinary case: nothing happened in the window.
+    if not ok or result ~= true or type(records) ~= "table" then return nil end
+
+    for _, record in ipairs(records) do
+        local event = self.touch:feed(record)
+        if event then self.pending[#self.pending+1] = event end
     end
-    local KEYS = {
-        [105] = "left", [106] = "right", [103] = "up", [108] = "down",
-        [139] = "menu", [158] = "back", [116] = "power",
-    }
-    if event.code and KEYS[event.code] then
-        return { kind = "key", key = KEYS[event.code] }
-    end
-    return nil
+    return table.remove(self.pending, 1)
 end
 
 --------------------------------------------------------------------------
--- The light
+-- The light and the battery
 --------------------------------------------------------------------------
+
+local function readNumber(path)
+    if not path then return nil end
+    local handle = io.open(path, "r")
+    if not handle then return nil end
+    local value = tonumber(handle:read("*l"))
+    handle:close()
+    return value
+end
 
 --[[--
 Reads the frontlight out of sysfs.
 
-Not through koreader-base's PowerD, which is part of KOReader's frontend
-rather than the base. A Kindle's light is a single integer in a sysfs file
-and reading it directly is both simpler and one fewer thing to port. The
-node differs by model, so the path is configuration rather than a constant.
+Not through KOReader's PowerD, which is part of its frontend rather than
+the base. A Kindle's light is one integer in one file; reading it directly
+is simpler and one fewer thing to port. No warmth on a PW3 -- that arrived
+with later models -- so the second return is nil and `light.lua` takes
+that as "no natural light".
 --]]--
 function Device:frontlight()
-    if not self.light_path then return nil end
-    local handle = io.open(self.light_path, "r")
-    if not handle then return nil end
-    local value = tonumber(handle:read("*l"))
-    handle:close()
-    -- No warmth on a Paperwhite 3; later devices would report one here.
-    return value, nil
+    return readNumber(self.light_path), nil
 end
 
 function Device:setFrontlight(level)
@@ -310,26 +477,24 @@ function Device:setFrontlight(level)
 end
 
 function Device:battery()
-    local handle = io.open("/sys/class/power_supply/bd7181x_bat/capacity", "r")
-    if not handle then return nil, false end
-    local percent = tonumber(handle:read("*l"))
-    handle:close()
-    return percent, false
+    local percent = readNumber(Pw3.BATTERY_PATH)
+    local charging = readNumber(Pw3.CHARGING_PATH)
+    return percent, (charging or 0) ~= 0
 end
 
 function Device:onSuspend(fn) self.suspend_handlers[#self.suspend_handlers+1] = fn end
 function Device:onResume(fn) self.resume_handlers[#self.resume_handlers+1] = fn end
 
 --[[--
-Gives the framebuffer back.
+Gives the framebuffer and the touchscreen back.
 
-Not optional on a Kindle. The app took the panel from whatever was drawing
-on it, and a process that exits without closing it leaves a reader showing
-a half-drawn screen that nothing will repaint -- which looks exactly like
-the device having died.
+Not optional on a Kindle. This app took the panel from whatever was
+drawing on it, and a process that exits without closing it leaves a reader
+showing a half-drawn screen nothing will repaint -- which looks exactly
+like a device that has died.
 --]]--
 function Device:close()
-    if self.input and self.input.close then pcall(self.input.close) end
+    if self.input and self.input.closeAll then pcall(self.input.closeAll) end
     if self.fb and self.fb.close then pcall(function() self.fb:close() end) end
     self.closed = true
     return true
