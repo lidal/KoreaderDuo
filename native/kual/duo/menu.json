@@ -1,0 +1,38 @@
+{
+  "items": [
+    {
+      "name": "Duo",
+      "priority": 3,
+      "items": [
+        {
+          "name": "Start Duo",
+          "priority": 0,
+          "action": "./run.sh",
+          "status": "file /mnt/us/duo/duo.pid"
+        },
+        {
+          "name": "Start Duo (as leader)",
+          "priority": 1,
+          "action": "./run.sh",
+          "params": "leader"
+        },
+        {
+          "name": "Start Duo (as follower)",
+          "priority": 2,
+          "action": "./run.sh",
+          "params": "follower"
+        },
+        {
+          "name": "Stop Duo",
+          "priority": 3,
+          "action": "./stop.sh"
+        },
+        {
+          "name": "Show the last boot log",
+          "priority": 4,
+          "action": "./showlog.sh"
+        }
+      ]
+    }
+  ]
+}
